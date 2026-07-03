@@ -1,0 +1,29 @@
+# sensitive docs
+doc/
+docs/
+data/
+
+# secrets
+critical.txt
+.env
+.env.*
+*.key
+*.pem
+
+# runtime logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env/
+
+# Node
+node_modules/
+dist/
+
+# editor/system
+.vscode/
+.DS_Store
