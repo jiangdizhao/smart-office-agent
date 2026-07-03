@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 from app.event_bus import event_bus
 from app.models import ApprovalAction, TaskStep, ToolResult
@@ -77,6 +78,40 @@ def _finish_cancelled_task(task_id: str, step: TaskStep | None, message: str) ->
     )
 
 
+def _is_task_cancelled(task_id: str) -> bool:
+    task = state_store.get_task(task_id)
+    return task is None or task.status == "cancelled"
+
+
+def _finish_if_cancelled(
+    task_id: str,
+    step: TaskStep | None,
+    message: str = "Task cancelled by user.",
+) -> bool:
+    if not _is_task_cancelled(task_id):
+        return False
+
+    _finish_cancelled_task(task_id, step, message)
+    return True
+
+
+def _simulated_verification_payload(result: ToolResult) -> dict:
+    return {
+        "ok": True,
+        "message": "Simulated verification passed. No real Windows tool was executed.",
+        "process_ok": None,
+        "window_ok": None,
+        "expected_process_names": result.expected_process_names,
+        "found_process_names": [],
+        "expected_window_keywords": result.expected_window_keywords,
+        "found_window_titles": [],
+        "require_window_match": False,
+        "raw": {"simulated": True},
+        "checked_at": datetime.now(UTC).isoformat(),
+        "simulated": True,
+    }
+
+
 async def run_task_plan_only(task_id: str) -> None:
     task = state_store.get_task(task_id)
     if task is None:
@@ -96,7 +131,13 @@ async def run_task_plan_only(task_id: str) -> None:
         )
 
         for step in task.steps:
+            if _finish_if_cancelled(task_id, step):
+                return
+
             approval_action = await _handle_approval_gate(task_id, step)
+            if _finish_if_cancelled(task_id, step):
+                return
+
             if approval_action == "skip":
                 state_store.update_step(
                     task_id,
@@ -135,6 +176,8 @@ async def run_task_plan_only(task_id: str) -> None:
             )
 
             await asyncio.sleep(0.15)
+            if _finish_if_cancelled(task_id, step):
+                return
 
             result = ToolResult(
                 tool_name=step.tool_name or "reasoning_step",
@@ -149,7 +192,7 @@ async def run_task_plan_only(task_id: str) -> None:
             state_store.update_step(
                 task_id,
                 step.step_id,
-                "succeeded",
+                "verifying",
                 message=result.message,
                 result=result,
             )
@@ -160,6 +203,28 @@ async def run_task_plan_only(task_id: str) -> None:
                 message=result.message,
                 data=result.model_dump(mode="json"),
             )
+
+            if _finish_if_cancelled(task_id, step):
+                return
+
+            verification = _simulated_verification_payload(result)
+            state_store.update_step(
+                task_id,
+                step.step_id,
+                "succeeded",
+                message=verification["message"],
+                result=result,
+            )
+            event_bus.publish(
+                task_id=task_id,
+                step_id=step.step_id,
+                event_type="verification_result",
+                message="Simulated verification passed.",
+                data=verification,
+            )
+
+        if _finish_if_cancelled(task_id, None):
+            return
 
         state_store.set_status(
             task_id,
@@ -212,7 +277,13 @@ async def run_task_with_tools(
         )
 
         for step in task.steps:
+            if _finish_if_cancelled(task_id, step):
+                return
+
             approval_action = await _handle_approval_gate(task_id, step)
+            if _finish_if_cancelled(task_id, step):
+                return
+
             if approval_action == "skip":
                 state_store.update_step(
                     task_id,
@@ -270,6 +341,9 @@ async def run_task_with_tools(
                     tool_timeout_seconds,
                 )
 
+            if _finish_if_cancelled(task_id, step):
+                return
+
             state_store.update_step(
                 task_id,
                 step.step_id,
@@ -300,7 +374,14 @@ async def run_task_with_tools(
                 )
                 return
 
+            if _finish_if_cancelled(task_id, step):
+                return
+
             verification = await asyncio.to_thread(verify_tool_result, result)
+
+            if _finish_if_cancelled(task_id, step):
+                return
+
             state_store.update_step(
                 task_id,
                 step.step_id,
@@ -330,6 +411,9 @@ async def run_task_with_tools(
                     data=verification.model_dump(mode="json"),
                 )
                 return
+
+        if _finish_if_cancelled(task_id, None):
+            return
 
         state_store.set_status(
             task_id,

@@ -149,6 +149,11 @@ button.danger {
   border-color: #b73a48;
 }
 
+button.danger.subtle {
+  background: #3a2027;
+  border-color: #7f2f3b;
+}
+
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -386,9 +391,26 @@ button:disabled {
   padding-bottom: 10px;
 }
 
-.event-row p {
+.event-body {
+  min-width: 0;
+}
+
+.event-body p {
   margin: 0;
   color: #d7dee8;
+  overflow-wrap: anywhere;
+}
+
+.verification-grid {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  color: #aab4c2;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.verification-grid span {
   overflow-wrap: anywhere;
 }
 
@@ -460,7 +482,7 @@ button:disabled {
     grid-template-columns: 70px minmax(0, 1fr);
   }
 
-  .event-row p {
+  .event-body {
     grid-column: 1 / -1;
   }
 }

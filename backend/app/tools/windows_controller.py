@@ -68,15 +68,16 @@ def _start_executable(
 
 
 def _find_zoom_executable() -> Path | None:
+    explicit_candidates = []
+    configured_zoom_path = os.environ.get("SMART_OFFICE_ZOOM_PATH")
+    if configured_zoom_path:
+        explicit_candidates.append(Path(configured_zoom_path))
+
     env_candidates = []
     for env_name in ["APPDATA", "USERPROFILE"]:
         env_value = os.environ.get(env_name)
         if env_value:
             env_candidates.append(Path(env_value))
-
-    explicit_candidates = [
-        Path("C:/Users/RICO/AppData/Roaming/Zoom/bin_00/Zoom.exe"),
-    ]
 
     for base in env_candidates:
         if base.name.lower() == "roaming":
@@ -113,7 +114,7 @@ def open_zoom() -> ToolResult:
         return ToolResult(
             tool_name="open_zoom",
             ok=False,
-            message="Zoom executable was not found. Checked APPDATA Zoom paths and PATH.",
+            message="Zoom executable was not found. Checked SMART_OFFICE_ZOOM_PATH, APPDATA Zoom paths, USERPROFILE Zoom paths, and PATH.",
             expected_process_names=["Zoom.exe"],
         )
 
@@ -179,7 +180,7 @@ def open_sample_document() -> ToolResult:
 
     return _start_windows_command(
         tool_name="open_sample_document",
-        command=["cmd", "/c", "start", "", str(sample_file)],
+        command=["notepad.exe", str(sample_file)],
         expected_process_names=["notepad.exe"],
         expected_window_keywords=[sample_file.name],
         artifacts=[str(sample_file)],

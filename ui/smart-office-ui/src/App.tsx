@@ -80,6 +80,18 @@ type TaskSession = {
   completed_at: string | null;
 };
 
+type VerificationEventData = {
+  ok?: boolean;
+  process_ok?: boolean | null;
+  window_ok?: boolean | null;
+  expected_process_names?: unknown;
+  found_process_names?: unknown;
+  expected_window_keywords?: unknown;
+  found_window_titles?: unknown;
+  require_window_match?: boolean;
+  simulated?: boolean;
+};
+
 const API_BASE = "http://localhost:8000";
 const EVENT_TYPES: StepEvent["type"][] = [
   "task_created",
@@ -92,6 +104,13 @@ const EVENT_TYPES: StepEvent["type"][] = [
   "completed",
   "cancelled",
   "error",
+];
+const TERMINAL_STATUSES: TaskStatus[] = ["completed", "failed", "cancelled"];
+const CANCELLABLE_STATUSES: TaskStatus[] = [
+  "created",
+  "planning",
+  "running",
+  "waiting_approval",
 ];
 
 function statusLabel(status: TaskStatus | StepStatus) {
@@ -127,6 +146,45 @@ function eventTime(timestamp: string) {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function asStringList(value: unknown) {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function boolLabel(value: boolean | null | undefined) {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  return "n/a";
+}
+
+function isTerminalStatus(status: TaskStatus) {
+  return TERMINAL_STATUSES.includes(status);
+}
+
+function isCancellableStatus(status: TaskStatus) {
+  return CANCELLABLE_STATUSES.includes(status);
+}
+
+function VerificationDetails({ data }: { data: Record<string, unknown> }) {
+  const verification = data as VerificationEventData;
+  const expectedProcesses = asStringList(verification.expected_process_names);
+  const foundProcesses = asStringList(verification.found_process_names);
+  const expectedWindows = asStringList(verification.expected_window_keywords);
+  const foundWindows = asStringList(verification.found_window_titles);
+
+  return (
+    <div className="verification-grid">
+      <span>process_ok: {boolLabel(verification.process_ok)}</span>
+      <span>window_ok: {boolLabel(verification.window_ok)}</span>
+      <span>require_window_match: {String(Boolean(verification.require_window_match))}</span>
+      <span>expected_process_names: {expectedProcesses.join(", ") || "n/a"}</span>
+      <span>found_process_names: {foundProcesses.join(", ") || "n/a"}</span>
+      <span>expected_window_keywords: {expectedWindows.join(", ") || "n/a"}</span>
+      <span>found_window_titles: {foundWindows.join(" | ") || "n/a"}</span>
+      {verification.simulated ? <span>simulated: true</span> : null}
+    </div>
+  );
 }
 
 function applyEventToTask(task: TaskSession, event: StepEvent): TaskSession {
@@ -249,22 +307,26 @@ function App() {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const activeTaskIdRef = useRef<string | null>(null);
 
   function closeEventStream() {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
+    activeTaskIdRef.current = null;
     setStreaming(false);
   }
 
-  async function fetchTask(taskId: string) {
+  async function fetchTaskSnapshot(taskId: string) {
     const res = await fetch(`${API_BASE}/agent/tasks/${taskId}`);
     if (!res.ok) throw new Error(`Task fetch failed: ${res.status}`);
     const data = (await res.json()) as TaskSession;
     setTask(data);
+    return data;
   }
 
   function connectEvents(taskId: string) {
     closeEventStream();
+    activeTaskIdRef.current = taskId;
     setStreaming(true);
 
     const source = new EventSource(
@@ -279,16 +341,40 @@ function App() {
 
         if (event.type === "completed" || event.type === "cancelled" || event.type === "error") {
           source.close();
-          eventSourceRef.current = null;
+          if (eventSourceRef.current === source) {
+            eventSourceRef.current = null;
+            activeTaskIdRef.current = null;
+          }
           setStreaming(false);
-          void fetchTask(taskId).catch((err) => setError(String(err)));
+          void fetchTaskSnapshot(taskId).catch((err) => setError(String(err)));
         }
       });
     });
 
-    source.onerror = () => {
-      setError("事件流连接已关闭或中断。");
-      closeEventStream();
+    source.onerror = async () => {
+      source.close();
+      if (eventSourceRef.current === source) {
+        eventSourceRef.current = null;
+      }
+      setStreaming(false);
+
+      try {
+        const latest = await fetchTaskSnapshot(taskId);
+        if (isTerminalStatus(latest.status)) {
+          activeTaskIdRef.current = null;
+          return;
+        }
+
+        setError("事件流暂时断开，正在重连。");
+        window.setTimeout(() => {
+          if (activeTaskIdRef.current === taskId) {
+            connectEvents(taskId);
+          }
+        }, 1000);
+      } catch (err) {
+        activeTaskIdRef.current = null;
+        setError(`事件流连接失败：${String(err)}`);
+      }
     };
   }
 
@@ -318,6 +404,23 @@ function App() {
     }
   }
 
+  async function cancelTask() {
+    if (!task || !isCancellableStatus(task.status)) return;
+
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/agent/tasks/${task.task_id}/cancel`, {
+        method: "POST",
+      });
+
+      if (!res.ok) throw new Error(`Cancel failed: ${res.status}`);
+      const data = (await res.json()) as TaskSession;
+      setTask(data);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function sendApproval(action: "approve" | "cancel" | "skip" | "takeover") {
     if (!task) return;
 
@@ -341,6 +444,7 @@ function App() {
 
   const activeStepCount = task?.steps.filter((step) => step.status !== "pending").length ?? 0;
   const approvalStep = task?.steps.find((step) => step.status === "waiting_approval") ?? null;
+  const canCancelTask = Boolean(task && isCancellableStatus(task.status));
 
   return (
     <main className="screen">
@@ -371,10 +475,15 @@ function App() {
           <button disabled={streaming} onClick={() => createTask(true)} className="primary">
             执行工具
           </button>
+          {task ? (
+            <button disabled={!canCancelTask} onClick={cancelTask} className="danger subtle">
+              取消当前任务
+            </button>
+          ) : null}
         </div>
       </section>
 
-      {error && <section className="notice bad">错误：{error}</section>}
+      {error && <section className="notice bad">提示：{error}</section>}
 
       {task?.status === "waiting_approval" && approvalStep && (
         <section className="approval-panel">
@@ -474,7 +583,12 @@ function App() {
                   <div key={event.event_id} className="event-row">
                     <time>{eventTime(event.timestamp)}</time>
                     <span className={`event-type ${event.type}`}>{event.type}</span>
-                    <p>{event.message}</p>
+                    <div className="event-body">
+                      <p>{event.message}</p>
+                      {event.type === "verification_result" ? (
+                        <VerificationDetails data={event.data} />
+                      ) : null}
+                    </div>
                   </div>
                 ))}
               </div>

@@ -89,7 +89,7 @@ async def create_agent_task(req: TaskCreateRequest):
         data={
             "execute": req.execute,
             "step_count": len(task_graph.steps),
-            "note": "Task graph is available; executor is not wired yet.",
+            "note": "Task graph is available; executor has been scheduled.",
         },
     )
     event_bus.publish(
