@@ -12,18 +12,18 @@ class SwipeConfig:
     camera_index: int = 0
     mirror: bool = True
 
-    max_buffer_seconds: float = 0.75
-    min_motion_seconds: float = 0.25
-    min_points: int = 8
+    max_buffer_seconds: float = 0.55
+    min_motion_seconds: float = 0.04
+    min_points: int = 3
 
-    min_dx: float = 0.22          # normalized image width
-    max_abs_dy: float = 0.18      # normalized image height
-    min_abs_speed_x: float = 0.35 # normalized width per second
+    min_dx: float = 0.07         # normalized image width
+    max_abs_dy: float = 0.35      # normalized image height
+    min_abs_speed_x: float = 0.10 # normalized width per second
 
-    cooldown_seconds: float = 1.0
+    cooldown_seconds: float = 0.7
 
-    min_detection_confidence: float = 0.6
-    min_tracking_confidence: float = 0.6
+    min_detection_confidence: float = 0.55
+    min_tracking_confidence: float = 0.55
 
 
 class SwipeDetector:
