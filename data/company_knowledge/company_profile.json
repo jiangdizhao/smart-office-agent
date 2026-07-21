@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "content_version": "phase2-demo-2026-07-22",
+  "updated_at": "2026-07-22",
+  "disclaimer": {
+    "zh": "当前资料仅用于 Smart Office 内部演示，不代表任何特定客户公司的正式对外资料。",
+    "en": "This content is for the internal Smart Office demonstration and is not an official profile for a specific customer organization."
+  },
+  "entries": [
+    {
+      "id": "assistant_identity",
+      "category": "identity",
+      "title": {"zh": "虚拟助手身份", "en": "Virtual host identity"},
+      "keywords": {
+        "zh": ["你是谁", "介绍一下自己", "你能做什么", "虚拟助手", "接待员"],
+        "en": ["who are you", "introduce yourself", "what can you do", "virtual host", "receptionist"]
+      },
+      "answer": {
+        "zh": "我是 Smart Office Virtual Host & Agent。我可以承担基础企业接待、公开资料讲解和语音交互；对于员工办公请求，我会先进行权限判断和任务规划，再交给受控的执行与验证链。Phase 2 暂不执行真实 Office 操作。",
+        "en": "I am the Smart Office Virtual Host and Agent. I support basic reception, approved public-information guidance, and voice interaction. Employee office requests are permission-checked and planned before entering a controlled execution and verification chain. Phase 2 does not execute real Office actions."
+      },
+      "public": true
+    },
+    {
+      "id": "solution_overview",
+      "category": "company",
+      "title": {"zh": "Smart Office 方案概述", "en": "Smart Office solution overview"},
+      "keywords": {
+        "zh": ["公司", "企业", "业务", "方案", "解决方案", "产品", "做什么"],
+        "en": ["company", "business", "solution", "product", "what do you do"]
+      },
+      "answer": {
+        "zh": "Smart Office 演示方案把企业虚拟接待、实时语音、多屏内容展示和受控办公自动化整合为一个统一助手。主屏负责虚拟人、字幕和确认，副屏用于展示公司资料或承载 Teams、PowerPoint 等工作窗口。",
+        "en": "The Smart Office demonstration combines virtual reception, realtime voice, multi-screen content presentation, and controlled office automation in one assistant. The primary screen hosts the virtual person, captions, and approvals, while secondary screens present approved information or workspace applications such as Teams and PowerPoint."
+      },
+      "public": true
+    },
+    {
+      "id": "core_capabilities",
+      "category": "capabilities",
+      "title": {"zh": "核心能力", "en": "Core capabilities"},
+      "keywords": {
+        "zh": ["能力", "功能", "服务", "可以做什么", "核心能力"],
+        "en": ["capability", "feature", "service", "functions"]
+      },
+      "answer": {
+        "zh": "当前核心能力包括中英文语音识别与朗读、接待知识问答、访客与员工权限门控、Office 请求分类、复杂任务的计划会话，以及既有的任务事件、审批、取消、验证和审计日志框架。",
+        "en": "Current capabilities include Chinese and English speech recognition and playback, grounded reception Q&A, visitor and employee permission gates, Office request classification, plan-only task sessions for complex goals, and the existing task-event, approval, cancellation, verification, and audit framework."
+      },
+      "public": true
+    },
+    {
+      "id": "deployment_scenarios",
+      "category": "deployment",
+      "title": {"zh": "部署场景", "en": "Deployment scenarios"},
+      "keywords": {
+        "zh": ["场景", "部署", "前台", "展厅", "会议室", "适合哪里"],
+        "en": ["deployment", "scenario", "front desk", "showroom", "meeting room"]
+      },
+      "answer": {
+        "zh": "方案面向企业前台、展厅、会议室和智能屏演示环境。实际部署前，需要把演示资料替换为客户批准的公司介绍、产品目录、案例、联系方式和权限策略。",
+        "en": "The solution targets corporate reception areas, showrooms, meeting rooms, and smart-display demonstrations. Before production deployment, the demonstration content must be replaced with customer-approved company profiles, product catalogs, case studies, contact details, and permission policies."
+      },
+      "public": true
+    },
+    {
+      "id": "contact_and_appointment",
+      "category": "contact",
+      "title": {"zh": "联系与预约", "en": "Contact and appointment"},
+      "keywords": {
+        "zh": ["联系", "联系方式", "预约", "参观", "报价", "价格"],
+        "en": ["contact", "appointment", "visit", "pricing", "quote"]
+      },
+      "answer": {
+        "zh": "当前演示知识库没有配置正式联系方式、价格或预约渠道。我可以记录您的意向，但不能编造电话、邮箱或报价；正式部署时应接入客户批准的联系与预约流程。",
+        "en": "The demonstration knowledge base does not contain official contact details, pricing, or booking channels. I can acknowledge the request but must not invent phone numbers, email addresses, or quotations. A customer-approved contact and appointment workflow is required for production."
+      },
+      "public": true
+    },
+    {
+      "id": "public_information_boundary",
+      "category": "policy",
+      "title": {"zh": "公开信息边界", "en": "Public-information boundary"},
+      "keywords": {
+        "zh": ["客户名单", "内部资料", "机密", "财务", "员工信息", "合同细节"],
+        "en": ["customer list", "internal document", "confidential", "financial", "employee data", "contract details"]
+      },
+      "answer": {
+        "zh": "该问题可能涉及非公开或未批准信息。当前接待助手只能依据公开且经过批准的资料回答，请联系工作人员进一步确认。",
+        "en": "This request may involve non-public or unapproved information. The reception assistant can answer only from approved public sources; please ask a staff member for further assistance."
+      },
+      "public": true
+    }
+  ]
+}
