@@ -12,6 +12,7 @@ type BrowserSpeechRecognitionResult = {
 }
 
 type BrowserSpeechRecognitionEvent = {
+  resultIndex: number
   results: {
     length: number
     [index: number]: BrowserSpeechRecognitionResult
@@ -104,11 +105,11 @@ export class BrowserSpeechCapture {
       recognition.onresult = (event) => {
         let finalDelta = ''
         let interim = ''
-        for (let index = 0; index < event.results.length; index += 1) {
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
           const result = event.results[index]
-          const transcript = result?.[0]?.transcript ?? ''
-          if (result?.isFinal) finalDelta = joinTranscript(finalDelta, transcript)
-          else interim = joinTranscript(interim, transcript)
+          const recognizedText = result?.[0]?.transcript ?? ''
+          if (result?.isFinal) finalDelta = joinTranscript(finalDelta, recognizedText)
+          else interim = joinTranscript(interim, recognizedText)
         }
         this.finalTranscript = joinTranscript(this.finalTranscript, finalDelta)
         this.interimTranscript = interim
