@@ -1,12 +1,14 @@
-name: Virtual Host Phase 1 Check
+name: Virtual Host Integration Check
 
 on:
   push:
     branches:
       - integration/virtual-host
+      - phase2/unified-router-reception
   pull_request:
     paths:
       - "backend/**"
+      - "data/company_knowledge/**"
       - "ui/smart-office-ui/**"
       - ".github/workflows/virtual-host-phase1-check.yml"
 
@@ -23,9 +25,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "fastapi[standard]" httpx sse-starlette
       - name: Compile backend
-        run: python -m compileall backend/app backend/scripts/smoke_phase1_voice_contract.py
-      - name: Run Phase 1 contract smoke test
+        run: |
+          python -m compileall backend/app \
+            backend/scripts/smoke_phase1_voice_contract.py \
+            backend/scripts/smoke_phase2_router_contract.py
+      - name: Run Phase 1 regression contract
         run: python backend/scripts/smoke_phase1_voice_contract.py
+      - name: Run Phase 2 router contract
+        run: python backend/scripts/smoke_phase2_router_contract.py
 
   frontend-build:
     runs-on: ubuntu-latest
