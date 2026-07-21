@@ -16,12 +16,14 @@ from app.models import (
     TaskSession,
 )
 from app.planner import plan_task
+from app.realtime_api import router as realtime_router
 from app.state_store import state_store
 from app.task_graph import build_task_graph, task_graph_event_data
 from app.task_logger import log_task_record
 from app.tool_registry import run_tool
+from app.turn_api import router as turn_router
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.1.0")
+app = FastAPI(title="Smart Office Agent Backend", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +35,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(realtime_router)
+app.include_router(turn_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -48,7 +53,13 @@ def health_check():
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.1.0",
+        "version": "0.2.0",
+        "phase": "m3a_fusion_phase_1",
+        "capabilities": {
+            "task_runtime": True,
+            "realtime_voice_api": True,
+            "agent_turn_api": True,
+        },
     }
 
 
