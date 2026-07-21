@@ -1,4 +1,5 @@
 type DataChannelPayload = string | Blob | ArrayBuffer | ArrayBufferView
+type DataChannelSend = (this: RTCDataChannel, data: DataChannelPayload) => void
 
 type RealtimeResponseCreateEvent = {
   type?: unknown
@@ -51,9 +52,12 @@ export function installRealtimeMetadataCompatibility(): void {
   if (installed || typeof RTCDataChannel === 'undefined') return
 
   const prototype = RTCDataChannel.prototype
-  const originalSend = prototype.send
+  const originalSend = prototype.send as unknown as DataChannelSend
 
-  const patchedSend = function (this: RTCDataChannel, data: DataChannelPayload): void {
+  const patchedSend: DataChannelSend = function (
+    this: RTCDataChannel,
+    data: DataChannelPayload,
+  ): void {
     const outgoing =
       typeof data === 'string' ? stringifyRealtimeResponseMetadata(data) : data
     originalSend.call(this, outgoing)
