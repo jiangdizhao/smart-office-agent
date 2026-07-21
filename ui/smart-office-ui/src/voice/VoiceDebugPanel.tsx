@@ -15,8 +15,10 @@ const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 
 const ASR_STORAGE_KEY = 'smartoffice_asr_provider'
+const ACTOR_STORAGE_KEY = 'smartoffice_actor_type'
 
 type AsrProvider = 'realtime' | 'browser'
+type ActorType = 'visitor' | 'employee' | 'operator'
 type PanelState = 'idle' | 'connecting' | 'listening' | 'processing' | 'speaking' | 'error'
 
 type TurnResponse = {
@@ -25,12 +27,24 @@ type TurnResponse = {
   normalized_text: string
   spoken_text: string
   task_id: string | null
+  task_status: string | null
   approval_required: boolean
+  actor_type: ActorType
+  scene: string
+  permission_decision: string
+  source_ids: string[]
+  content_url: string | null
   phase: string
 }
 
 function storedAsrProvider(): AsrProvider {
   return localStorage.getItem(ASR_STORAGE_KEY) === 'browser' ? 'browser' : 'realtime'
+}
+
+function storedActorType(): ActorType {
+  const value = localStorage.getItem(ACTOR_STORAGE_KEY)
+  if (value === 'employee' || value === 'operator') return value
+  return 'visitor'
 }
 
 function conversationId(): string {
@@ -68,6 +82,7 @@ function stateLabel(state: PanelState): string {
 export default function VoiceDebugPanel() {
   const browserCaptureRef = useRef(new BrowserSpeechCapture())
   const [language, setLanguage] = useState<VoiceLanguage>('zh')
+  const [actorType, setActorType] = useState<ActorType>(storedActorType)
   const [asrProvider, setAsrProvider] = useState<AsrProvider>(storedAsrProvider)
   const [voiceProvider, setVoiceProvider] = useState<VoiceOutputProvider>(
     voiceOutputManager.selectedProvider(),
@@ -77,9 +92,14 @@ export default function VoiceDebugPanel() {
     initialRuntimeStatus,
   )
   const [transcript, setTranscript] = useState('')
-  const [textInput, setTextInput] = useState('你好')
+  const [textInput, setTextInput] = useState('请介绍一下你们的解决方案')
   const [answer, setAnswer] = useState('')
   const [lastRoute, setLastRoute] = useState('')
+  const [lastScene, setLastScene] = useState('')
+  const [permissionDecision, setPermissionDecision] = useState('')
+  const [sourceIds, setSourceIds] = useState<string[]>([])
+  const [contentUrl, setContentUrl] = useState<string | null>(null)
+  const [taskId, setTaskId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(true)
 
@@ -110,6 +130,8 @@ export default function VoiceDebugPanel() {
     setError('')
     setTranscript('')
     setAnswer('')
+    setSourceIds([])
+    setContentUrl(null)
     try {
       await voiceOutputManager.stop()
       if (asrProvider === 'realtime') {
@@ -158,7 +180,7 @@ export default function VoiceDebugPanel() {
         text: clean,
         language,
         input_source: inputSource,
-        actor_context: { type: 'employee', source: 'phase1_debug_panel' },
+        actor_context: { type: actorType, source: 'phase2_debug_panel' },
       }),
     })
     if (!response.ok) {
@@ -168,6 +190,11 @@ export default function VoiceDebugPanel() {
 
     const payload = (await response.json()) as TurnResponse
     setLastRoute(payload.route)
+    setLastScene(payload.scene)
+    setPermissionDecision(payload.permission_decision)
+    setSourceIds(payload.source_ids ?? [])
+    setContentUrl(payload.content_url)
+    setTaskId(payload.task_id)
     setAnswer(payload.spoken_text)
 
     if (voiceProvider === 'none') {
@@ -225,6 +252,17 @@ export default function VoiceDebugPanel() {
     localStorage.setItem(ASR_STORAGE_KEY, provider)
   }
 
+  function changeActorType(value: ActorType): void {
+    if (listening || busy) return
+    setActorType(value)
+    localStorage.setItem(ACTOR_STORAGE_KEY, value)
+  }
+
+  function openReceptionContent(): void {
+    if (!contentUrl) return
+    window.open(`${API_BASE_URL}${contentUrl}`, '_blank', 'noopener,noreferrer')
+  }
+
   return (
     <aside className={`voice-debug-panel ${expanded ? 'expanded' : 'collapsed'}`}>
       <button
@@ -232,15 +270,15 @@ export default function VoiceDebugPanel() {
         className="voice-panel-toggle"
         onClick={() => setExpanded((current) => !current)}
       >
-        {expanded ? '收起 Phase 1 语音' : '打开 Phase 1 语音'}
+        {expanded ? '收起 Phase 2 调试' : '打开 Phase 2 调试'}
       </button>
 
       {expanded ? (
         <div className="voice-panel-content">
           <div className="voice-panel-heading">
             <div>
-              <span className="voice-kicker">M3A-Fusion · Phase 1</span>
-              <strong>语音底座调试</strong>
+              <span className="voice-kicker">M3A-Fusion · Phase 2</span>
+              <strong>统一路由与接待知识</strong>
             </div>
             <span className={`voice-state state-${panelState}`}>{stateLabel(panelState)}</span>
           </div>
@@ -255,6 +293,19 @@ export default function VoiceDebugPanel() {
               >
                 <option value="zh">中文</option>
                 <option value="en">English</option>
+              </select>
+            </label>
+
+            <label>
+              身份
+              <select
+                value={actorType}
+                disabled={listening || busy}
+                onChange={(event) => changeActorType(event.target.value as ActorType)}
+              >
+                <option value="visitor">Visitor</option>
+                <option value="employee">Employee</option>
+                <option value="operator">Operator</option>
               </select>
             </label>
 
@@ -331,7 +382,7 @@ export default function VoiceDebugPanel() {
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !busy && !listening) void submitText()
               }}
-              placeholder="输入文字测试 /agent/turn"
+              placeholder="输入文字测试统一 /agent/turn"
             />
             <button
               type="button"
@@ -353,15 +404,29 @@ export default function VoiceDebugPanel() {
             </div>
           </div>
 
+          {contentUrl ? (
+            <button
+              type="button"
+              className="voice-content-open"
+              onClick={openReceptionContent}
+            >
+              在浏览器内容页打开接待资料
+            </button>
+          ) : null}
+
           <div className="voice-diagnostics">
+            <span>Actor: {actorType}</span>
             <span>Route: {lastRoute || '—'}</span>
+            <span>Scene: {lastScene || '—'}</span>
+            <span>Permission: {permissionDecision || '—'}</span>
+            <span>Task: {taskId || '—'}</span>
+            <span>Sources: {sourceIds.length ? sourceIds.join(', ') : '—'}</span>
             <span>Single voice owner: {voiceProvider}</span>
-            <span>Browser ASR: {browserCaptureRef.current.available() ? 'available' : 'unavailable'}</span>
           </div>
 
           {error ? <div className="voice-error">{error}</div> : null}
           <p className="voice-safety-note">
-            Provider 失败时只显示错误，不会自动启动第二个声音。
+            Phase 2 可创建仅规划任务，但不会执行真实 Office 操作；访客身份会被权限门控阻止。
           </p>
         </div>
       ) : null}
