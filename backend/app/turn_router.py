@@ -87,7 +87,7 @@ _RECEPTION_TERMS = (
     "what can you do",
     "introduce yourself",
 )
-_OFFICE_TERMS = (
+_OFFICE_ENTITY_TERMS = (
     "teams",
     "powerpoint",
     "ppt",
@@ -96,7 +96,6 @@ _OFFICE_TERMS = (
     "outlook",
     "onenote",
     "会议",
-    "演示",
     "幻灯片",
     "下一页",
     "上一页",
@@ -104,10 +103,6 @@ _OFFICE_TERMS = (
     "麦克风",
     "摄像头",
     "共享屏幕",
-    "打开",
-    "关闭",
-    "加入",
-    "离开",
     "生成文档",
     "邮件",
     "meeting",
@@ -119,10 +114,6 @@ _OFFICE_TERMS = (
     "microphone",
     "camera",
     "screen sharing",
-    "open",
-    "close",
-    "join",
-    "leave",
     "document",
     "email",
 )
@@ -181,11 +172,16 @@ def classify_turn(text: str, actor_type: ActorType) -> RouteDecision:
         return RouteDecision("realtime_direct", "reception", reason="direct_control_or_greeting")
 
     reception_match = _contains_any(lowered, _RECEPTION_TERMS)
-    office_match = _contains_any(lowered, _OFFICE_TERMS)
+    office_match = _contains_any(lowered, _OFFICE_ENTITY_TERMS)
+
+    # Reception content remains a reception request even when the user asks to
+    # "open" or "show" it. Workspace execution is introduced in Phase 3.
+    if reception_match and not office_match:
+        return RouteDecision("reception_knowledge", "reception", reason="reception_intent")
 
     if office_match:
         complex_goal = _contains_any(lowered, _COMPLEX_OFFICE_TERMS)
-        multiple_office_entities = sum(term in lowered for term in _OFFICE_TERMS) >= 3
+        multiple_office_entities = sum(term in lowered for term in _OFFICE_ENTITY_TERMS) >= 2
         route: TurnRoute = (
             "office_planned_task" if complex_goal or multiple_office_entities else "office_direct"
         )
