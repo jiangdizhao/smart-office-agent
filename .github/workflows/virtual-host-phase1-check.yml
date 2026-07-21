@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - integration/virtual-host
-      - phase2/unified-router-reception
   pull_request:
     paths:
       - "backend/**"
