@@ -1,5 +1,5 @@
 param(
-    [string]$PythonExe = "",
+    [string]$CondaEnvName = "smartoffice",
     [string]$Model = "gpt-realtime-2.1",
     [string]$HostAddress = "127.0.0.1",
     [int]$Port = 8000
@@ -7,81 +7,111 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Test-SmartOfficePython {
-    param([string]$Candidate)
+function Test-ProjectPython {
+    param(
+        [string]$Candidate,
+        [string]$ExpectedEnvName
+    )
 
-    if (-not $Candidate -or -not (Test-Path $Candidate)) {
+    if (-not $Candidate -or -not (Test-Path -LiteralPath $Candidate)) {
         return $false
     }
 
     try {
-        $probe = & $Candidate -c "import json, os, sys; print(json.dumps({'prefix': sys.prefix, 'version': list(sys.version_info[:3]), 'exe': sys.executable}))" 2>$null
+        $probe = & $Candidate -c "import json, sys; print(json.dumps({'prefix': sys.prefix, 'version': list(sys.version_info[:3]), 'exe': sys.executable}))" 2>$null
         if (-not $probe) {
             return $false
         }
 
-        $info = $probe | ConvertFrom-Json
+        $info = $probe | Select-Object -Last 1 | ConvertFrom-Json
         $envName = Split-Path -Leaf ([string]$info.prefix)
-        $isSmartOffice = $envName -ieq "smartoffice"
+        $isExpectedEnvironment = $envName -ieq $ExpectedEnvName
         $isSupportedPython = ([int]$info.version[0] -eq 3) -and ([int]$info.version[1] -ge 11)
-        return $isSmartOffice -and $isSupportedPython
+        return $isExpectedEnvironment -and $isSupportedPython
     }
     catch {
         return $false
     }
 }
 
-function Resolve-SmartOfficePython {
-    param([string]$ExplicitPython)
+function Add-Candidate {
+    param(
+        [System.Collections.Generic.List[string]]$Candidates,
+        [string]$Candidate
+    )
+
+    if ($Candidate -and -not $Candidates.Contains($Candidate)) {
+        $Candidates.Add($Candidate)
+    }
+}
+
+function Resolve-CondaEnvironmentPython {
+    param([string]$EnvironmentName)
 
     $candidates = New-Object System.Collections.Generic.List[string]
 
-    if ($ExplicitPython) {
-        $candidates.Add($ExplicitPython)
+    # First ask Conda for every registered environment. This works even when the
+    # caller is in base, in another environment, or in a child PowerShell.
+    try {
+        $envListJson = & conda env list --json 2>$null
+        if ($LASTEXITCODE -eq 0 -and $envListJson) {
+            $envList = $envListJson | ConvertFrom-Json
+            foreach ($environmentPath in $envList.envs) {
+                if ((Split-Path -Leaf ([string]$environmentPath)) -ieq $EnvironmentName) {
+                    Add-Candidate -Candidates $candidates -Candidate (Join-Path ([string]$environmentPath) "python.exe")
+                }
+            }
+        }
+    }
+    catch {
+        # Continue with deterministic filesystem candidates.
     }
 
+    # Resolve the conventional named environment beneath the active Conda base.
+    try {
+        $condaBase = (& conda info --base 2>$null | Select-Object -Last 1).Trim()
+        if ($condaBase) {
+            Add-Candidate -Candidates $candidates -Candidate (Join-Path $condaBase "envs\$EnvironmentName\python.exe")
+        }
+    }
+    catch {
+        # Continue with the remaining candidates.
+    }
+
+    # The active interpreter is accepted only when it is actually the requested
+    # named environment. A base Python can never pass Test-ProjectPython.
     try {
         $activePython = (Get-Command python -ErrorAction Stop).Source
-        if ($activePython) {
-            $candidates.Add($activePython)
-        }
+        Add-Candidate -Candidates $candidates -Candidate $activePython
     }
     catch {
-        # Continue to Conda-specific candidates.
+        # Python does not need to be on PATH when Conda discovery succeeds.
     }
 
-    if ($env:CONDA_PREFIX) {
-        $candidates.Add((Join-Path $env:CONDA_PREFIX "python.exe"))
+    if ($env:CONDA_PREFIX -and (Split-Path -Leaf $env:CONDA_PREFIX) -ieq $EnvironmentName) {
+        Add-Candidate -Candidates $candidates -Candidate (Join-Path $env:CONDA_PREFIX "python.exe")
     }
 
-    try {
-        $condaBase = (& conda info --base 2>$null).Trim()
-        if ($condaBase) {
-            $candidates.Add((Join-Path $condaBase "envs\smartoffice\python.exe"))
-        }
-    }
-    catch {
-        # Continue to known local candidates.
-    }
+    # Known Windows Conda layouts are last-resort automatic candidates.
+    Add-Candidate -Candidates $candidates -Candidate "D:\anaconda3\envs\$EnvironmentName\python.exe"
+    Add-Candidate -Candidates $candidates -Candidate "C:\Users\$env:USERNAME\anaconda3\envs\$EnvironmentName\python.exe"
+    Add-Candidate -Candidates $candidates -Candidate "C:\Users\$env:USERNAME\miniconda3\envs\$EnvironmentName\python.exe"
 
-    $candidates.Add("D:\anaconda3\envs\smartoffice\python.exe")
-    $candidates.Add("C:\Users\$env:USERNAME\anaconda3\envs\smartoffice\python.exe")
-    $candidates.Add("C:\Users\$env:USERNAME\miniconda3\envs\smartoffice\python.exe")
-
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        if (Test-SmartOfficePython -Candidate $candidate) {
-            return (Resolve-Path $candidate).Path
+    foreach ($candidate in $candidates) {
+        if (Test-ProjectPython -Candidate $candidate -ExpectedEnvName $EnvironmentName) {
+            return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
 
-    throw "Could not locate a Python 3.11+ interpreter in the smartoffice Conda environment. Activate smartoffice or pass -PythonExe explicitly."
+    $checked = if ($candidates.Count -gt 0) { $candidates -join "`n  - " } else { "(none discovered)" }
+    throw "Could not automatically locate Python 3.11+ in the '$EnvironmentName' Conda environment.`nChecked:`n  - $checked`nCreate it with: conda create -n $EnvironmentName python=3.11 -y"
 }
 
-$resolvedPython = Resolve-SmartOfficePython -ExplicitPython $PythonExe
+$resolvedPython = Resolve-CondaEnvironmentPython -EnvironmentName $CondaEnvName
 
 $dependencyProbe = & $resolvedPython -c "import fastapi, sse_starlette, uvicorn; print('ok')" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    throw "The selected smartoffice Python is missing backend dependencies. Run: `"$resolvedPython`" -m pip install -r requirements-smartoffice.txt`nDetails: $dependencyProbe"
+    throw "The automatically selected '$CondaEnvName' Python is missing backend dependencies.`nRun once:`n  conda run -n $CondaEnvName python -m pip install -r requirements-smartoffice.txt`nDetails: $dependencyProbe"
 }
 
 $secureKey = Read-Host "OpenAI API key" -AsSecureString
@@ -107,10 +137,13 @@ $env:OPENAI_REALTIME_MODEL = $Model
 $env:OPENAI_REALTIME_CONNECT_TIMEOUT_SECONDS = "30"
 
 Write-Host "Starting Smart Office Backend with Realtime voice..." -ForegroundColor Cyan
+Write-Host "Conda environment: $CondaEnvName"
 Write-Host "Python: $resolvedPython"
 Write-Host "Model: $Model"
 Write-Host "OPENAI_API_KEY: configured (value hidden)"
 Write-Host "Backend: http://${HostAddress}:$Port"
 Write-Host "Realtime status: http://${HostAddress}:$Port/api/realtime/status"
 
+# Calling the selected interpreter directly guarantees that Uvicorn and its
+# reload child process use the same Conda environment.
 & $resolvedPython -m uvicorn app.main:app --reload --host $HostAddress --port $Port
