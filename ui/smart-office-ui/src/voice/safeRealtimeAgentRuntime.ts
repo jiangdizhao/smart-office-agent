@@ -1,60 +1,45 @@
-import {
-  realtimeAgent as baseRealtimeAgent,
-  type RealtimeRuntimeStatus,
-  type VoiceLanguage,
-} from './realtimeAgentRuntime'
+import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
 
-/**
- * UI-facing facade for the shared Realtime singleton.
- *
- * The underlying runtime normally releases the physical microphone track at the
- * end of a turn. This facade also releases it when connection, commit, or
- * transcription fails, so every failed capture path has the same cleanup
- * guarantee as an explicit user abort.
- */
-class SafeRealtimeAgentRuntime {
-  async prewarm(language: VoiceLanguage): Promise<void> {
-    await baseRealtimeAgent.prewarm(language)
-  }
+const PATCH_FLAG = '__smartOfficeCaptureCleanupInstalled__'
 
-  async beginCapture(language: VoiceLanguage): Promise<void> {
-    try {
-      await baseRealtimeAgent.beginCapture(language)
-    } catch (error) {
-      await baseRealtimeAgent.abortCapture().catch(() => undefined)
-      throw error
-    }
-  }
-
-  async endCapture(): Promise<string> {
-    try {
-      return await baseRealtimeAgent.endCapture()
-    } catch (error) {
-      await baseRealtimeAgent.abortCapture().catch(() => undefined)
-      throw error
-    }
-  }
-
-  async abortCapture(): Promise<void> {
-    await baseRealtimeAgent.abortCapture()
-  }
-
-  async speakExact(text: string, language: VoiceLanguage): Promise<string> {
-    return await baseRealtimeAgent.speakExact(text, language)
-  }
-
-  async stopOutput(): Promise<void> {
-    await baseRealtimeAgent.stopOutput()
-  }
-
-  status(): RealtimeRuntimeStatus {
-    return baseRealtimeAgent.status()
-  }
-
-  async shutdown(): Promise<void> {
-    await baseRealtimeAgent.shutdown()
-  }
+type GuardedRealtimeAgent = typeof realtimeAgent & {
+  [PATCH_FLAG]?: boolean
 }
 
-export type { RealtimeRuntimeStatus, VoiceLanguage }
-export const realtimeAgent = new SafeRealtimeAgentRuntime()
+/**
+ * Install a single cleanup guard around the shared Realtime capture methods.
+ *
+ * The normal success path already replaces the physical microphone with the
+ * silent WebRTC track. The guard covers exceptional paths such as connection,
+ * audio-buffer commit, or transcription failures and guarantees that the real
+ * microphone track is stopped before the error reaches the UI.
+ */
+export function installRealtimeCaptureCleanup(): void {
+  const guardedAgent = realtimeAgent as GuardedRealtimeAgent
+  if (guardedAgent[PATCH_FLAG]) return
+
+  const originalBeginCapture = realtimeAgent.beginCapture.bind(realtimeAgent)
+  const originalEndCapture = realtimeAgent.endCapture.bind(realtimeAgent)
+
+  realtimeAgent.beginCapture = async (language: VoiceLanguage): Promise<void> => {
+    try {
+      await originalBeginCapture(language)
+    } catch (error) {
+      await realtimeAgent.abortCapture().catch(() => undefined)
+      throw error
+    }
+  }
+
+  realtimeAgent.endCapture = async (): Promise<string> => {
+    try {
+      return await originalEndCapture()
+    } catch (error) {
+      await realtimeAgent.abortCapture().catch(() => undefined)
+      throw error
+    }
+  }
+
+  guardedAgent[PATCH_FLAG] = true
+}
+
+installRealtimeCaptureCleanup()
