@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
+import './voice/safeRealtimeAgentRuntime'
 import App from './App.tsx'
 import VoiceDebugPanel from './voice/VoiceDebugPanel.tsx'
 
