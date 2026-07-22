@@ -160,10 +160,13 @@ Write-Host "Presentation monitor: $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE"
 Write-Host "Backend: http://${HostAddress}:$Port"
 Write-Host "Realtime status: http://${HostAddress}:$Port/api/realtime/status"
 Write-Host "Presentation status: http://${HostAddress}:$Port/api/presentation/status"
+Write-Host "Uvicorn reload: disabled for stable Office COM activation"
 
 Push-Location $backendDirectory
 try {
-    & $resolvedPython -m uvicorn app.main:app --reload --host $HostAddress --port $Port
+    # Office desktop COM servers are unreliable when started from Uvicorn's
+    # Windows reload/spawn child. Run a single interactive backend process.
+    & $resolvedPython -m uvicorn app.main:app --host $HostAddress --port $Port
 }
 finally {
     Pop-Location
