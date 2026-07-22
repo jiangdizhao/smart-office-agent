@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from app.models import ToolResult, VerificationResult
+from app.presentation_monitor import (
+    inspect_slideshow_monitor,
+    place_slideshow_on_target_monitor,
+)
 from app.presentation_verifier import verify_presentation_tool_result
 from app.tools.presentation_controller import (
     end_configured_slideshow,
@@ -66,6 +70,51 @@ def _validate_no_arguments(name: str, arguments: dict[str, Any]) -> ToolResult |
     return None
 
 
+def _merge_monitor_verification(
+    name: str,
+    verification: VerificationResult,
+    monitor_state: dict[str, Any],
+    *,
+    slideshow_active: bool,
+) -> VerificationResult:
+    monitor_required = slideshow_active and name in {
+        "presentation_start_slideshow",
+        "presentation_next_slide",
+        "presentation_previous_slide",
+        "presentation_go_to_slide",
+        "presentation_get_status",
+    }
+    if not monitor_required:
+        return verification.model_copy(
+            update={"raw": {**verification.raw, "monitor_state": monitor_state}}
+        )
+
+    monitor_ok = bool(monitor_state.get("monitor_placement_enforced"))
+    message = verification.message
+    if verification.ok and monitor_ok:
+        message = (
+            f"{message} Slide show verified on "
+            f"{monitor_state.get('slideshow_monitor_device')}."
+        )
+    elif verification.ok:
+        message = (
+            f"{message} Slide show was not verified on the configured monitor "
+            f"{monitor_state.get('target_monitor_device')}."
+        )
+    return verification.model_copy(
+        update={
+            "ok": verification.ok and monitor_ok,
+            "message": message,
+            "raw": {
+                **verification.raw,
+                "monitor_required": True,
+                "monitor_ok": monitor_ok,
+                "monitor_state": monitor_state,
+            },
+        }
+    )
+
+
 def execute_presentation_tool_call(
     name: str,
     arguments: dict[str, Any] | None = None,
@@ -73,7 +122,8 @@ def execute_presentation_tool_call(
     """Execute one GPT Realtime-selected Gate 2A presentation capability.
 
     The model selects a bounded capability, while this service owns validation,
-    execution, state verification, and the final observed PowerPoint status.
+    execution, secondary-display placement, state verification, and the final
+    observed PowerPoint status.
     """
 
     clean_arguments = dict(arguments or {})
@@ -126,6 +176,31 @@ def execute_presentation_tool_call(
         else:
             tool_result = end_configured_slideshow()
 
+    placement: dict[str, Any] | None = None
+    if name == "presentation_start_slideshow" and tool_result.ok:
+        placement = place_slideshow_on_target_monitor()
+        tool_result = tool_result.model_copy(
+            update={
+                "data": {
+                    **tool_result.data,
+                    "requested_state": {
+                        **dict(tool_result.data.get("requested_state") or {}),
+                        "target_monitor_device": placement.get("target_monitor_device"),
+                    },
+                },
+                "raw": {**tool_result.raw, "monitor_placement": placement},
+            }
+        )
+
     verification = verify_presentation_tool_result(tool_result)
     status = get_presentation_status()
+    monitor_state = placement or inspect_slideshow_monitor()
+    merged_status = {**status.data, **monitor_state}
+    status = status.model_copy(update={"data": merged_status})
+    verification = _merge_monitor_verification(
+        name,
+        verification,
+        monitor_state,
+        slideshow_active=bool(merged_status.get("slideshow_active")),
+    )
     return tool_result, verification, status
