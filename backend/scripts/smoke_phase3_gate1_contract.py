@@ -19,10 +19,11 @@ def main() -> None:
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
-    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_1"
+    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_2a"
     assert health_payload["capabilities"]["presentation_controller"] is True
     assert health_payload["capabilities"]["presentation_state_verifier"] is True
-    assert health_payload["capabilities"]["office_execution_via_turn"] is False
+    assert health_payload["capabilities"]["presentation_execution_via_turn"] is True
+    assert health_payload["capabilities"]["general_office_execution_via_turn"] is False
 
     status = client.get("/api/presentation/status")
     status.raise_for_status()
@@ -62,11 +63,12 @@ def main() -> None:
         assert open_payload["tool_result"]["tool_name"] == "presentation_open_configured"
         assert open_payload["verification_result"]["ok"] is False
 
-    phase2_status = client.get("/agent/turn/status")
-    phase2_status.raise_for_status()
-    assert phase2_status.json()["office_execution_enabled"] is False
+    turn_status = client.get("/agent/turn/status")
+    turn_status.raise_for_status()
+    assert turn_status.json()["office_execution_enabled"] is False
+    assert turn_status.json()["presentation_execution_enabled"] is True
 
-    print("PASS: Gate 1 presentation API, safety, and Phase 2 regression contracts are available.")
+    print("PASS: Gate 1 presentation API and safety contracts remain available under Gate 2A.")
 
 
 if __name__ == "__main__":
