@@ -33,9 +33,10 @@ def main() -> None:
     status = client.get("/agent/turn/status")
     status.raise_for_status()
     status_payload = status.json()
-    assert status_payload["phase"] == "m3a_fusion_phase_2"
+    assert status_payload["phase"] == "m3a_fusion_phase_3_gate_2a"
     assert status_payload["task_creation_enabled"] is True
     assert status_payload["office_execution_enabled"] is False
+    assert status_payload["presentation_execution_enabled"] is True
     assert "reception_knowledge" in status_payload["routes"]
     assert "office_planned_task" in status_payload["routes"]
     assert "approval_action" in status_payload["routes"]
@@ -78,7 +79,7 @@ def main() -> None:
     assert employee_direct["route"] == "office_direct"
     assert employee_direct["permission_decision"] == "allowed"
     assert employee_direct["task_id"] is None
-    assert "尚未执行" in employee_direct["spoken_text"]
+    assert "没有执行" in employee_direct["spoken_text"]
 
     employee_planned = post_turn(
         client,
@@ -123,7 +124,7 @@ def main() -> None:
     conversation.raise_for_status()
     assert conversation.json()["conversation"]["actor_type"] == "visitor"
 
-    print("PASS: Phase 2 unified routing, grounded reception, and permission gates are healthy.")
+    print("PASS: Phase 2 routing, grounded reception, and permission gates remain healthy under Gate 2A.")
 
 
 if __name__ == "__main__":
