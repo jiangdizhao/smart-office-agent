@@ -28,13 +28,16 @@ jobs:
           python -m compileall backend/app \
             backend/scripts/smoke_phase1_voice_contract.py \
             backend/scripts/smoke_phase2_router_contract.py \
-            backend/scripts/smoke_phase3_gate1_contract.py
+            backend/scripts/smoke_phase3_gate1_contract.py \
+            backend/scripts/smoke_phase3_gate2a_contract.py
       - name: Run Phase 1 regression contract
         run: python backend/scripts/smoke_phase1_voice_contract.py
       - name: Run Phase 2 router contract
         run: python backend/scripts/smoke_phase2_router_contract.py
       - name: Run Phase 3 Gate 1 presentation contract
         run: python backend/scripts/smoke_phase3_gate1_contract.py
+      - name: Run Phase 3 Gate 2A Realtime presentation contract
+        run: python backend/scripts/smoke_phase3_gate2a_contract.py
 
   frontend-build:
     runs-on: ubuntu-latest
