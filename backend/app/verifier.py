@@ -120,6 +120,15 @@ def verify_tool_result(
     poll_interval_seconds: float = 0.25,
     require_window_match: bool = False,
 ) -> VerificationResult:
+    if tool_result.tool_name.startswith("presentation_"):
+        from app.presentation_verifier import verify_presentation_tool_result
+
+        return verify_presentation_tool_result(
+            tool_result,
+            timeout_seconds=process_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
     if not tool_result.ok:
         return VerificationResult(
             ok=False,
