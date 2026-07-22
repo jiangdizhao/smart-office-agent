@@ -4,6 +4,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.models import ToolResult, VerificationResult
+from app.powerpoint_bootstrap import (
+    PowerPointBootstrapResult,
+    ensure_powerpoint_desktop_running,
+)
 from app.presentation_config import presentation_config
 from app.presentation_verifier import verify_presentation_tool_result
 from app.tools.presentation_controller import (
@@ -43,7 +47,13 @@ class PresentationActionResponse(BaseModel):
     verification_result: VerificationResult
 
 
-def _run_and_verify(tool_result: ToolResult) -> PresentationActionResponse:
+def _run_and_verify(
+    tool_result: ToolResult,
+    *,
+    bootstrap: PowerPointBootstrapResult | None = None,
+) -> PresentationActionResponse:
+    if bootstrap is not None:
+        tool_result.data["powerpoint_bootstrap"] = bootstrap.to_dict()
     verification = verify_presentation_tool_result(tool_result)
     return PresentationActionResponse(
         ok=tool_result.ok and verification.ok,
@@ -64,12 +74,20 @@ def presentation_status() -> PresentationStatusResponse:
 
 @router.post("/open", response_model=PresentationActionResponse)
 def presentation_open() -> PresentationActionResponse:
-    return _run_and_verify(open_configured_presentation())
+    bootstrap = ensure_powerpoint_desktop_running()
+    return _run_and_verify(
+        open_configured_presentation(),
+        bootstrap=bootstrap,
+    )
 
 
 @router.post("/slideshow/start", response_model=PresentationActionResponse)
 def presentation_start_slideshow() -> PresentationActionResponse:
-    return _run_and_verify(start_configured_slideshow())
+    bootstrap = ensure_powerpoint_desktop_running()
+    return _run_and_verify(
+        start_configured_slideshow(),
+        bootstrap=bootstrap,
+    )
 
 
 @router.post("/slideshow/next", response_model=PresentationActionResponse)
