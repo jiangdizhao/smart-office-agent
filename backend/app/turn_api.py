@@ -9,8 +9,9 @@ from pydantic import BaseModel, Field
 from app.conversation_store import ActorType, conversation_store
 from app.event_bus import event_bus
 from app.executor import run_task_plan_only
-from app.models import ApprovalRequest, TaskSession
+from app.models import ApprovalRequest, TaskSession, ToolResult, VerificationResult
 from app.planner import plan_task
+from app.presentation_actions import execute_presentation_tool_call
 from app.reception_knowledge import reception_knowledge
 from app.state_store import state_store
 from app.task_graph import build_task_graph, task_graph_event_data
@@ -21,6 +22,13 @@ router = APIRouter(tags=["agent-turn"])
 Language = Literal["zh", "en"]
 InputSource = Literal["text", "voice", "touch", "keyboard", "hardware"]
 PermissionDecision = Literal["allowed", "denied", "not_required"]
+
+
+class RealtimePresentationToolCall(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    call_id: str | None = Field(default=None, max_length=240)
+    source: Literal["gpt_realtime"] = "gpt_realtime"
 
 
 class TurnRequest(BaseModel):
@@ -34,6 +42,7 @@ class TurnRequest(BaseModel):
     input_source: InputSource = "text"
     actor_context: dict[str, Any] = Field(default_factory=dict)
     active_task_id: str | None = None
+    realtime_tool_call: RealtimePresentationToolCall | None = None
 
 
 class TurnResponse(BaseModel):
@@ -51,7 +60,12 @@ class TurnResponse(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     content_url: str | None = None
     route_reason: str = ""
-    phase: str = "m3a_fusion_phase_2"
+    intent_source: str | None = None
+    realtime_tool_call: RealtimePresentationToolCall | None = None
+    tool_result: ToolResult | None = None
+    verification_result: VerificationResult | None = None
+    presentation_status: dict[str, Any] | None = None
+    phase: str = "m3a_fusion_phase_3_gate_2a"
 
 
 def _normalise_text(text: str) -> str:
@@ -76,11 +90,11 @@ def _create_plan_only_task(text: str) -> TaskSession:
     event_bus.publish(
         task_id=task.task_id,
         event_type="task_created",
-        message="Task session created by the Phase 2 unified turn router.",
+        message="Task session created by the unified turn router.",
         data={
             "execute": False,
             "step_count": len(task_graph.steps),
-            "source": "agent_turn_phase2",
+            "source": "agent_turn_phase2_compatibility",
         },
     )
     event_bus.publish(
@@ -111,7 +125,7 @@ def _cancel_task(task_id: str) -> TaskSession | None:
         task_id=task_id,
         event_type="cancelled",
         message="Task cancellation requested through /agent/turn.",
-        data={"source": "agent_turn_phase2"},
+        data={"source": "agent_turn"},
     )
     return state_store.get_task(task_id)
 
@@ -160,9 +174,9 @@ def _direct_reply(
 
     if lowered in {"你好", "您好", "hello", "hi", "good morning", "good afternoon"}:
         return (
-            "您好，我是 Smart Office 虚拟接待与办公助手。您可以询问公开资料，也可以以员工身份提出办公任务。"
+            "您好，我是 Smart Office 虚拟接待与办公助手。您可以询问公开资料，也可以以员工身份控制当前演示。"
             if language == "zh"
-            else "Hello. I am the Smart Office virtual host and office assistant. You can ask about approved public information or submit office goals as an employee."
+            else "Hello. I am the Smart Office virtual host and office assistant. You can ask about approved public information or control the current presentation as an employee."
         )
 
     return (
@@ -174,10 +188,74 @@ def _direct_reply(
 
 def _office_permission_denied(language: Language) -> str:
     return (
-        "该请求属于办公操作。当前身份是访客，不能创建或执行 Office 任务；请由员工或操作员确认身份后再试。"
+        "该请求属于办公操作。当前身份是访客，不能控制 PowerPoint；请切换为员工或操作员身份后再试。"
         if language == "zh"
-        else "This is an office action. The current actor is a visitor and cannot create or execute Office tasks. An employee or operator must confirm their identity first."
+        else "This is an office action. A visitor cannot control PowerPoint. Switch to an employee or operator identity and try again."
     )
+
+
+def _presentation_status_reply(status: dict[str, Any], language: Language) -> str:
+    if not status.get("presentation_open"):
+        return "PowerPoint 当前尚未打开。" if language == "zh" else "PowerPoint is not currently open."
+    total = status.get("total_slides")
+    if status.get("slideshow_active"):
+        current = status.get("current_slide")
+        monitor = status.get("slideshow_monitor_device") or status.get("target_monitor_device")
+        return (
+            f"演示正在进行，当前是第 {current} 页，共 {total} 页，放映屏幕为 {monitor}。"
+            if language == "zh"
+            else f"The slide show is active on slide {current} of {total}, on {monitor}."
+        )
+    return (
+        f"演示文稿已经打开，共 {total} 页，但尚未开始放映。"
+        if language == "zh"
+        else f"The presentation is open with {total} slides, but the slide show has not started."
+    )
+
+
+def _presentation_action_reply(
+    name: str,
+    tool_result: ToolResult,
+    verification: VerificationResult,
+    status: dict[str, Any],
+    language: Language,
+) -> str:
+    if not tool_result.ok:
+        return (
+            f"PowerPoint 操作没有执行：{tool_result.message}"
+            if language == "zh"
+            else f"The PowerPoint action was not executed: {tool_result.message}"
+        )
+    if not verification.ok:
+        return (
+            f"PowerPoint 已收到操作，但实际状态没有通过验证：{verification.message}"
+            if language == "zh"
+            else f"PowerPoint accepted the action, but the observed state did not pass verification: {verification.message}"
+        )
+    if name == "presentation_get_status":
+        return _presentation_status_reply(status, language)
+
+    current = status.get("current_slide")
+    total = status.get("total_slides")
+    monitor = status.get("slideshow_monitor_device") or status.get("target_monitor_device")
+    zh_messages = {
+        "presentation_open_configured": f"已打开演示文稿 Loss.pptx，共 {total} 页。",
+        "presentation_start_slideshow": f"演示已经开始，并已在 {monitor} 放映。当前是第 {current} 页。",
+        "presentation_next_slide": f"已翻到下一页。当前是第 {current} 页，共 {total} 页。",
+        "presentation_previous_slide": f"已返回上一页。当前是第 {current} 页，共 {total} 页。",
+        "presentation_go_to_slide": f"已跳转到第 {current} 页，共 {total} 页。",
+        "presentation_end_slideshow": "演示已经结束。",
+    }
+    en_messages = {
+        "presentation_open_configured": f"Loss.pptx is open with {total} slides.",
+        "presentation_start_slideshow": f"The slide show has started on {monitor}. It is on slide {current}.",
+        "presentation_next_slide": f"Moved to the next slide. This is slide {current} of {total}.",
+        "presentation_previous_slide": f"Moved to the previous slide. This is slide {current} of {total}.",
+        "presentation_go_to_slide": f"Moved to slide {current} of {total}.",
+        "presentation_end_slideshow": "The slide show has ended.",
+    }
+    messages = zh_messages if language == "zh" else en_messages
+    return messages.get(name, tool_result.message)
 
 
 @router.get("/agent/turn/status")
@@ -185,7 +263,7 @@ def turn_status() -> dict:
     knowledge_status = reception_knowledge.status()
     return {
         "ok": True,
-        "phase": "m3a_fusion_phase_2",
+        "phase": "m3a_fusion_phase_3_gate_2a",
         "routes": [
             "realtime_direct",
             "reception_knowledge",
@@ -197,6 +275,8 @@ def turn_status() -> dict:
         "actor_types": ["visitor", "employee", "operator"],
         "task_creation_enabled": True,
         "office_execution_enabled": False,
+        "presentation_execution_enabled": True,
+        "presentation_intent_source": "gpt_realtime_function_call",
         "knowledge_mode": knowledge_status["mode"],
         "knowledge_content_version": knowledge_status["content_version"],
     }
@@ -229,6 +309,64 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
             actor_type=actor_type,
         )
 
+    if req.realtime_tool_call is not None:
+        permission_decision: PermissionDecision = "denied" if actor_type == "visitor" else "allowed"
+        if permission_decision == "denied":
+            spoken_text = _office_permission_denied(req.language)
+            conversation_store.update(
+                req.conversation_id,
+                current_scene="office",
+                last_visible_answer=spoken_text,
+                last_command=normalized_text,
+            )
+            return TurnResponse(
+                conversation_id=req.conversation_id,
+                route="office_direct",
+                normalized_text=normalized_text,
+                spoken_text=spoken_text,
+                actor_type=actor_type,
+                scene="office",
+                permission_decision=permission_decision,
+                route_reason="GPT Realtime selected a presentation capability, but the actor permission gate denied execution.",
+                intent_source="gpt_realtime_function_call",
+                realtime_tool_call=req.realtime_tool_call,
+            )
+
+        tool_result, verification, status_result = await asyncio.to_thread(
+            execute_presentation_tool_call,
+            req.realtime_tool_call.name,
+            req.realtime_tool_call.arguments,
+        )
+        status = dict(status_result.data)
+        spoken_text = _presentation_action_reply(
+            req.realtime_tool_call.name,
+            tool_result,
+            verification,
+            status,
+            req.language,
+        )
+        conversation_store.update(
+            req.conversation_id,
+            current_scene="office",
+            last_visible_answer=spoken_text,
+            last_command=normalized_text,
+        )
+        return TurnResponse(
+            conversation_id=req.conversation_id,
+            route="office_direct",
+            normalized_text=normalized_text,
+            spoken_text=spoken_text,
+            actor_type=actor_type,
+            scene="office",
+            permission_decision=permission_decision,
+            route_reason="GPT Realtime selected a registered Gate 2A presentation capability; Backend validated, executed, and verified it.",
+            intent_source="gpt_realtime_function_call",
+            realtime_tool_call=req.realtime_tool_call,
+            tool_result=tool_result,
+            verification_result=verification,
+            presentation_status=status,
+        )
+
     decision = classify_turn(normalized_text, actor_type)
     spoken_text = ""
     task_id: str | None = None
@@ -258,9 +396,9 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
         elif decision.route == "office_direct":
             permission_decision = "allowed"
             spoken_text = (
-                f"已识别为办公操作：{normalized_text}。Phase 2 只完成路由和权限判断，尚未执行真实 Office 操作。"
+                "该办公请求没有携带 GPT Realtime 的受控 PowerPoint Function Call，因此没有执行。请重新说出明确的演示命令。"
                 if req.language == "zh"
-                else f"This was classified as an office action: {normalized_text}. Phase 2 performs routing and permission checks only; no real Office action was executed."
+                else "This office request did not include a controlled GPT Realtime PowerPoint function call, so it was not executed. Please state a clear presentation command."
             )
         else:
             permission_decision = "allowed"
@@ -274,9 +412,9 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 set_active_task=True,
             )
             spoken_text = (
-                "我已创建一个仅规划的办公任务。系统会展示步骤，但 Phase 2 不会执行真实 Office 操作。"
+                "这是复合办公请求。Gate 2A 只执行单个演示动作，因此当前仅创建规划任务，不执行真实 Office 操作。"
                 if req.language == "zh"
-                else "I created a plan-only office task. The system will show the steps, but Phase 2 will not execute real Office actions."
+                else "This is a compound office request. Gate 2A executes one presentation action at a time, so this request is plan-only and no real Office action was executed."
             )
 
     elif decision.route == "approval_action":
