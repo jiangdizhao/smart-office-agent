@@ -2,6 +2,12 @@ doc/
 docs/
 data/
 logs/
+demo_files/*.ppt
+demo_files/*.pptx
+demo_files/*.pptm
+demo_files/*.ppsx
+demo_files/*.ppsm
+demo_files/LOG/
 
 critical.txt
 download_cli.ps1
@@ -19,4 +25,3 @@ dist/
 .DS_Store
 
 smart-office-ui/
-
