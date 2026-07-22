@@ -31,10 +31,60 @@ def _target_monitor() -> dict[str, Any] | None:
     return None
 
 
+def _enumerate_powerpoint_slideshow_hwnd(
+    *,
+    process_id: int,
+    main_hwnd: int | None,
+    presentation_name: str,
+) -> int | None:
+    try:
+        import win32gui
+        import win32process
+    except ImportError:
+        return None
+
+    candidates: list[tuple[int, int]] = []
+    expected_title = presentation_name.casefold()
+
+    def collect(hwnd: int, _extra: Any) -> None:
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            _thread_id, owner_pid = win32process.GetWindowThreadProcessId(hwnd)
+            if int(owner_pid) != process_id or (main_hwnd and hwnd == main_hwnd):
+                return
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            area = max(0, right - left) * max(0, bottom - top)
+            if area <= 0:
+                return
+            class_name = win32gui.GetClassName(hwnd).casefold()
+            title = win32gui.GetWindowText(hwnd).casefold()
+            score = min(area, 20_000_000)
+            if "screenclass" in class_name or "slideshow" in class_name:
+                score += 100_000_000
+            if "powerpoint slide show" in title or "powerpoint 幻灯片放映" in title:
+                score += 80_000_000
+            if expected_title and expected_title in title:
+                score += 40_000_000
+            candidates.append((score, hwnd))
+        except Exception:
+            return
+
+    try:
+        win32gui.EnumWindows(collect, None)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return int(candidates[0][1])
+
+
 def _active_slideshow_hwnd() -> int | None:
     try:
         import pythoncom
         import win32com.client
+        import win32process
     except ImportError:
         return None
 
@@ -48,9 +98,29 @@ def _active_slideshow_hwnd() -> int | None:
             windows = application.SlideShowWindows
             if int(windows.Count) < 1:
                 return None
-            return int(windows.Item(1).HWND)
+            slide_show_window = windows.Item(1)
         except Exception:
             return None
+
+        # Some Office builds expose HWND directly on SlideShowWindow. Prefer it.
+        try:
+            return int(slide_show_window.HWND)
+        except Exception:
+            pass
+
+        # Other builds omit that property from late-bound COM. Fall back to the
+        # top-level Win32 window owned by the same POWERPNT process.
+        try:
+            main_hwnd = int(application.HWND)
+            _thread_id, process_id = win32process.GetWindowThreadProcessId(main_hwnd)
+            presentation_name = str(slide_show_window.Presentation.Name)
+        except Exception:
+            return None
+        return _enumerate_powerpoint_slideshow_hwnd(
+            process_id=int(process_id),
+            main_hwnd=main_hwnd,
+            presentation_name=presentation_name,
+        )
     finally:
         pythoncom.CoUninitialize()
 
