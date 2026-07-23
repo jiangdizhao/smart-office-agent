@@ -14,9 +14,10 @@ type PatchableRealtimeAgent = {
   transcriptionInstructions: () => string
 }
 
-type ConnectionGuardedRealtimeAgent = typeof realtimeAgent & {
+type ConnectionGuardedRealtimeAgent = {
   [CONNECTION_PATCH_FLAG]?: boolean
   connectPromise?: Promise<void> | null
+  shutdown: () => Promise<void>
 }
 
 function timeoutError(message: string): Error {
@@ -57,7 +58,7 @@ async function resetStalledConnection(agent: ConnectionGuardedRealtimeAgent): Pr
  * await the same stale connectPromise.
  */
 export function installRealtimeConnectionGuard(): void {
-  const guardedAgent = realtimeAgent as ConnectionGuardedRealtimeAgent
+  const guardedAgent = realtimeAgent as unknown as ConnectionGuardedRealtimeAgent
   if (guardedAgent[CONNECTION_PATCH_FLAG]) return
 
   const originalPrewarm = realtimeAgent.prewarm.bind(realtimeAgent)
@@ -101,7 +102,9 @@ export function installRealtimeCaptureCleanup(): void {
       )
     } catch (error) {
       await realtimeAgent.abortCapture().catch(() => undefined)
-      await resetStalledConnection(realtimeAgent as ConnectionGuardedRealtimeAgent)
+      await resetStalledConnection(
+        realtimeAgent as unknown as ConnectionGuardedRealtimeAgent,
+      )
       throw error
     }
   }
