@@ -123,8 +123,18 @@ if (-not $env:SMART_OFFICE_PRESENTATION_MONITOR_NUMBER) {
 if (-not $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL) {
     $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL = "jiangdizhao1@outlook.com"
 }
-if (-not $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE) {
+
+$usingDefaultRecipientFile = -not $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+if ($usingDefaultRecipientFile) {
     $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = Join-Path $repoRoot "config\email_recipients.json"
+    $recipientTemplate = Join-Path $repoRoot "config\email_recipients.example.json"
+    if (-not (Test-Path -LiteralPath $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE)) {
+        if (-not (Test-Path -LiteralPath $recipientTemplate)) {
+            throw "Recipient template was not found: $recipientTemplate"
+        }
+        Copy-Item -LiteralPath $recipientTemplate -Destination $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+        Write-Host "Created local recipient file from template: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE" -ForegroundColor Yellow
+    }
 }
 
 Push-Location $backendDirectory
