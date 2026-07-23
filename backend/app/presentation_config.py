@@ -32,7 +32,7 @@ def _normalise_recipient_key(value: str) -> str:
 def _validate_email(value: str) -> str:
     email = value.strip()
     if not _EMAIL_PATTERN.fullmatch(email):
-        raise ValueError(f"Invalid email address in Smart Office recipient allowlist: {value!r}")
+        raise ValueError(f"Invalid email address in Smart Office recipient file: {value!r}")
     return email
 
 
@@ -46,12 +46,37 @@ class EmailRecipient:
         return {"key": self.key, "name": self.name, "email": self.email}
 
 
+@dataclass(frozen=True)
+class EmailRecipientDirectory:
+    config_path: Path
+    default_recipient_key: str
+    recipients: tuple[EmailRecipient, ...]
+
+    def resolve(self, key: str | None = None) -> EmailRecipient:
+        requested_key = _normalise_recipient_key(key or self.default_recipient_key)
+        for recipient in self.recipients:
+            if recipient.key == requested_key:
+                return recipient
+        available = ", ".join(recipient.key for recipient in self.recipients)
+        raise ValueError(
+            f"Unknown Smart Office email recipient key: {requested_key}. Available: {available}."
+        )
+
+    def public_catalog(self) -> list[dict[str, str]]:
+        return [recipient.public_dict() for recipient in self.recipients]
+
+
 def _recipient_from_value(key: str, value: Any) -> EmailRecipient:
     normalised_key = _normalise_recipient_key(key)
     if isinstance(value, str):
         name = normalised_key.replace("_", " ").replace("-", " ").title()
         email = value
     elif isinstance(value, dict):
+        unexpected = set(value) - {"name", "email"}
+        if unexpected:
+            raise ValueError(
+                f"Recipient {normalised_key!r} contains unsupported fields: {sorted(unexpected)}."
+            )
         name = str(value.get("name") or normalised_key).strip()
         email = str(value.get("email") or "").strip()
     else:
@@ -67,35 +92,57 @@ def _recipient_from_value(key: str, value: Any) -> EmailRecipient:
     )
 
 
-def _email_recipients_from_environment() -> tuple[EmailRecipient, ...]:
-    legacy_name = os.environ.get("SMART_OFFICE_DEMO_RECIPIENT_NAME", "Rico").strip() or "Rico"
-    legacy_email = os.environ.get(
-        "SMART_OFFICE_DEMO_RECIPIENT_EMAIL",
-        "jiangdizhao@gmail.com",
-    ).strip()
-    catalog: dict[str, EmailRecipient] = {
-        "rico": EmailRecipient(
-            key="rico",
-            name=legacy_name,
-            email=_validate_email(legacy_email),
+def load_email_recipient_directory(path: Path) -> EmailRecipientDirectory:
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ValueError(f"Smart Office email recipient file was not found: {resolved}")
+
+    try:
+        parsed = json.loads(resolved.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Smart Office email recipient file is not valid JSON: {resolved}: {exc}"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Smart Office email recipient file must contain one JSON object.")
+    unexpected = set(parsed) - {"default_recipient_key", "recipients"}
+    if unexpected:
+        raise ValueError(
+            f"Smart Office email recipient file contains unsupported fields: {sorted(unexpected)}."
         )
-    }
 
-    raw = os.environ.get("SMART_OFFICE_EMAIL_RECIPIENTS_JSON", "").strip()
-    if raw:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
+    raw_recipients = parsed.get("recipients")
+    if not isinstance(raw_recipients, dict) or not raw_recipients:
+        raise ValueError("Smart Office email recipient file must contain a non-empty recipients object.")
+
+    catalog: dict[str, EmailRecipient] = {}
+    seen_emails: dict[str, str] = {}
+    for raw_key, value in raw_recipients.items():
+        recipient = _recipient_from_value(str(raw_key), value)
+        if recipient.key in catalog:
+            raise ValueError(f"Duplicate recipient key after normalization: {recipient.key}.")
+        folded_email = recipient.email.casefold()
+        if folded_email in seen_emails:
             raise ValueError(
-                "SMART_OFFICE_EMAIL_RECIPIENTS_JSON must be valid JSON."
-            ) from exc
-        if not isinstance(parsed, dict):
-            raise ValueError("SMART_OFFICE_EMAIL_RECIPIENTS_JSON must be a JSON object.")
-        for raw_key, value in parsed.items():
-            recipient = _recipient_from_value(str(raw_key), value)
-            catalog[recipient.key] = recipient
+                f"Recipient email {recipient.email} is assigned to both "
+                f"{seen_emails[folded_email]!r} and {recipient.key!r}."
+            )
+        catalog[recipient.key] = recipient
+        seen_emails[folded_email] = recipient.key
 
-    return tuple(catalog[key] for key in sorted(catalog))
+    default_key = _normalise_recipient_key(str(parsed.get("default_recipient_key") or ""))
+    if default_key not in catalog:
+        available = ", ".join(catalog)
+        raise ValueError(
+            f"default_recipient_key {default_key!r} is not present in recipients. Available: {available}."
+        )
+
+    return EmailRecipientDirectory(
+        config_path=resolved,
+        default_recipient_key=default_key,
+        recipients=tuple(catalog.values()),
+    )
 
 
 @dataclass(frozen=True)
@@ -105,21 +152,11 @@ class PresentationRuntimeConfig:
     target_monitor_device: str
     target_monitor_number: int
     outlook_sender_email: str
-    email_recipients: tuple[EmailRecipient, ...]
-    default_recipient_key: str
+    recipient_config_path: Path
     close_powerpoint_when_empty: bool = False
 
     @classmethod
     def from_environment(cls) -> "PresentationRuntimeConfig":
-        recipients = _email_recipients_from_environment()
-        default_key = _normalise_recipient_key(
-            os.environ.get("SMART_OFFICE_DEFAULT_RECIPIENT_KEY", "rico")
-        )
-        if default_key not in {recipient.key for recipient in recipients}:
-            raise ValueError(
-                f"SMART_OFFICE_DEFAULT_RECIPIENT_KEY {default_key!r} is not present in "
-                "SMART_OFFICE_EMAIL_RECIPIENTS_JSON."
-            )
         return cls(
             presentation_path=_resolve_repo_path(
                 os.environ.get("SMART_OFFICE_DEMO_PPT", "demo_files/Loss.pptx")
@@ -139,8 +176,12 @@ class PresentationRuntimeConfig:
                 "SMART_OFFICE_OUTLOOK_SENDER_EMAIL",
                 "jiangdizhao1@outlook.com",
             ).strip(),
-            email_recipients=recipients,
-            default_recipient_key=default_key,
+            recipient_config_path=_resolve_repo_path(
+                os.environ.get(
+                    "SMART_OFFICE_EMAIL_RECIPIENTS_FILE",
+                    "config/email_recipients.json",
+                )
+            ),
             close_powerpoint_when_empty=os.environ.get(
                 "SMART_OFFICE_CLOSE_POWERPOINT_WHEN_EMPTY",
                 "false",
@@ -148,15 +189,21 @@ class PresentationRuntimeConfig:
             in {"1", "true", "yes", "on"},
         )
 
+    def recipient_directory(self) -> EmailRecipientDirectory:
+        # Deliberately read on every call. Users can edit the file while the Backend
+        # is running, and the next status/draft/send action sees the new contents.
+        return load_email_recipient_directory(self.recipient_config_path)
+
+    @property
+    def email_recipients(self) -> tuple[EmailRecipient, ...]:
+        return self.recipient_directory().recipients
+
+    @property
+    def default_recipient_key(self) -> str:
+        return self.recipient_directory().default_recipient_key
+
     def resolve_recipient(self, key: str | None = None) -> EmailRecipient:
-        requested_key = _normalise_recipient_key(key or self.default_recipient_key)
-        for recipient in self.email_recipients:
-            if recipient.key == requested_key:
-                return recipient
-        available = ", ".join(recipient.key for recipient in self.email_recipients)
-        raise ValueError(
-            f"Unknown Smart Office email recipient key: {requested_key}. Available: {available}."
-        )
+        return self.recipient_directory().resolve(key)
 
     @property
     def recipient_name(self) -> str:
@@ -167,9 +214,11 @@ class PresentationRuntimeConfig:
         return self.resolve_recipient().email
 
     def recipient_catalog(self) -> list[dict[str, str]]:
-        return [recipient.public_dict() for recipient in self.email_recipients]
+        return self.recipient_directory().public_catalog()
 
     def public_dict(self) -> dict:
+        directory = self.recipient_directory()
+        default_recipient = directory.resolve()
         payload = asdict(self)
         payload["presentation_path"] = str(self.presentation_path)
         payload["presentation_path_relative"] = _relative_or_absolute(self.presentation_path)
@@ -177,10 +226,16 @@ class PresentationRuntimeConfig:
         payload["output_directory"] = str(self.output_directory)
         payload["output_directory_relative"] = _relative_or_absolute(self.output_directory)
         payload["output_directory_exists"] = self.output_directory.is_dir()
-        payload["email_recipients"] = self.recipient_catalog()
-        payload["default_recipient"] = self.resolve_recipient().public_dict()
-        payload["recipient_name"] = self.recipient_name
-        payload["recipient_email"] = self.recipient_email
+        payload["recipient_config_path"] = str(self.recipient_config_path)
+        payload["recipient_config_path_relative"] = _relative_or_absolute(
+            self.recipient_config_path
+        )
+        payload["recipient_config_exists"] = self.recipient_config_path.is_file()
+        payload["email_recipients"] = directory.public_catalog()
+        payload["default_recipient_key"] = directory.default_recipient_key
+        payload["default_recipient"] = default_recipient.public_dict()
+        payload["recipient_name"] = default_recipient.name
+        payload["recipient_email"] = default_recipient.email
         payload["email_send_enabled"] = False
         payload["approval_gated_email_send_enabled"] = True
         payload["unrestricted_email_send_enabled"] = False
