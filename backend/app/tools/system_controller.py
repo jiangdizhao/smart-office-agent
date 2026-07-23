@@ -159,12 +159,13 @@ def _read_brightness() -> dict[str, Any]:
 
 
 def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
-    """Set brightness through the concrete SWbemObject monitor instance.
+    """Invoke WmiSetBrightness and leave final success to observed-state readback.
 
-    ``SWbemObject.ExecMethod_`` owns the underscored method. The namespace
-    service is ``SWbemServices`` and exposes ``ExecMethod`` without an
-    underscore. Calling ``service.ExecMethod_`` therefore raises AttributeError.
-    Explicit named inputs avoid the positional UInt32/UInt8 marshaling issue.
+    Some pywin32/SWbem provider combinations return ``None`` even when the
+    provider accepts the call. The target machine demonstrates this behaviour:
+    PowerShell prints no return object but CurrentBrightness changes. Therefore
+    a missing output object is diagnostic information, not an execution failure.
+    A non-zero ReturnValue is still rejected when the provider supplies one.
     """
     instances = list(
         service.ExecQuery(
@@ -210,15 +211,27 @@ def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
             )
             invocation = "SWbemServices.ExecMethod"
 
-        return_value = int(output_parameters.Properties_.Item("ReturnValue").Value)
+        return_value: int | None = None
+        properties = (
+            getattr(output_parameters, "Properties_", None)
+            if output_parameters is not None
+            else None
+        )
+        if properties is not None:
+            return_property = properties.Item("ReturnValue")
+            raw_return_value = getattr(return_property, "Value", None)
+            if raw_return_value is not None:
+                return_value = int(raw_return_value)
+
         results.append(
             {
                 "instance_name": str(instance.InstanceName),
                 "return_value": return_value,
+                "provider_output_present": output_parameters is not None,
                 "invocation": invocation,
             }
         )
-        if return_value != 0:
+        if return_value not in (None, 0):
             raise RuntimeError(
                 f"WmiSetBrightness returned {return_value} for {instance.InstanceName}."
             )
@@ -349,8 +362,8 @@ def set_system_brightness(value_percent: int) -> ToolResult:
                 f"Display brightness set to {target}%."
                 if verified
                 else (
-                    f"WMI accepted brightness {target}%, but the observed value was "
-                    f"{observed_percent}."
+                    f"WMI brightness command completed, but the observed value was "
+                    f"{observed_percent} instead of {target}%."
                 )
             ),
             data={
