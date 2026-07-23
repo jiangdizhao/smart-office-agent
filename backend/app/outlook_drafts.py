@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Any, Literal
 from app.models import ToolResult
 from app.office_artifacts import latest_summary_path
 from app.presentation_config import presentation_config
+
+LOGGER = logging.getLogger(__name__)
 
 OUTLOOK_MAIL_ITEM = 0
 OUTLOOK_TO_RECIPIENT = 1
@@ -30,8 +33,8 @@ def outlook_draft_status() -> dict[str, Any]:
         except OSError:
             registered = False
 
-    sender = presentation_config.outlook_sender_email
-    recipient = presentation_config.recipient_email
+    sender = presentation_config.outlook_sender_email.strip()
+    recipient = presentation_config.recipient_email.strip()
     addresses_are_distinct = sender.casefold() != recipient.casefold()
     return {
         "provider": "classic_outlook_com",
@@ -50,17 +53,10 @@ def _clean_subject(subject: str | None, language: Literal["zh", "en"]) -> str:
     clean = " ".join((subject or "").split())[:180]
     if clean:
         return clean
-    return (
-        "演示摘要：Loss.pptx"
-        if language == "zh"
-        else "Presentation summary: Loss.pptx"
-    )
+    return "演示摘要：Loss.pptx" if language == "zh" else "Presentation summary: Loss.pptx"
 
 
-def _message_body(
-    summary_text: str,
-    language: Literal["zh", "en"],
-) -> str:
+def _message_body(summary_text: str, language: Literal["zh", "en"]) -> str:
     if language == "zh":
         return (
             f"{presentation_config.recipient_name}，您好：\n\n"
@@ -116,24 +112,105 @@ def _find_sender_account(namespace: Any, expected_email: str) -> tuple[Any, list
     return match, detected
 
 
+def _recipient_smtp_address(recipient: Any) -> str:
+    try:
+        value = str(recipient.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) or "").strip()
+        if value:
+            return value
+    except Exception:
+        pass
+
+    try:
+        entry = recipient.AddressEntry
+        entry_type = str(getattr(entry, "Type", "") or "").upper()
+        if entry_type == "EX":
+            exchange_user = entry.GetExchangeUser()
+            value = str(getattr(exchange_user, "PrimarySmtpAddress", "") or "").strip()
+            if value:
+                return value
+        value = str(getattr(entry, "Address", "") or "").strip()
+        if value:
+            return value
+    except Exception:
+        pass
+
+    try:
+        return str(getattr(recipient, "Address", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def _recipient_smtp_addresses(mail: Any) -> list[str]:
     recipients = mail.Recipients
     addresses: list[str] = []
     for index in range(1, int(recipients.Count) + 1):
-        recipient = recipients.Item(index)
-        value = ""
-        try:
-            value = str(
-                recipient.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) or ""
-            ).strip()
-        except Exception:
-            try:
-                value = str(getattr(recipient, "Address", "") or "").strip()
-            except Exception:
-                value = ""
+        value = _recipient_smtp_address(recipients.Item(index))
         if value:
             addresses.append(value)
     return addresses
+
+
+def _exception_details(exc: Exception) -> dict[str, Any]:
+    return {
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "hresult": getattr(exc, "hresult", None),
+        "args": repr(getattr(exc, "args", ())),
+    }
+
+
+def _failed_result(
+    *,
+    message: str,
+    summary_path: Path | None,
+    sender_email: str,
+    recipient_email: str,
+    stage: str,
+    detected_accounts: list[str] | None = None,
+    entry_id: str = "",
+    exc: Exception | None = None,
+) -> ToolResult:
+    details: dict[str, Any] = {
+        "execution_mode": "failed",
+        "requested_state": {"outlook_draft_created": True},
+        "summary_path": str(summary_path) if summary_path else None,
+        "summary_path_relative": _relative_or_absolute(summary_path) if summary_path else None,
+        "sender_account_email": sender_email,
+        "recipient_email": recipient_email,
+        "failure_stage": stage,
+        "detected_outlook_accounts": detected_accounts or [],
+        "outlook_draft_entry_id": entry_id or None,
+        "email_send_enabled": False,
+        "sent": False,
+    }
+    if exc is not None:
+        details.update(_exception_details(exc))
+
+    LOGGER.error(
+        "OUTLOOK_DRAFT_FAILURE stage=%s sender=%s recipient=%s detected_accounts=%s entry_id=%s error_type=%s error=%s hresult=%s args=%s",
+        stage,
+        sender_email,
+        recipient_email,
+        detected_accounts or [],
+        entry_id or "none",
+        details.get("error_type", "none"),
+        details.get("error", message),
+        details.get("hresult"),
+        details.get("args"),
+        exc_info=exc is not None,
+    )
+    return ToolResult(
+        tool_name="outlook_create_summary_draft",
+        ok=False,
+        message=message,
+        artifacts=[str(summary_path)] if summary_path else [],
+        data=details,
+        raw={
+            "failure_stage": stage,
+            "email_send_enabled": False,
+            "sent": False,
+        },
+    )
 
 
 def create_outlook_summary_draft(
@@ -143,106 +220,89 @@ def create_outlook_summary_draft(
     display: bool = True,
 ) -> ToolResult:
     summary_path = latest_summary_path()
-    if summary_path is None or not summary_path.is_file():
-        return ToolResult(
-            tool_name="outlook_create_summary_draft",
-            ok=False,
-            message="No generated presentation summary is available for the Outlook draft.",
-            data={
-                "execution_mode": "failed",
-                "requested_state": {"outlook_draft_created": True},
-                "email_send_enabled": False,
-                "sent": False,
-            },
-        )
-
     sender_email = presentation_config.outlook_sender_email.strip()
     recipient_email = presentation_config.recipient_email.strip()
+    stage = "preflight"
+    detected_accounts: list[str] = []
+    entry_id = ""
+
+    LOGGER.info(
+        "OUTLOOK_DRAFT_START sender=%s recipient=%s summary=%s display=%s",
+        sender_email,
+        recipient_email,
+        str(summary_path) if summary_path else "none",
+        display,
+    )
+
+    if summary_path is None or not summary_path.is_file():
+        return _failed_result(
+            message="No generated presentation summary is available for the Outlook draft.",
+            summary_path=summary_path,
+            sender_email=sender_email,
+            recipient_email=recipient_email,
+            stage="summary_lookup",
+        )
     if not sender_email or not recipient_email:
-        return ToolResult(
-            tool_name="outlook_create_summary_draft",
-            ok=False,
+        return _failed_result(
             message="Outlook sender and recipient email addresses must both be configured.",
-            artifacts=[str(summary_path)],
-            data={
-                "execution_mode": "failed",
-                "requested_state": {"outlook_draft_created": True},
-                "sender_account_email": sender_email,
-                "recipient_email": recipient_email,
-                "email_send_enabled": False,
-                "sent": False,
-            },
+            summary_path=summary_path,
+            sender_email=sender_email,
+            recipient_email=recipient_email,
+            stage="address_configuration",
         )
     if sender_email.casefold() == recipient_email.casefold():
-        return ToolResult(
-            tool_name="outlook_create_summary_draft",
-            ok=False,
+        return _failed_result(
             message="Outlook sender and recipient must be different email addresses.",
-            artifacts=[str(summary_path)],
-            data={
-                "execution_mode": "failed",
-                "requested_state": {"outlook_draft_created": True},
-                "sender_account_email": sender_email,
-                "recipient_email": recipient_email,
-                "email_send_enabled": False,
-                "sent": False,
-            },
+            summary_path=summary_path,
+            sender_email=sender_email,
+            recipient_email=recipient_email,
+            stage="address_separation",
         )
-
     if os.name != "nt":
-        return ToolResult(
-            tool_name="outlook_create_summary_draft",
-            ok=False,
+        return _failed_result(
             message="Classic Outlook COM automation is available only on Windows.",
-            artifacts=[str(summary_path)],
-            data={
-                "execution_mode": "failed",
-                "requested_state": {"outlook_draft_created": True},
-                "summary_path": str(summary_path),
-                "sender_account_email": sender_email,
-                "recipient_email": recipient_email,
-                "email_send_enabled": False,
-                "sent": False,
-            },
+            summary_path=summary_path,
+            sender_email=sender_email,
+            recipient_email=recipient_email,
+            stage="platform_check",
         )
 
     try:
         import pythoncom
         import win32com.client
     except ImportError as exc:
-        return ToolResult(
-            tool_name="outlook_create_summary_draft",
-            ok=False,
+        return _failed_result(
             message="pywin32 is required for Classic Outlook draft creation.",
-            artifacts=[str(summary_path)],
-            data={
-                "execution_mode": "failed",
-                "requested_state": {"outlook_draft_created": True},
-                "summary_path": str(summary_path),
-                "sender_account_email": sender_email,
-                "recipient_email": recipient_email,
-                "email_send_enabled": False,
-                "sent": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            },
+            summary_path=summary_path,
+            sender_email=sender_email,
+            recipient_email=recipient_email,
+            stage="dependency_import",
+            exc=exc,
         )
 
     pythoncom.CoInitialize()
     try:
+        stage = "outlook_connection"
         outlook, connection_mode = _outlook_application(win32com.client)
         namespace = outlook.GetNamespace("MAPI")
+
+        stage = "sender_account_lookup"
         sender_account, detected_accounts = _find_sender_account(namespace, sender_email)
         summary_text = summary_path.read_text(encoding="utf-8")
         clean_subject = _clean_subject(subject, language)
 
+        stage = "mail_item_creation"
         mail = outlook.CreateItem(OUTLOOK_MAIL_ITEM)
+
+        stage = "sender_account_assignment"
         mail.SendUsingAccount = sender_account
         assigned_sender = _account_email(getattr(mail, "SendUsingAccount", None))
-        if assigned_sender.casefold() != sender_email.casefold():
+        if assigned_sender and assigned_sender.casefold() != sender_email.casefold():
             raise RuntimeError(
-                f"Outlook did not bind the draft to the configured sender account {sender_email}."
+                f"Outlook bound the draft to {assigned_sender}, not configured sender {sender_email}."
             )
 
+        stage = "recipient_resolution"
         recipient = mail.Recipients.Add(recipient_email)
         recipient.Type = OUTLOOK_TO_RECIPIENT
         if not bool(mail.Recipients.ResolveAll()):
@@ -250,70 +310,88 @@ def create_outlook_summary_draft(
                 f"Outlook could not resolve the configured recipient: {recipient_email}."
             )
 
+        stage = "draft_save"
         mail.Subject = clean_subject
         mail.Body = _message_body(summary_text, language)
         mail.Save()
-        time.sleep(0.15)
-
         entry_id = str(getattr(mail, "EntryID", "") or "")
         store_id = ""
         parent = getattr(mail, "Parent", None)
         if parent is not None:
             store_id = str(getattr(parent, "StoreID", "") or "")
-
         if not entry_id:
             raise RuntimeError("Outlook saved the draft but did not assign an EntryID.")
 
-        saved = (
-            namespace.GetItemFromID(entry_id, store_id)
-            if store_id
-            else namespace.GetItemFromID(entry_id)
-        )
-        saved_entry_id = str(getattr(saved, "EntryID", "") or "")
-        saved_subject = str(getattr(saved, "Subject", "") or "")
-        saved_recipient_addresses = _recipient_smtp_addresses(saved)
-        saved_sender = _account_email(getattr(saved, "SendUsingAccount", None))
-        saved_state = bool(getattr(saved, "Saved", False))
-        sent_state = bool(getattr(saved, "Sent", False))
+        stage = "draft_reopen_and_verify"
+        saved = None
+        saved_entry_id = ""
+        saved_subject = ""
+        saved_recipient_addresses: list[str] = []
+        saved_sender = ""
+        saved_state = False
+        sent_state = False
 
-        sender_verified = (
-            assigned_sender.casefold() == sender_email.casefold()
-            and (
-                not saved_sender
-                or saved_sender.casefold() == sender_email.casefold()
+        for _ in range(10):
+            saved = (
+                namespace.GetItemFromID(entry_id, store_id)
+                if store_id
+                else namespace.GetItemFromID(entry_id)
             )
-        )
-        recipient_verified = any(
-            address.casefold() == recipient_email.casefold()
-            for address in saved_recipient_addresses
-        )
-        verified = bool(
-            saved_entry_id == entry_id
-            and saved_subject == clean_subject
-            and recipient_verified
-            and sender_verified
-            and saved_state
-            and not sent_state
-        )
-        if not verified:
+            saved_entry_id = str(getattr(saved, "EntryID", "") or "")
+            saved_subject = str(getattr(saved, "Subject", "") or "")
+            saved_recipient_addresses = _recipient_smtp_addresses(saved)
+            saved_sender = _account_email(getattr(saved, "SendUsingAccount", None))
+            saved_state = bool(getattr(saved, "Saved", False))
+            sent_state = bool(getattr(saved, "Sent", False))
+            recipient_verified = any(
+                address.casefold() == recipient_email.casefold()
+                for address in saved_recipient_addresses
+            )
+            sender_verified = (
+                (not assigned_sender or assigned_sender.casefold() == sender_email.casefold())
+                and (not saved_sender or saved_sender.casefold() == sender_email.casefold())
+            )
+            if (
+                saved_entry_id == entry_id
+                and saved_subject == clean_subject
+                and recipient_verified
+                and sender_verified
+                and saved_state
+                and not sent_state
+            ):
+                break
+            time.sleep(0.2)
+        else:
             raise RuntimeError(
-                "The Outlook draft was created but sender, recipient SMTP address, saved state, or unsent state could not be verified. "
-                f"Observed sender={saved_sender or assigned_sender or 'unknown'}, "
+                "The Outlook draft was created but could not be verified. "
+                f"Observed assigned_sender={assigned_sender or 'blank'}, "
+                f"saved_sender={saved_sender or 'blank'}, "
                 f"recipients={saved_recipient_addresses}, saved={saved_state}, sent={sent_state}."
             )
 
         displayed = False
-        if display:
+        if display and saved is not None:
+            stage = "draft_display"
             saved.Display(False)
             displayed = True
 
         relative_summary = _relative_or_absolute(summary_path)
+        LOGGER.info(
+            "OUTLOOK_DRAFT_SUCCESS sender=%s recipient=%s entry_id=%s store_id=%s connection_mode=%s detected_accounts=%s verified_recipients=%s displayed=%s",
+            sender_email,
+            recipient_email,
+            entry_id,
+            store_id or "none",
+            connection_mode,
+            detected_accounts,
+            saved_recipient_addresses,
+            displayed,
+        )
         return ToolResult(
             tool_name="outlook_create_summary_draft",
             ok=True,
             message=(
-                f"Outlook draft created from {sender_email} for {recipient_email}; "
-                "it was not sent."
+                f"Outlook draft created from {sender_email} for {recipient_email}; it was not sent."
             ),
             expected_process_names=["OUTLOOK.EXE"],
             expected_window_keywords=[clean_subject, "Outlook"],
@@ -328,6 +406,8 @@ def create_outlook_summary_draft(
                 "outlook_draft_displayed": displayed,
                 "outlook_connection_mode": connection_mode,
                 "sender_account_email": sender_email,
+                "assigned_sender_account_email": assigned_sender or None,
+                "saved_sender_account_email": saved_sender or None,
                 "detected_outlook_accounts": detected_accounts,
                 "recipient_name": presentation_config.recipient_name,
                 "recipient_email": recipient_email,
@@ -349,22 +429,15 @@ def create_outlook_summary_draft(
             },
         )
     except Exception as exc:
-        return ToolResult(
-            tool_name="outlook_create_summary_draft",
-            ok=False,
+        return _failed_result(
             message=f"Outlook draft could not be created: {type(exc).__name__}: {exc}",
-            artifacts=[str(summary_path)],
-            data={
-                "execution_mode": "failed",
-                "requested_state": {"outlook_draft_created": True},
-                "summary_path": str(summary_path),
-                "summary_path_relative": _relative_or_absolute(summary_path),
-                "sender_account_email": sender_email,
-                "recipient_email": recipient_email,
-                "email_send_enabled": False,
-                "sent": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            },
+            summary_path=summary_path,
+            sender_email=sender_email,
+            recipient_email=recipient_email,
+            stage=stage,
+            detected_accounts=detected_accounts,
+            entry_id=entry_id,
+            exc=exc,
         )
     finally:
         pythoncom.CoUninitialize()
