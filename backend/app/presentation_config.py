@@ -179,6 +179,8 @@ class PresentationRuntimeConfig:
         payload["output_directory_exists"] = self.output_directory.is_dir()
         payload["email_recipients"] = self.recipient_catalog()
         payload["default_recipient"] = self.resolve_recipient().public_dict()
+        payload["recipient_name"] = self.recipient_name
+        payload["recipient_email"] = self.recipient_email
         payload["email_send_enabled"] = False
         payload["approval_gated_email_send_enabled"] = True
         payload["unrestricted_email_send_enabled"] = False
