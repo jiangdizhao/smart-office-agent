@@ -102,7 +102,12 @@ def _validation_verification(error: ToolResult) -> VerificationResult:
         window_ok=None,
         expected_process_names=error.expected_process_names,
         expected_window_keywords=error.expected_window_keywords,
-        raw={"validation_error": error.message, "email_send_enabled": False},
+        raw={
+            "validation_error": error.message,
+            "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
+        },
         checked_at=datetime.now(UTC),
     )
 
@@ -239,6 +244,14 @@ def _office_reply(
             if language == "zh"
             else f"The Outlook draft was created and verified from {sender} for {recipient}. It has not been sent."
         )
+    if name == "outlook_send_approved_draft":
+        sender = result.data.get("sender_account_email")
+        recipient = result.data.get("recipient_email")
+        return (
+            f"第二次批准已执行。草稿提示已删除，Outlook 已接受从 {sender} 发往 {recipient} 的发送操作。"
+            if language == "zh"
+            else f"The second approval was executed. The draft-only notice was removed and Outlook accepted the send from {sender} to {recipient}."
+        )
     return result.message
 
 
@@ -250,6 +263,8 @@ def office_status() -> dict:
         "status": status.data,
         "artifacts": office_artifact_status(),
         "email_send_enabled": False,
+        "approval_gated_email_send_enabled": True,
+        "unrestricted_email_send_enabled": False,
     }
 
 
@@ -265,7 +280,12 @@ async def office_turn(req: OfficeTurnRequest) -> OfficeTurnResponse:
             tool_name=req.realtime_tool_call.name,
             ok=False,
             message=f"Unsupported office planning function: {req.realtime_tool_call.name}",
-            data={"execution_mode": "rejected", "email_send_enabled": False},
+            data={
+                "execution_mode": "rejected",
+                "email_send_enabled": False,
+                "approval_gated_email_send_enabled": True,
+                "unrestricted_email_send_enabled": False,
+            },
         )
         verification = _validation_verification(error)
         return OfficeTurnResponse(
@@ -288,9 +308,9 @@ async def office_turn(req: OfficeTurnRequest) -> OfficeTurnResponse:
 
     if actor == "visitor":
         spoken = (
-            "该请求属于办公操作。访客不能控制设备或 PowerPoint、生成内部摘要或创建 Outlook 草稿。"
+            "该请求属于办公操作。访客不能控制设备或 PowerPoint、生成内部摘要、创建 Outlook 草稿或发送邮件。"
             if language == "zh"
-            else "Visitors cannot control devices or PowerPoint, generate internal summaries, or create Outlook drafts."
+            else "Visitors cannot control devices or PowerPoint, generate internal summaries, create Outlook drafts, or send email."
         )
         conversation_store.update(
             req.conversation_id,
@@ -392,6 +412,9 @@ async def office_turn(req: OfficeTurnRequest) -> OfficeTurnResponse:
         last_command=normalized,
     )
     asyncio.create_task(run_office_task(task.task_id))
+    approval_tools = {
+        step.tool_name for step in planned_steps if step.requires_confirmation
+    }
     scheduled = ToolResult(
         tool_name=OFFICE_PLAN_TOOL_NAME,
         ok=True,
@@ -403,16 +426,32 @@ async def office_turn(req: OfficeTurnRequest) -> OfficeTurnResponse:
             "approval_required": approval_required,
             "requested_state": {"office_plan": True},
             "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
         },
     )
     if language == "zh":
         spoken = f"正在执行包含 {len(planned_steps)} 个步骤的办公任务。"
-        if approval_required:
-            spoken += " 创建 Outlook 草稿前会暂停并等待您的批准。"
+        if {
+            "outlook_create_summary_draft",
+            "outlook_send_approved_draft",
+        }.issubset(approval_tools):
+            spoken += " 创建草稿前和发送前会分别暂停，需要两次独立批准。"
+        elif "outlook_send_approved_draft" in approval_tools:
+            spoken += " 发送邮件前会暂停，等待第二次批准。"
+        elif "outlook_create_summary_draft" in approval_tools:
+            spoken += " 创建 Outlook 草稿前会暂停，等待第一次批准。"
     else:
         spoken = f"Executing an office task with {len(planned_steps)} steps."
-        if approval_required:
-            spoken += " It will pause for approval before creating the Outlook draft."
+        if {
+            "outlook_create_summary_draft",
+            "outlook_send_approved_draft",
+        }.issubset(approval_tools):
+            spoken += " It will pause separately before draft creation and before sending, requiring two approvals."
+        elif "outlook_send_approved_draft" in approval_tools:
+            spoken += " It will pause for the second approval before sending."
+        elif "outlook_create_summary_draft" in approval_tools:
+            spoken += " It will pause for the first approval before creating the Outlook draft."
     conversation_store.update(req.conversation_id, last_visible_answer=spoken)
     return OfficeTurnResponse(
         conversation_id=req.conversation_id,
