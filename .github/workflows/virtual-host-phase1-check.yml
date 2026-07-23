@@ -30,7 +30,8 @@ jobs:
             backend/scripts/smoke_phase2_router_contract.py \
             backend/scripts/smoke_phase3_gate1_contract.py \
             backend/scripts/smoke_phase3_gate2a_contract.py \
-            backend/scripts/smoke_phase3_gate2b_contract.py
+            backend/scripts/smoke_phase3_gate2b_contract.py \
+            backend/scripts/smoke_phase3_unified_plan_contract.py
       - name: Run Phase 1 regression contract
         run: python backend/scripts/smoke_phase1_voice_contract.py
       - name: Run Phase 2 router contract
@@ -39,15 +40,8 @@ jobs:
         run: python backend/scripts/smoke_phase3_gate1_contract.py
       - name: Run Phase 3 Gate 2A Realtime presentation contract
         run: python backend/scripts/smoke_phase3_gate2a_contract.py
-      - name: Run Phase 3 Gate 2B unified presentation-plan contract
-        run: python backend/scripts/smoke_phase3_gate2b_contract.py > gate2b-contract.log 2>&1
-      - name: Upload Gate 2B contract diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate2b-contract-log
-          path: gate2b-contract.log
-          if-no-files-found: warn
+      - name: Run Phase 3 unified presentation-plan contract
+        run: python backend/scripts/smoke_phase3_unified_plan_contract.py
 
   frontend-build:
     runs-on: ubuntu-latest
