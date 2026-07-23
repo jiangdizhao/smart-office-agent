@@ -20,6 +20,9 @@ const API_BASE_URL =
 
 const ASR_STORAGE_KEY = 'smartoffice_asr_provider'
 const ACTOR_STORAGE_KEY = 'smartoffice_actor_type'
+const CJK_PATTERN = /[\u3400-\u9fff]/
+const CJK_GLOBAL_PATTERN = /[\u3400-\u9fff]/g
+const ENGLISH_WORD_PATTERN = /[A-Za-z]+(?:['’-][A-Za-z]+)*/g
 
 type AsrProvider = 'realtime' | 'browser'
 type ActorType = 'visitor' | 'employee' | 'operator'
@@ -98,9 +101,79 @@ function stateLabel(state: PanelState): string {
   return labels[state]
 }
 
+/**
+ * Select the response language from the actual utterance, not only from the
+ * manual ASR selector. Chinese requests may contain necessary English product
+ * names such as PowerPoint; English requests may contain a short Chinese name.
+ */
+function responseLanguageForUtterance(
+  text: string,
+  selectedLanguage: VoiceLanguage,
+): VoiceLanguage {
+  const cjkCount = (text.match(CJK_GLOBAL_PATTERN) ?? []).length
+  const englishWords = text.match(ENGLISH_WORD_PATTERN) ?? []
+  const latinCharacterCount = englishWords.join('').length
+
+  if (cjkCount === 0 && englishWords.length > 0) return 'en'
+  if (cjkCount > 0 && englishWords.length >= 3 && latinCharacterCount >= cjkCount * 2) {
+    return 'en'
+  }
+  if (cjkCount > 0) return 'zh'
+  return selectedLanguage
+}
+
+function englishPresentationFallback(payload: TurnResponse): string {
+  const status = payload.presentation_status
+  const toolName = payload.tool_result?.tool_name ?? payload.realtime_tool_call?.name
+
+  if (payload.permission_decision === 'denied') {
+    return 'A visitor cannot control PowerPoint. Switch to an employee or operator identity and try again.'
+  }
+  if (payload.tool_result && !payload.tool_result.ok) {
+    return `The PowerPoint action was not executed: ${payload.tool_result.message}`
+  }
+  if (payload.verification_result && !payload.verification_result.ok) {
+    return 'PowerPoint received the action, but the observed state did not pass verification.'
+  }
+  if (toolName === 'presentation_get_status' && status) {
+    if (!status.presentation_open) return 'PowerPoint is not currently open.'
+    if (status.slideshow_active) {
+      return `The slide show is currently on slide ${status.current_slide ?? 'unknown'} of ${status.total_slides ?? 'unknown'}.`
+    }
+    return `The presentation is open with ${status.total_slides ?? 'an unknown number of'} slides, but the slide show has not started.`
+  }
+  if (status?.slideshow_active) {
+    return `The PowerPoint action completed. The slide show is on slide ${status.current_slide ?? 'unknown'} of ${status.total_slides ?? 'unknown'}.`
+  }
+  if (payload.route === 'reception_knowledge') {
+    return 'The approved English response is temporarily unavailable. Please ask the question again.'
+  }
+  return 'The response could not be provided entirely in English. Please repeat the request.'
+}
+
+function guardTurnAnswer(payload: TurnResponse, language: VoiceLanguage): string {
+  const answer = payload.spoken_text.trim()
+  if (language === 'en' && CJK_PATTERN.test(answer)) {
+    return englishPresentationFallback(payload)
+  }
+  return answer
+}
+
+function guardClarification(text: string, language: VoiceLanguage): string {
+  const clean = text.trim()
+  if (language === 'en' && CJK_PATTERN.test(clean)) {
+    return 'Please clarify the presentation action you want me to perform.'
+  }
+  if (clean) return clean
+  return language === 'zh'
+    ? '请明确您要执行的演示操作。'
+    : 'Please clarify the presentation action.'
+}
+
 export default function VoiceDebugPanel() {
   const browserCaptureRef = useRef(new BrowserSpeechCapture())
   const [language, setLanguage] = useState<VoiceLanguage>('zh')
+  const [responseLanguage, setResponseLanguage] = useState<VoiceLanguage>('zh')
   const [actorType, setActorType] = useState<ActorType>(storedActorType)
   const [asrProvider, setAsrProvider] = useState<AsrProvider>(storedAsrProvider)
   const [voiceProvider, setVoiceProvider] = useState<VoiceOutputProvider>(
@@ -196,9 +269,12 @@ export default function VoiceDebugPanel() {
 
     setError('')
     setPanelState('processing')
-    const decision = await realtimePresentationInterpreter.interpret(clean, language)
+    const effectiveLanguage = responseLanguageForUtterance(clean, language)
+    setResponseLanguage(effectiveLanguage)
+
+    const decision = await realtimePresentationInterpreter.interpret(clean, effectiveLanguage)
     if (decision.kind === 'clarify') {
-      const clarification = decision.clarification || (language === 'zh' ? '请明确您要执行的演示操作。' : 'Please clarify the presentation action.')
+      const clarification = guardClarification(decision.clarification, effectiveLanguage)
       setAnswer(clarification)
       setLastRoute('clarification')
       setLastScene('office')
@@ -208,7 +284,7 @@ export default function VoiceDebugPanel() {
         return
       }
       setPanelState('speaking')
-      await voiceOutputManager.speak(clarification, language)
+      await voiceOutputManager.speak(clarification, effectiveLanguage)
       setPanelState('idle')
       return
     }
@@ -220,7 +296,7 @@ export default function VoiceDebugPanel() {
       body: JSON.stringify({
         conversation_id: conversationId(),
         text: clean,
-        language,
+        language: effectiveLanguage,
         input_source: inputSource,
         actor_context: { type: actorType, source: 'phase3_gate2a_panel' },
         realtime_tool_call: realtimeToolCall,
@@ -232,13 +308,14 @@ export default function VoiceDebugPanel() {
     }
 
     const payload = (await response.json()) as TurnResponse
+    const safeAnswer = guardTurnAnswer(payload, effectiveLanguage)
     setLastRoute(payload.route)
     setLastScene(payload.scene)
     setPermissionDecision(payload.permission_decision)
     setSourceIds(payload.source_ids ?? [])
     setContentUrl(payload.content_url)
     setTaskId(payload.task_id)
-    setAnswer(payload.spoken_text)
+    setAnswer(safeAnswer)
     setLastToolName(payload.tool_result?.tool_name ?? payload.realtime_tool_call?.name ?? '')
     setVerificationPassed(payload.verification_result?.ok ?? null)
     if (payload.presentation_status) setPresentationStatus(payload.presentation_status)
@@ -250,7 +327,7 @@ export default function VoiceDebugPanel() {
 
     setPanelState('speaking')
     try {
-      await voiceOutputManager.speak(payload.spoken_text, language)
+      await voiceOutputManager.speak(safeAnswer, effectiveLanguage)
       setPanelState('idle')
     } catch (caught) {
       if (caught instanceof Error && caught.name === 'AbortError') {
@@ -338,7 +415,7 @@ export default function VoiceDebugPanel() {
 
           <div className="voice-settings-grid">
             <label>
-              语言
+              语音识别语言
               <select
                 value={language}
                 disabled={listening || busy}
@@ -480,6 +557,7 @@ export default function VoiceDebugPanel() {
             <span>Route: {lastRoute || '—'}</span>
             <span>Scene: {lastScene || '—'}</span>
             <span>Permission: {permissionDecision || '—'}</span>
+            <span>Response language: {responseLanguage}</span>
             <span>Tool: {lastToolName || '—'}</span>
             <span>
               Verification:{' '}
@@ -492,7 +570,7 @@ export default function VoiceDebugPanel() {
 
           {error ? <div className="voice-error">{error}</div> : null}
           <p className="voice-safety-note">
-            自然语言由 GPT Realtime 解释；Backend 只执行已注册的单步 PowerPoint 能力，并在执行后验证真实页码和副屏位置。Visitor 不能控制 PowerPoint。
+            自然语言由 GPT Realtime 解释；Backend 只执行已注册的单步 PowerPoint 能力，并在执行后验证真实页码和副屏位置。英文问题强制使用纯英文答复；中文问题以中文答复，并允许必要的英文术语。
           </p>
         </div>
       ) : null}
