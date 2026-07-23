@@ -12,6 +12,7 @@ export type PresentationToolName =
   | 'presentation_go_to_slide'
   | 'presentation_get_status'
   | 'presentation_end_slideshow'
+  | 'presentation_execute_sequence'
 
 export type RealtimePresentationToolCall = {
   name: PresentationToolName
@@ -24,6 +25,16 @@ export type RealtimePresentationDecision =
   | { kind: 'tool_call'; toolCall: RealtimePresentationToolCall }
   | { kind: 'clarify'; clarification: string }
   | { kind: 'none'; reason: string }
+
+const SINGLE_PRESENTATION_ACTIONS = [
+  'presentation_open_configured',
+  'presentation_start_slideshow',
+  'presentation_next_slide',
+  'presentation_previous_slide',
+  'presentation_go_to_slide',
+  'presentation_get_status',
+  'presentation_end_slideshow',
+] as const
 
 const PRESENTATION_TOOLS = [
   {
@@ -85,6 +96,41 @@ const PRESENTATION_TOOLS = [
     description:
       'End the active slide show without closing the PowerPoint presentation. Use when the user clearly asks to end or stop the presentation.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    type: 'function',
+    name: 'presentation_execute_sequence',
+    description:
+      'Execute two to eight explicit supported presentation actions in the exact order requested by the user. Use only for a compound request containing at least two presentation actions.',
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 8,
+          description: 'Ordered presentation actions. Repeat next or previous steps when the user asks to move multiple slides.',
+          items: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                enum: SINGLE_PRESENTATION_ACTIONS,
+              },
+              slide_number: {
+                type: 'integer',
+                minimum: 1,
+                description: 'Required only for presentation_go_to_slide.',
+              },
+            },
+            required: ['name'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['steps'],
+      additionalProperties: false,
+    },
   },
 ] as const
 
@@ -189,16 +235,19 @@ class RealtimePresentationInterpreter {
           tool_choice: 'auto',
           tools: PRESENTATION_TOOLS,
           instructions: `
-Interpret one user utterance for Smart Office Gate 2A.
+Interpret one user utterance for Smart Office Gate 2B.
 Language: ${languageLabel}.
 User utterance: ${clean}
 
 Rules:
-- For one clear supported presentation action, call exactly one matching function.
+- For one clear supported presentation action, call exactly one matching single-action function.
+- For two to eight explicit supported presentation actions, call presentation_execute_sequence exactly once and preserve the requested order.
+- A request such as “open the presentation, start the slide show, then go to slide five” must become open, start, and go-to-five in that order.
+- A request such as “move forward two slides” must become a sequence containing two presentation_next_slide steps.
+- Do not silently add prerequisites the user did not request. The Backend owns state validation and will report a clear failure when a prerequisite is missing.
 - Understand natural Chinese and English paraphrases; do not require fixed wording.
 - Do not call a function for reception questions, ordinary conversation, Teams, Word, Excel, email, volume, brightness, document generation, or any unsupported action. Return exactly NO_PRESENTATION_ACTION instead.
-- Gate 2A supports only one action per turn. If the utterance contains two or more requested actions, return exactly COMPOUND_PRESENTATION_ACTION.
-- If it sounds presentation-related but the intended action or required slide number is genuinely ambiguous, return CLARIFY: followed by one concise question in the user's language.
+- If it sounds presentation-related but the intended action, action order, or required slide number is genuinely ambiguous, return CLARIFY: followed by one concise question in the user's language.
 - Never invent a slide number, file path, action, approval, or success result.
 - Do not answer the user and do not claim an action succeeded.
 `.trim(),
@@ -293,7 +342,7 @@ Rules:
         tool_choice: 'auto',
         tools: PRESENTATION_TOOLS,
         instructions:
-          'You are a bounded presentation-intent interpreter. Select only registered presentation functions. Never execute tools yourself and never claim success.',
+          'You are a bounded presentation-intent interpreter. Select only registered presentation functions, including the bounded compound sequence function. Never execute tools yourself and never claim success.',
         audio: { input: { turn_detection: null } },
       },
     })
