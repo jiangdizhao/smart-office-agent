@@ -25,7 +25,7 @@ from app.task_logger import log_task_record
 from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.5.0")
+app = FastAPI(title="Smart Office Agent Backend", version="0.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,8 +57,8 @@ def health_check():
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.5.0",
-        "phase": "m3a_fusion_phase_3_gate_2a",
+        "version": "0.6.0",
+        "phase": "m3a_fusion_phase_3_gate_2b",
         "capabilities": {
             "task_runtime": True,
             "realtime_voice_api": True,
@@ -72,6 +72,8 @@ def health_check():
             "presentation_control_api": True,
             "presentation_execution_via_turn": True,
             "presentation_secondary_display": True,
+            "compound_presentation_execution": True,
+            "compound_task_cancellation": True,
             "general_office_execution_via_turn": False,
         },
     }
@@ -175,6 +177,8 @@ def cancel_agent_task(task_id: str):
     task = state_store.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    if task.status in {"completed", "failed", "cancelled"}:
+        return task
 
     state_store.update_pending_steps(
         task_id,
@@ -218,31 +222,45 @@ async def stream_agent_task_events(
         terminal_events = {"completed", "cancelled", "error"}
 
         while True:
-            events = event_bus.get_events(task_id)
-            while sent_count < len(events):
-                event = events[sent_count]
-                sent_count += 1
-                yield _sse_payload(event)
-                if event.type in terminal_events:
-                    return
-
-            if demo:
-                for event in event_bus.build_demo_events(task):
-                    await asyncio.sleep(0.2)
-                    yield _sse_payload(event)
+            current = state_store.get_task(task_id)
+            if current is None:
                 return
 
-            break
-
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
-        while asyncio.get_running_loop().time() < deadline:
-            events = event_bus.get_events(task_id)
-            while sent_count < len(events):
-                event = events[sent_count]
+            events = current.events[sent_count:]
+            for event in events:
                 sent_count += 1
                 yield _sse_payload(event)
                 if event.type in terminal_events:
                     return
-            await asyncio.sleep(0.2)
 
-    return EventSourceResponse(event_generator())
+            if demo and sent_count == 0:
+                await asyncio.sleep(0.2)
+                yield {
+                    "event": "planning",
+                    "data": json.dumps(
+                        {
+                            "task_id": task_id,
+                            "message": "Demo planning event.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+                await asyncio.sleep(0.2)
+                yield {
+                    "event": "completed",
+                    "data": json.dumps(
+                        {
+                            "task_id": task_id,
+                            "message": "Demo task event stream completed.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+                return
+
+            if current.status in {"completed", "failed", "cancelled"}:
+                return
+
+            await asyncio.sleep(0.25)
+
+    return EventSourceResponse(event_generator(), ping=10)
