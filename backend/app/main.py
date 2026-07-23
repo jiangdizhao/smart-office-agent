@@ -81,8 +81,10 @@ def health_check():
             "system_volume_control": True,
             "system_brightness_control": True,
             "presentation_summary_artifacts": True,
-            "gmail_draft_creation": True,
-            "gmail_draft_approval_gate": True,
+            "classic_outlook_draft_creation": True,
+            "outlook_draft_approval_gate": True,
+            "fixed_outlook_sender_account": True,
+            "fixed_email_recipient": True,
             "email_send_enabled": False,
             "general_office_execution_via_turn": False,
         },
@@ -219,57 +221,28 @@ async def stream_agent_task_events(
         30.0,
         ge=0.1,
         le=300.0,
-        description="Maximum time to wait for new events before closing the stream.",
+        description="Maximum time to keep the SSE stream open without new events.",
     ),
 ):
     task = state_store.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
-    async def event_generator():
-        sent_count = 0
-        terminal_events = {"completed", "cancelled", "error"}
-
-        while True:
-            current = state_store.get_task(task_id)
-            if current is None:
-                return
-
-            events = current.events[sent_count:]
-            for event in events:
-                sent_count += 1
+    async def event_stream():
+        if demo:
+            demo_events = [
+                StepEvent(type="planning", task_id=task_id, message="Planning demo event."),
+                StepEvent(type="step_started", task_id=task_id, step_id="demo-step", message="Step started."),
+                StepEvent(type="step_progress", task_id=task_id, step_id="demo-step", message="Step progress."),
+                StepEvent(type="step_completed", task_id=task_id, step_id="demo-step", message="Step completed."),
+                StepEvent(type="task_completed", task_id=task_id, message="Task completed."),
+            ]
+            for event in demo_events:
                 yield _sse_payload(event)
-                if event.type in terminal_events:
-                    return
+                await asyncio.sleep(0.05)
+            return
 
-            if demo and sent_count == 0:
-                await asyncio.sleep(0.2)
-                yield {
-                    "event": "planning",
-                    "data": json.dumps(
-                        {
-                            "task_id": task_id,
-                            "message": "Demo planning event.",
-                        },
-                        ensure_ascii=False,
-                    ),
-                }
-                await asyncio.sleep(0.2)
-                yield {
-                    "event": "completed",
-                    "data": json.dumps(
-                        {
-                            "task_id": task_id,
-                            "message": "Demo task event stream completed.",
-                        },
-                        ensure_ascii=False,
-                    ),
-                }
-                return
+        async for event in event_bus.subscribe(task_id, timeout_seconds=timeout_seconds):
+            yield _sse_payload(event)
 
-            if current.status in {"completed", "failed", "cancelled"}:
-                return
-
-            await asyncio.sleep(0.25)
-
-    return EventSourceResponse(event_generator(), ping=10)
+    return EventSourceResponse(event_stream())
