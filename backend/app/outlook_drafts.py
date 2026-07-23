@@ -34,21 +34,35 @@ def outlook_draft_status() -> dict[str, Any]:
             registered = False
 
     sender = presentation_config.outlook_sender_email.strip()
-    default_recipient = presentation_config.resolve_recipient()
-    catalog = presentation_config.recipient_catalog()
-    addresses_are_distinct = all(
+    try:
+        directory = presentation_config.recipient_directory()
+        default_recipient = directory.resolve()
+        catalog = directory.public_catalog()
+        config_error = None
+    except (OSError, ValueError) as exc:
+        default_recipient = None
+        catalog = []
+        config_error = str(exc)
+
+    addresses_are_distinct = bool(catalog) and all(
         sender.casefold() != recipient["email"].casefold() for recipient in catalog
     )
     return {
         "provider": "classic_outlook_com",
         "outlook_com_registered": registered,
         "outlook_application_clsid": clsid,
-        "outlook_draft_configured": registered and addresses_are_distinct and bool(catalog),
+        "outlook_draft_configured": (
+            registered and addresses_are_distinct and default_recipient is not None
+        ),
         "sender_account_email": sender,
-        "default_recipient_key": default_recipient.key,
-        "recipient_key": default_recipient.key,
-        "recipient_name": default_recipient.name,
-        "recipient_email": default_recipient.email,
+        "recipient_config_path": str(presentation_config.recipient_config_path),
+        "recipient_config_exists": presentation_config.recipient_config_path.is_file(),
+        "recipient_config_error": config_error,
+        "recipient_file_hot_reload_enabled": True,
+        "default_recipient_key": default_recipient.key if default_recipient else None,
+        "recipient_key": default_recipient.key if default_recipient else None,
+        "recipient_name": default_recipient.name if default_recipient else None,
+        "recipient_email": default_recipient.email if default_recipient else None,
         "recipient_catalog": catalog,
         "allowed_recipient_keys": [recipient["key"] for recipient in catalog],
         "sender_recipient_distinct": addresses_are_distinct,
@@ -199,6 +213,7 @@ def _failed_result(
         "failure_stage": stage,
         "detected_outlook_accounts": detected_accounts or [],
         "outlook_draft_entry_id": entry_id or None,
+        "recipient_config_path": str(presentation_config.recipient_config_path),
         "email_send_enabled": False,
         "approval_gated_email_send_enabled": True,
         "unrestricted_email_send_enabled": False,
@@ -247,15 +262,16 @@ def create_outlook_summary_draft(
 ) -> ToolResult:
     summary_path = latest_summary_path()
     sender_email = presentation_config.outlook_sender_email.strip()
-    requested_recipient_key = recipient_key or presentation_config.default_recipient_key
+    requested_recipient_key = recipient_key
     recipient: EmailRecipient | None = None
-    stage = "recipient_allowlist"
+    stage = "recipient_file_lookup"
     detected_accounts: list[str] = []
     entry_id = ""
 
     try:
         recipient = presentation_config.resolve_recipient(requested_recipient_key)
-    except ValueError as exc:
+        requested_recipient_key = recipient.key
+    except (OSError, ValueError) as exc:
         return _failed_result(
             message=str(exc),
             summary_path=summary_path,
@@ -268,12 +284,13 @@ def create_outlook_summary_draft(
 
     recipient_email = recipient.email
     LOGGER.info(
-        "OUTLOOK_DRAFT_START sender=%s recipient_key=%s recipient=%s summary=%s display=%s",
+        "OUTLOOK_DRAFT_START sender=%s recipient_key=%s recipient=%s summary=%s display=%s recipient_file=%s",
         sender_email,
         recipient.key,
         recipient_email,
         str(summary_path) if summary_path else "none",
         display,
+        presentation_config.recipient_config_path,
     )
 
     if summary_path is None or not summary_path.is_file():
@@ -423,7 +440,7 @@ def create_outlook_summary_draft(
 
         relative_summary = _relative_or_absolute(summary_path)
         LOGGER.info(
-            "OUTLOOK_DRAFT_SUCCESS sender=%s recipient_key=%s recipient=%s entry_id=%s store_id=%s connection_mode=%s detected_accounts=%s verified_recipients=%s displayed=%s",
+            "OUTLOOK_DRAFT_SUCCESS sender=%s recipient_key=%s recipient=%s entry_id=%s store_id=%s connection_mode=%s detected_accounts=%s verified_recipients=%s displayed=%s recipient_file=%s",
             sender_email,
             recipient.key,
             recipient_email,
@@ -433,6 +450,7 @@ def create_outlook_summary_draft(
             detected_accounts,
             saved_recipient_addresses,
             displayed,
+            presentation_config.recipient_config_path,
         )
         return ToolResult(
             tool_name="outlook_create_summary_draft",
@@ -463,6 +481,7 @@ def create_outlook_summary_draft(
                 "recipient_key": recipient.key,
                 "recipient_name": recipient.name,
                 "recipient_email": recipient_email,
+                "recipient_config_path": str(presentation_config.recipient_config_path),
                 "verified_recipient_addresses": saved_recipient_addresses,
                 "subject": clean_subject,
                 "summary_path": str(summary_path),
