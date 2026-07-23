@@ -77,12 +77,14 @@ def _merge_monitor_verification(
     *,
     slideshow_active: bool,
 ) -> VerificationResult:
+    # Monitor placement is a postcondition only for actions that create or mutate
+    # an active slide show. A read-only status query must still answer the user's
+    # question even when the window-monitor probe is temporarily unavailable.
     monitor_required = slideshow_active and name in {
         "presentation_start_slideshow",
         "presentation_next_slide",
         "presentation_previous_slide",
         "presentation_go_to_slide",
-        "presentation_get_status",
     }
     if not monitor_required:
         return verification.model_copy(
