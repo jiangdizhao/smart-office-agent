@@ -231,12 +231,13 @@ def _office_reply(
             if language == "zh"
             else f"The presentation summary was generated and verified at {relative}."
         )
-    if name == "gmail_create_summary_draft":
+    if name == "outlook_create_summary_draft":
+        sender = result.data.get("sender_account_email")
         recipient = result.data.get("recipient_email")
         return (
-            f"Gmail 草稿已经创建并验证，收件人为 {recipient}。邮件尚未发送。"
+            f"Outlook 草稿已经创建并验证。发件账号为 {sender}，收件人为 {recipient}。邮件尚未发送。"
             if language == "zh"
-            else f"The Gmail draft was created and verified for {recipient}. It has not been sent."
+            else f"The Outlook draft was created and verified from {sender} for {recipient}. It has not been sent."
         )
     return result.message
 
@@ -287,9 +288,9 @@ async def office_turn(req: OfficeTurnRequest) -> OfficeTurnResponse:
 
     if actor == "visitor":
         spoken = (
-            "该请求属于办公操作。访客不能控制设备或 PowerPoint、生成内部摘要或创建 Gmail 草稿。"
+            "该请求属于办公操作。访客不能控制设备或 PowerPoint、生成内部摘要或创建 Outlook 草稿。"
             if language == "zh"
-            else "Visitors cannot control devices or PowerPoint, generate internal summaries, or create Gmail drafts."
+            else "Visitors cannot control devices or PowerPoint, generate internal summaries, or create Outlook drafts."
         )
         conversation_store.update(
             req.conversation_id,
@@ -407,11 +408,11 @@ async def office_turn(req: OfficeTurnRequest) -> OfficeTurnResponse:
     if language == "zh":
         spoken = f"正在执行包含 {len(planned_steps)} 个步骤的办公任务。"
         if approval_required:
-            spoken += " 创建 Gmail 草稿前会暂停并等待您的批准。"
+            spoken += " 创建 Outlook 草稿前会暂停并等待您的批准。"
     else:
         spoken = f"Executing an office task with {len(planned_steps)} steps."
         if approval_required:
-            spoken += " It will pause for approval before creating the Gmail draft."
+            spoken += " It will pause for approval before creating the Outlook draft."
     conversation_store.update(req.conversation_id, last_visible_answer=spoken)
     return OfficeTurnResponse(
         conversation_id=req.conversation_id,
