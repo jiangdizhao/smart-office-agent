@@ -1,9 +1,15 @@
 import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
 
 const PATCH_FLAG = '__smartOfficeCaptureCleanupInstalled__'
+const LANGUAGE_PATCH_FLAG = '__smartOfficeVerbatimLanguageTranscriptionInstalled__'
 
 type GuardedRealtimeAgent = typeof realtimeAgent & {
   [PATCH_FLAG]?: boolean
+  [LANGUAGE_PATCH_FLAG]?: boolean
+}
+
+type PatchableRealtimeAgent = GuardedRealtimeAgent & {
+  transcriptionInstructions: () => string
 }
 
 /**
@@ -42,4 +48,42 @@ export function installRealtimeCaptureCleanup(): void {
   guardedAgent[PATCH_FLAG] = true
 }
 
+/**
+ * The Realtime model is used here as a speech-understanding layer. The original
+ * prompt declared one UI-selected language, which could make the model translate
+ * English speech into Chinese when the selector or persistent session was still
+ * Chinese. This patch makes the spoken audio authoritative and forbids translation.
+ */
+export function installVerbatimLanguageTranscription(): void {
+  const patchableAgent = realtimeAgent as unknown as PatchableRealtimeAgent
+  if (patchableAgent[LANGUAGE_PATCH_FLAG]) return
+
+  patchableAgent.transcriptionInstructions = (): string => `
+You are a multilingual speech transcription and correction layer, not a conversational assistant.
+Return only the user's final intended utterance as normalized plain text. Do not answer the user.
+
+LANGUAGE PRESERVATION IS MANDATORY:
+- Detect the language from the spoken audio itself.
+- Transcribe each segment in the same language in which it was spoken.
+- Never translate English speech into Chinese.
+- Never translate Chinese speech into English.
+- If the user speaks entirely in English, the output must contain no Chinese translation.
+- If the user speaks entirely in Chinese, output Chinese while preserving necessary English product names and technical terms.
+- Preserve genuine code-switching instead of translating either language.
+- Any UI language selection or earlier session language is only an acoustic hint. It must never force the transcript into that language.
+
+Later explicit corrections override earlier uncertain words.
+Chinese correction signals such as “不”, “不是”, “不对”, “我是说”, “应该是” and character explanations are authoritative.
+English correction signals such as “no”, “not that”, “I mean”, “sorry”, “correction”, and “it should be” are authoritative.
+Example Chinese correction: “打开钱会色的演示，不对，是浅灰色，深浅的浅，灰色的灰” becomes “打开浅灰色的演示”.
+Example English correction: “Go to slide fourteen—sorry, I mean slide four” becomes “Go to slide four”.
+Relevant terms include Microsoft Teams, PowerPoint, Word, Excel, Outlook, OneNote, meeting, presentation, mute, camera, next slide, previous slide, and screen sharing.
+Never invent a request. If genuinely unintelligible, output exactly __UNCLEAR__.
+Output only normalized plain text without labels, JSON, Markdown, quotation marks, explanations, or translations.
+`.trim()
+
+  patchableAgent[LANGUAGE_PATCH_FLAG] = true
+}
+
 installRealtimeCaptureCleanup()
+installVerbatimLanguageTranscription()
