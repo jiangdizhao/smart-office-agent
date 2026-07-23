@@ -29,7 +29,8 @@ jobs:
             backend/scripts/smoke_phase1_voice_contract.py \
             backend/scripts/smoke_phase2_router_contract.py \
             backend/scripts/smoke_phase3_gate1_contract.py \
-            backend/scripts/smoke_phase3_gate2a_contract.py
+            backend/scripts/smoke_phase3_gate2a_contract.py \
+            backend/scripts/smoke_phase3_gate2b_contract.py
       - name: Run Phase 1 regression contract
         run: python backend/scripts/smoke_phase1_voice_contract.py
       - name: Run Phase 2 router contract
@@ -38,6 +39,8 @@ jobs:
         run: python backend/scripts/smoke_phase3_gate1_contract.py
       - name: Run Phase 3 Gate 2A Realtime presentation contract
         run: python backend/scripts/smoke_phase3_gate2a_contract.py
+      - name: Run Phase 3 Gate 2B compound presentation contract
+        run: python backend/scripts/smoke_phase3_gate2b_contract.py
 
   frontend-build:
     runs-on: ubuntu-latest
