@@ -28,14 +28,19 @@ def outlook_draft_status() -> dict[str, Any]:
         except OSError:
             registered = False
 
+    sender = presentation_config.outlook_sender_email
+    recipient = presentation_config.recipient_email
+    addresses_are_distinct = sender.casefold() != recipient.casefold()
     return {
         "provider": "classic_outlook_com",
         "outlook_com_registered": registered,
         "outlook_application_clsid": clsid,
-        "outlook_draft_configured": registered,
-        "email_send_enabled": False,
+        "outlook_draft_configured": registered and addresses_are_distinct,
+        "sender_account_email": sender,
         "recipient_name": presentation_config.recipient_name,
-        "recipient_email": presentation_config.recipient_email,
+        "recipient_email": recipient,
+        "sender_recipient_distinct": addresses_are_distinct,
+        "email_send_enabled": False,
     }
 
 
@@ -76,6 +81,39 @@ def _outlook_application(win32_client: Any) -> tuple[Any, str]:
         return win32_client.Dispatch("Outlook.Application"), "dispatch"
 
 
+def _account_email(account: Any) -> str:
+    if account is None:
+        return ""
+    for attribute in ("SmtpAddress", "UserName", "DisplayName"):
+        try:
+            value = str(getattr(account, attribute, "") or "").strip()
+        except Exception:
+            value = ""
+        if "@" in value:
+            return value
+    return ""
+
+
+def _find_sender_account(namespace: Any, expected_email: str) -> tuple[Any, list[str]]:
+    accounts = namespace.Accounts
+    detected: list[str] = []
+    match = None
+    for index in range(1, int(accounts.Count) + 1):
+        account = accounts.Item(index)
+        address = _account_email(account)
+        if address:
+            detected.append(address)
+        if address.casefold() == expected_email.casefold():
+            match = account
+    if match is None:
+        visible = ", ".join(detected) if detected else "none"
+        raise RuntimeError(
+            f"Configured Outlook sender account was not found: {expected_email}. "
+            f"Detected accounts: {visible}."
+        )
+    return match, detected
+
+
 def create_outlook_summary_draft(
     *,
     language: Literal["zh", "en"] = "zh",
@@ -96,6 +134,39 @@ def create_outlook_summary_draft(
             },
         )
 
+    sender_email = presentation_config.outlook_sender_email.strip()
+    recipient_email = presentation_config.recipient_email.strip()
+    if not sender_email or not recipient_email:
+        return ToolResult(
+            tool_name="outlook_create_summary_draft",
+            ok=False,
+            message="Outlook sender and recipient email addresses must both be configured.",
+            artifacts=[str(summary_path)],
+            data={
+                "execution_mode": "failed",
+                "requested_state": {"outlook_draft_created": True},
+                "sender_account_email": sender_email,
+                "recipient_email": recipient_email,
+                "email_send_enabled": False,
+                "sent": False,
+            },
+        )
+    if sender_email.casefold() == recipient_email.casefold():
+        return ToolResult(
+            tool_name="outlook_create_summary_draft",
+            ok=False,
+            message="Outlook sender and recipient must be different email addresses.",
+            artifacts=[str(summary_path)],
+            data={
+                "execution_mode": "failed",
+                "requested_state": {"outlook_draft_created": True},
+                "sender_account_email": sender_email,
+                "recipient_email": recipient_email,
+                "email_send_enabled": False,
+                "sent": False,
+            },
+        )
+
     if os.name != "nt":
         return ToolResult(
             tool_name="outlook_create_summary_draft",
@@ -106,6 +177,8 @@ def create_outlook_summary_draft(
                 "execution_mode": "failed",
                 "requested_state": {"outlook_draft_created": True},
                 "summary_path": str(summary_path),
+                "sender_account_email": sender_email,
+                "recipient_email": recipient_email,
                 "email_send_enabled": False,
                 "sent": False,
             },
@@ -124,6 +197,8 @@ def create_outlook_summary_draft(
                 "execution_mode": "failed",
                 "requested_state": {"outlook_draft_created": True},
                 "summary_path": str(summary_path),
+                "sender_account_email": sender_email,
+                "recipient_email": recipient_email,
                 "email_send_enabled": False,
                 "sent": False,
                 "error": f"{type(exc).__name__}: {exc}",
@@ -134,11 +209,19 @@ def create_outlook_summary_draft(
     try:
         outlook, connection_mode = _outlook_application(win32com.client)
         namespace = outlook.GetNamespace("MAPI")
+        sender_account, detected_accounts = _find_sender_account(namespace, sender_email)
         summary_text = summary_path.read_text(encoding="utf-8")
         clean_subject = _clean_subject(subject, language)
 
         mail = outlook.CreateItem(OUTLOOK_MAIL_ITEM)
-        mail.To = presentation_config.recipient_email
+        mail.SendUsingAccount = sender_account
+        assigned_sender = _account_email(getattr(mail, "SendUsingAccount", None))
+        if assigned_sender.casefold() != sender_email.casefold():
+            raise RuntimeError(
+                f"Outlook did not bind the draft to the configured sender account {sender_email}."
+            )
+
+        mail.To = recipient_email
         mail.Subject = clean_subject
         mail.Body = _message_body(summary_text, language)
         mail.Save()
@@ -160,18 +243,22 @@ def create_outlook_summary_draft(
         )
         saved_entry_id = str(getattr(saved, "EntryID", "") or "")
         saved_subject = str(getattr(saved, "Subject", "") or "")
+        saved_to = str(getattr(saved, "To", "") or "")
+        saved_sender = _account_email(getattr(saved, "SendUsingAccount", None))
         saved_state = bool(getattr(saved, "Saved", False))
         sent_state = bool(getattr(saved, "Sent", False))
 
         verified = bool(
             saved_entry_id == entry_id
             and saved_subject == clean_subject
+            and recipient_email.casefold() in saved_to.casefold()
+            and saved_sender.casefold() == sender_email.casefold()
             and saved_state
             and not sent_state
         )
         if not verified:
             raise RuntimeError(
-                "The Outlook draft was created but could not be verified as a saved, unsent item."
+                "The Outlook draft was created but sender, recipient, saved state, or unsent state could not be verified."
             )
 
         displayed = False
@@ -184,7 +271,7 @@ def create_outlook_summary_draft(
             tool_name="outlook_create_summary_draft",
             ok=True,
             message=(
-                f"Outlook draft created for {presentation_config.recipient_email}; "
+                f"Outlook draft created from {sender_email} for {recipient_email}; "
                 "it was not sent."
             ),
             expected_process_names=["OUTLOOK.EXE"],
@@ -199,8 +286,10 @@ def create_outlook_summary_draft(
                 "outlook_draft_store_id": store_id,
                 "outlook_draft_displayed": displayed,
                 "outlook_connection_mode": connection_mode,
+                "sender_account_email": sender_email,
+                "detected_outlook_accounts": detected_accounts,
                 "recipient_name": presentation_config.recipient_name,
-                "recipient_email": presentation_config.recipient_email,
+                "recipient_email": recipient_email,
                 "subject": clean_subject,
                 "summary_path": str(summary_path),
                 "summary_path_relative": relative_summary,
@@ -210,6 +299,8 @@ def create_outlook_summary_draft(
             raw={
                 "outlook_draft_entry_id": entry_id,
                 "outlook_draft_verified": True,
+                "sender_account_email": sender_email,
+                "recipient_email": recipient_email,
                 "email_send_enabled": False,
                 "sent": False,
             },
@@ -225,7 +316,8 @@ def create_outlook_summary_draft(
                 "requested_state": {"outlook_draft_created": True},
                 "summary_path": str(summary_path),
                 "summary_path_relative": _relative_or_absolute(summary_path),
-                "recipient_email": presentation_config.recipient_email,
+                "sender_account_email": sender_email,
+                "recipient_email": recipient_email,
                 "email_send_enabled": False,
                 "sent": False,
                 "error": f"{type(exc).__name__}: {exc}",
