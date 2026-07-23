@@ -11,6 +11,11 @@ REPO_ROOT = BACKEND_DIR.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+os.environ.setdefault(
+    "SMART_OFFICE_EMAIL_RECIPIENTS_FILE",
+    str(REPO_ROOT / "config" / "email_recipients.example.json"),
+)
+
 from app import office_sequence  # noqa: E402
 from app.presentation_config import (  # noqa: E402
     PresentationRuntimeConfig,
@@ -40,7 +45,7 @@ def _write_directory(
 
 def main() -> None:
     assert presentation_config.recipient_config_path == (
-        REPO_ROOT / "config" / "email_recipients.json"
+        REPO_ROOT / "config" / "email_recipients.example.json"
     ).resolve()
     assert presentation_config.default_recipient_key == "rico"
     assert presentation_config.resolve_recipient("rico").email == "jiangdizhao@gmail.com"
@@ -184,13 +189,18 @@ def main() -> None:
         encoding="utf-8"
     )
     assert "SMART_OFFICE_EMAIL_RECIPIENTS_FILE" in startup_source
+    assert "email_recipients.example.json" in startup_source
+    assert "Copy-Item" in startup_source
     assert "Recipient file reload: enabled" in startup_source
     assert "SMART_OFFICE_EMAIL_RECIPIENTS_JSON" not in startup_source
 
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "config/email_recipients.json" in gitignore
+
     print(
-        "PASS: Outlook recipients are loaded from an editable JSON file, hot-reloaded "
-        "without Backend restart, rejected when unknown or malformed, and remain "
-        "sole-recipient and second-approval gated."
+        "PASS: Outlook recipients are loaded from a local editable JSON file created "
+        "from a tracked template, hot-reloaded without Backend restart, rejected when "
+        "unknown or malformed, and remain sole-recipient and second-approval gated."
     )
 
 
