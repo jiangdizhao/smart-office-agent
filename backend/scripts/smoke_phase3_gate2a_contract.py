@@ -130,10 +130,11 @@ def main() -> None:
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
-    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_2a"
+    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_2b"
     assert health_payload["capabilities"]["realtime_presentation_function_calling"] is True
     assert health_payload["capabilities"]["presentation_execution_via_turn"] is True
     assert health_payload["capabilities"]["presentation_secondary_display"] is True
+    assert health_payload["capabilities"]["compound_presentation_execution"] is True
     assert health_payload["capabilities"]["general_office_execution_via_turn"] is False
 
     visitor = _post_tool_call(
@@ -171,8 +172,6 @@ def main() -> None:
     assert employee["presentation_status"]["monitor_placement_enforced"] is True
     assert "第 5 页" in employee["spoken_text"]
 
-    # A read-only status query must answer the current slide even when the
-    # independent monitor probe cannot verify DISPLAY2 at that instant.
     baseline_verification = VerificationResult(
         ok=True,
         message="Presentation status query completed.",
@@ -232,7 +231,7 @@ def main() -> None:
 
     print(
         "PASS: Gate 2A Realtime tool handoff, permission, current-slide status, "
-        "language, verified execution response, and Phase 2 fallback are available."
+        "language, verified execution response, and Phase 2 fallback remain available under Gate 2B."
     )
 
 
