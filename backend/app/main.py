@@ -15,6 +15,7 @@ from app.models import (
     TaskCreateRequest,
     TaskSession,
 )
+from app.office_api import router as office_router
 from app.planner import plan_task
 from app.presentation_api import router as presentation_router
 from app.realtime_api import router as realtime_router
@@ -25,7 +26,7 @@ from app.task_logger import log_task_record
 from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.6.1")
+app = FastAPI(title="Smart Office Agent Backend", version="0.7.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +43,7 @@ app.include_router(realtime_router)
 app.include_router(reception_router)
 app.include_router(turn_router)
 app.include_router(presentation_router)
+app.include_router(office_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -57,13 +59,14 @@ def health_check():
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.6.1",
-        "phase": "m3a_fusion_phase_3_gate_2b",
+        "version": "0.7.0",
+        "phase": "m3a_fusion_phase_3_gate_3_5",
         "capabilities": {
             "task_runtime": True,
             "realtime_voice_api": True,
             "realtime_presentation_function_calling": True,
             "unified_presentation_plan": True,
+            "unified_office_plan": True,
             "agent_turn_api": True,
             "unified_turn_router": True,
             "reception_knowledge": True,
@@ -75,6 +78,12 @@ def health_check():
             "presentation_secondary_display": True,
             "compound_presentation_execution": True,
             "compound_task_cancellation": True,
+            "system_volume_control": True,
+            "system_brightness_control": True,
+            "presentation_summary_artifacts": True,
+            "gmail_draft_creation": True,
+            "gmail_draft_approval_gate": True,
+            "email_send_enabled": False,
             "general_office_execution_via_turn": False,
         },
     }
