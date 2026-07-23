@@ -5,7 +5,7 @@ import './voice/safeRealtimeAgentRuntime'
 import './voice/VoiceDebugPanelPhase2.css'
 import { installRealtimeMetadataCompatibility } from './voice/realtimeMetadataCompatibility'
 import App from './App.tsx'
-import VoiceDebugPanel from './voice/VoiceDebugPanel.tsx'
+import OfficeVoicePanel from './voice/OfficeVoicePanel.tsx'
 
 installRealtimeMetadataCompatibility()
 
@@ -24,6 +24,6 @@ document.body.appendChild(voiceDebugRoot)
 
 createRoot(voiceDebugRoot).render(
   <StrictMode>
-    <VoiceDebugPanel />
+    <OfficeVoicePanel />
   </StrictMode>,
 )
