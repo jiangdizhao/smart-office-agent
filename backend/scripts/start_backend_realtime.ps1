@@ -129,8 +129,26 @@ if (-not $env:SMART_OFFICE_DEMO_RECIPIENT_NAME) {
 if (-not $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL) {
     $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL = "jiangdizhao@gmail.com"
 }
-if ($env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL -ieq $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL) {
-    throw "SMART_OFFICE_OUTLOOK_SENDER_EMAIL and SMART_OFFICE_DEMO_RECIPIENT_EMAIL must be different addresses."
+if (-not $env:SMART_OFFICE_DEFAULT_RECIPIENT_KEY) {
+    $env:SMART_OFFICE_DEFAULT_RECIPIENT_KEY = "rico"
+}
+
+Push-Location $backendDirectory
+try {
+    $recipientProbe = & $resolvedPython -c "import json; from app.presentation_config import presentation_config as c; print(json.dumps({'default_key': c.default_recipient_key, 'recipients': c.recipient_catalog()}, ensure_ascii=False))" 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not $recipientProbe) {
+        throw "Smart Office recipient allowlist configuration is invalid.`nDetails: $recipientProbe"
+    }
+    $recipientInfo = ($recipientProbe | Select-Object -Last 1) | ConvertFrom-Json
+}
+finally {
+    Pop-Location
+}
+
+foreach ($recipient in $recipientInfo.recipients) {
+    if ($env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL -ieq [string]$recipient.email) {
+        throw "Outlook sender and allowlisted recipient '$($recipient.key)' must be different addresses."
+    }
 }
 
 $secureKey = Read-Host "OpenAI API key" -AsSecureString
@@ -164,7 +182,11 @@ Write-Host "Configured PPT: $env:SMART_OFFICE_DEMO_PPT"
 Write-Host "Output directory: $env:SMART_OFFICE_OUTPUT_DIR"
 Write-Host "Presentation monitor: $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE"
 Write-Host "Outlook sender: $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL"
-Write-Host "Fixed recipient: $env:SMART_OFFICE_DEMO_RECIPIENT_NAME <$env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL>"
+Write-Host "Default recipient key: $($recipientInfo.default_key)"
+Write-Host "Allowed Outlook recipients:"
+foreach ($recipient in $recipientInfo.recipients) {
+    Write-Host "  - $($recipient.name) [$($recipient.key)] <$($recipient.email)>"
+}
 Write-Host "Backend: http://${HostAddress}:$Port"
 Write-Host "Realtime status: http://${HostAddress}:$Port/api/realtime/status"
 Write-Host "Presentation status: http://${HostAddress}:$Port/api/presentation/status"
