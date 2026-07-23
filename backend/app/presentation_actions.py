@@ -227,9 +227,39 @@ def execute_presentation_tool_call(
             }
         )
 
+    # Verify the PowerPoint COM state first. The slide-show window is created
+    # asynchronously, so the initial placement result must remain diagnostic only.
     verification = verify_presentation_tool_result(tool_result)
     status = get_presentation_status()
-    monitor_state = placement or inspect_slideshow_monitor()
+
+    # Always inspect the final monitor state afresh. The previous implementation
+    # used `placement or inspect_slideshow_monitor()`, which reused a non-empty but
+    # stale failure dictionary even after the real slide-show window had appeared.
+    monitor_state = inspect_slideshow_monitor()
+
+    # A slow Office build may expose slideshow_active before its top-level HWND.
+    # Give placement one final bounded retry after COM verification has observed the
+    # active show, then inspect once more rather than trusting either attempt object.
+    if (
+        name == "presentation_start_slideshow"
+        and tool_result.ok
+        and bool(status.data.get("slideshow_active"))
+        and not bool(monitor_state.get("monitor_placement_enforced"))
+    ):
+        retry_placement = place_slideshow_on_target_monitor(
+            window_timeout_seconds=2.5,
+            verification_timeout_seconds=2.5,
+        )
+        tool_result = tool_result.model_copy(
+            update={
+                "raw": {
+                    **tool_result.raw,
+                    "monitor_placement_retry": retry_placement,
+                }
+            }
+        )
+        monitor_state = inspect_slideshow_monitor()
+
     merged_status = {**status.data, **monitor_state}
     status = status.model_copy(update={"data": merged_status})
     verification = _merge_monitor_verification(
