@@ -2,6 +2,8 @@ import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
 
 const PATCH_FLAG = '__smartOfficeCaptureCleanupInstalled__'
 const LANGUAGE_PATCH_FLAG = '__smartOfficeVerbatimLanguageTranscriptionInstalled__'
+const CONNECTION_PATCH_FLAG = '__smartOfficeRealtimeConnectionGuardInstalled__'
+const CONNECTION_GUARD_TIMEOUT_MS = 50_000
 
 type GuardedRealtimeAgent = typeof realtimeAgent & {
   [PATCH_FLAG]?: boolean
@@ -10,6 +12,69 @@ type GuardedRealtimeAgent = typeof realtimeAgent & {
 type PatchableRealtimeAgent = {
   [LANGUAGE_PATCH_FLAG]?: boolean
   transcriptionInstructions: () => string
+}
+
+type ConnectionGuardedRealtimeAgent = typeof realtimeAgent & {
+  [CONNECTION_PATCH_FLAG]?: boolean
+  connectPromise?: Promise<void> | null
+}
+
+function timeoutError(message: string): Error {
+  const error = new Error(message)
+  error.name = 'TimeoutError'
+  return error
+}
+
+async function withTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: number | null = null
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = window.setTimeout(() => reject(timeoutError(message)), timeoutMs)
+  })
+  try {
+    return await Promise.race([operation, timeout])
+  } finally {
+    if (timer !== null) window.clearTimeout(timer)
+  }
+}
+
+async function resetStalledConnection(agent: ConnectionGuardedRealtimeAgent): Promise<void> {
+  // shutdown() closes any partially-created PeerConnection/DataChannel. The
+  // connectPromise field is then cleared explicitly so a retry cannot inherit a
+  // permanently pending promise left by a stalled browser fetch or WebRTC setup.
+  await agent.shutdown().catch(() => undefined)
+  agent.connectPromise = null
+}
+
+/**
+ * Guard the persistent Realtime connection against browser fetch/WebRTC calls
+ * that never settle. The underlying runtime already times out the data channel,
+ * but the status/session fetches previously had no browser-side deadline. That
+ * could leave the UI in the "connecting" state forever and make every retry
+ * await the same stale connectPromise.
+ */
+export function installRealtimeConnectionGuard(): void {
+  const guardedAgent = realtimeAgent as ConnectionGuardedRealtimeAgent
+  if (guardedAgent[CONNECTION_PATCH_FLAG]) return
+
+  const originalPrewarm = realtimeAgent.prewarm.bind(realtimeAgent)
+  realtimeAgent.prewarm = async (language: VoiceLanguage): Promise<void> => {
+    try {
+      await withTimeout(
+        originalPrewarm(language),
+        CONNECTION_GUARD_TIMEOUT_MS,
+        'GPT Realtime connection timed out. Check the Backend Realtime status, API key, model, and network, then retry.',
+      )
+    } catch (error) {
+      await resetStalledConnection(guardedAgent)
+      throw error
+    }
+  }
+
+  guardedAgent[CONNECTION_PATCH_FLAG] = true
 }
 
 /**
@@ -29,9 +94,14 @@ export function installRealtimeCaptureCleanup(): void {
 
   realtimeAgent.beginCapture = async (language: VoiceLanguage): Promise<void> => {
     try {
-      await originalBeginCapture(language)
+      await withTimeout(
+        originalBeginCapture(language),
+        CONNECTION_GUARD_TIMEOUT_MS,
+        'GPT Realtime microphone connection timed out. Check the Backend Realtime status and retry.',
+      )
     } catch (error) {
       await realtimeAgent.abortCapture().catch(() => undefined)
+      await resetStalledConnection(realtimeAgent as ConnectionGuardedRealtimeAgent)
       throw error
     }
   }
@@ -85,5 +155,6 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
   patchableAgent[LANGUAGE_PATCH_FLAG] = true
 }
 
+installRealtimeConnectionGuard()
 installRealtimeCaptureCleanup()
 installVerbatimLanguageTranscription()
