@@ -19,10 +19,13 @@ def main() -> None:
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
-    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_2b"
+    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_3_5"
     assert health_payload["capabilities"]["presentation_controller"] is True
     assert health_payload["capabilities"]["presentation_state_verifier"] is True
     assert health_payload["capabilities"]["presentation_execution_via_turn"] is True
+    # Gate 3-5 adds a separate bounded Office workflow endpoint. The legacy
+    # general-purpose /agent/turn path must remain unable to execute arbitrary
+    # Office actions.
     assert health_payload["capabilities"]["general_office_execution_via_turn"] is False
 
     status = client.get("/api/presentation/status")
@@ -66,7 +69,16 @@ def main() -> None:
     assert turn_status.json()["presentation_execution_enabled"] is True
     assert turn_status.json()["compound_presentation_execution_enabled"] is True
 
-    print("PASS: Gate 1 presentation API and safety contracts remain available under Gate 2B.")
+    office_status = client.get("/api/office/status")
+    office_status.raise_for_status()
+    office_payload = office_status.json()
+    assert office_payload["email_send_enabled"] is False
+    assert office_payload["artifacts"]["recipient_email"] == "jiangdizhao@gmail.com"
+
+    print(
+        "PASS: Gate 1 presentation API and safety contracts remain available under "
+        "Phase 3 Gate 3-5 without enabling arbitrary Office execution through /agent/turn."
+    )
 
 
 if __name__ == "__main__":
