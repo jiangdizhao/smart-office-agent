@@ -5,10 +5,10 @@ const LANGUAGE_PATCH_FLAG = '__smartOfficeVerbatimLanguageTranscriptionInstalled
 
 type GuardedRealtimeAgent = typeof realtimeAgent & {
   [PATCH_FLAG]?: boolean
-  [LANGUAGE_PATCH_FLAG]?: boolean
 }
 
-type PatchableRealtimeAgent = GuardedRealtimeAgent & {
+type PatchableRealtimeAgent = {
+  [LANGUAGE_PATCH_FLAG]?: boolean
   transcriptionInstructions: () => string
 }
 
