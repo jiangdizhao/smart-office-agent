@@ -15,14 +15,7 @@ def _clamp_percent(value: int | float) -> int:
 
 @contextmanager
 def _audio_com_apartment() -> Iterator[None]:
-    """Initialise COM in the thread that accesses Windows Core Audio.
-
-    Office actions are executed through ``asyncio.to_thread``. Those worker
-    threads do not inherit COM initialisation from the FastAPI main thread, so
-    PyCAW's ``CoCreateInstance`` calls fail unless the worker initialises its
-    own COM apartment.
-    """
-
+    """Initialise COM in the worker thread that accesses Windows Core Audio."""
     try:
         import pythoncom
     except ImportError:
@@ -43,13 +36,6 @@ def _audio_com_apartment() -> Iterator[None]:
 
 
 def _volume_endpoint():
-    """Return the default render endpoint's IAudioEndpointVolume interface.
-
-    PyCAW 20251023 returns an ``AudioDevice`` wrapper whose supported public
-    access path is ``EndpointVolume``. A legacy activation fallback is retained
-    for older PyCAW releases.
-    """
-
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
     speakers = AudioUtilities.GetSpeakers()
@@ -60,7 +46,6 @@ def _volume_endpoint():
     if endpoint is not None:
         return endpoint
 
-    # Compatibility with older PyCAW versions that returned the raw IMMDevice.
     activate = getattr(speakers, "Activate", None)
     if callable(activate):
         from comtypes import CLSCTX_ALL
@@ -76,9 +61,7 @@ def _volume_endpoint():
         import comtypes
 
         interface = raw_device.Activate(
-            IAudioEndpointVolume._iid_,
-            comtypes.CLSCTX_ALL,
-            None,
+            IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None
         )
         return interface.QueryInterface(IAudioEndpointVolume)
 
@@ -141,10 +124,13 @@ def _read_brightness() -> dict[str, Any]:
         try:
             rows = list(
                 service.ExecQuery(
-                    "SELECT CurrentBrightness, InstanceName FROM WmiMonitorBrightness"
+                    "SELECT Active, CurrentBrightness, InstanceName "
+                    "FROM WmiMonitorBrightness"
                 )
             )
-            if not rows:
+            active_rows = [row for row in rows if bool(getattr(row, "Active", True))]
+            selected = active_rows or rows
+            if not selected:
                 return {
                     "available": False,
                     "brightness_percent": None,
@@ -154,11 +140,11 @@ def _read_brightness() -> dict[str, Any]:
                         "not expose Windows WMI brightness control."
                     ),
                 }
-            values = [_clamp_percent(row.CurrentBrightness) for row in rows]
+            values = [_clamp_percent(row.CurrentBrightness) for row in selected]
             return {
                 "available": True,
                 "brightness_percent": int(round(sum(values) / len(values))),
-                "instances": [str(row.InstanceName) for row in rows],
+                "instances": [str(row.InstanceName) for row in selected],
                 "error": None,
             }
         finally:
@@ -168,8 +154,59 @@ def _read_brightness() -> dict[str, Any]:
             "available": False,
             "brightness_percent": None,
             "instances": [],
-            "error": str(exc),
+            "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
+    """Set brightness with explicit named WMI input parameters.
+
+    PowerShell successfully invokes WmiSetBrightness on the target machine, but
+    win32com's dynamic positional call can marshal the UInt8/UInt32 arguments in
+    the wrong order for SWbemObjectEx. Build the method input object explicitly
+    so Brightness and Timeout are assigned by name and type instead.
+    """
+    instances = list(
+        service.ExecQuery(
+            "SELECT Active, InstanceName FROM WmiMonitorBrightnessMethods"
+        )
+    )
+    active_instances = [
+        instance for instance in instances if bool(getattr(instance, "Active", True))
+    ]
+    selected = active_instances or instances
+    if not selected:
+        raise RuntimeError(
+            "No WMI brightness-capable display was found. The selected external "
+            "monitor may not support Windows brightness control."
+        )
+
+    class_definition = service.Get("WmiMonitorBrightnessMethods")
+    method_definition = class_definition.Methods_.Item("WmiSetBrightness")
+    results: list[dict[str, Any]] = []
+
+    for instance in selected:
+        input_parameters = method_definition.InParameters.SpawnInstance_()
+        input_parameters.Properties_.Item("Timeout").Value = 1
+        input_parameters.Properties_.Item("Brightness").Value = target
+        output_parameters = service.ExecMethod_(
+            instance.Path_.RelPath,
+            "WmiSetBrightness",
+            input_parameters,
+        )
+        return_value = int(output_parameters.Properties_.Item("ReturnValue").Value)
+        results.append(
+            {
+                "instance_name": str(instance.InstanceName),
+                "return_value": return_value,
+            }
+        )
+        if return_value != 0:
+            raise RuntimeError(
+                f"WmiSetBrightness returned {return_value} for {instance.InstanceName}."
+            )
+
+    return results
 
 
 def get_system_control_status() -> ToolResult:
@@ -276,38 +313,49 @@ def set_system_brightness(value_percent: int) -> ToolResult:
     try:
         pythoncom, service = _brightness_service()
         try:
-            methods = list(service.ExecQuery("SELECT * FROM WmiMonitorBrightnessMethods"))
-            if not methods:
-                raise RuntimeError(
-                    "No WMI brightness-capable display was found. The selected external "
-                    "monitor may not support Windows brightness control."
-                )
-            for method in methods:
-                method.WmiSetBrightness(1, target)
+            method_results = _set_wmi_brightness(service, target)
         finally:
             pythoncom.CoUninitialize()
-        time.sleep(0.25)
+
+        time.sleep(0.35)
         observed = _read_brightness()
+        observed_percent = observed.get("brightness_percent")
+        verified = bool(
+            observed.get("available")
+            and observed_percent is not None
+            and abs(int(observed_percent) - target) <= 1
+        )
         return ToolResult(
             tool_name="system_set_brightness",
-            ok=bool(observed["available"]),
-            message=f"Display brightness set to {target}%.",
+            ok=verified,
+            message=(
+                f"Display brightness set to {target}%."
+                if verified
+                else (
+                    f"WMI accepted brightness {target}%, but the observed value was "
+                    f"{observed_percent}."
+                )
+            ),
             data={
-                "execution_mode": "real",
+                "execution_mode": "real" if verified else "failed_verification",
                 "requested_state": {"brightness_percent": target},
                 "brightness": observed,
-                "brightness_percent": observed.get("brightness_percent"),
+                "brightness_percent": observed_percent,
+                "wmi_method_results": method_results,
             },
         )
     except Exception as exc:
         return ToolResult(
             tool_name="system_set_brightness",
             ok=False,
-            message=f"Display brightness could not be changed: {exc}",
+            message=(
+                "Display brightness could not be changed: "
+                f"{type(exc).__name__}: {exc}"
+            ),
             data={
                 "execution_mode": "failed",
                 "requested_state": {"brightness_percent": target},
-                "error": str(exc),
+                "error": f"{type(exc).__name__}: {exc}",
             },
         )
 
