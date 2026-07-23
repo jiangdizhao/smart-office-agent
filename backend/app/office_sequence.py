@@ -27,7 +27,7 @@ _ACTION_TITLES = {
     "system_set_brightness": "Set the display brightness",
     "system_adjust_brightness": "Adjust the display brightness",
     "office_generate_presentation_summary": "Generate a presentation summary",
-    "gmail_create_summary_draft": "Create a Gmail summary draft",
+    "outlook_create_summary_draft": "Create a Classic Outlook summary draft",
 }
 
 
@@ -109,7 +109,7 @@ def _step_arguments(
             return None, False, "language must be 'zh' or 'en'."
         return {"language": language}, False, None
 
-    if name == "gmail_create_summary_draft":
+    if name == "outlook_create_summary_draft":
         unexpected = set(item) - {"name", "language", "subject", "summary_source"}
         if unexpected:
             return None, True, f"Unexpected fields: {sorted(unexpected)}"
@@ -232,7 +232,7 @@ async def _approval_action(task_id: str, step: Any) -> str:
         task_id,
         step.step_id,
         "waiting_approval",
-        message="Approval is required before creating a Gmail cloud draft.",
+        message="Approval is required before creating a Classic Outlook draft.",
     )
     event_bus.publish(
         task_id=task_id,
@@ -244,7 +244,10 @@ async def _approval_action(task_id: str, step: Any) -> str:
             "title": step.title,
             "tool_name": step.tool_name,
             "actions": ["approve", "cancel", "skip", "takeover"],
-            "reason": "Creating a Gmail draft writes the generated summary to the user's cloud mailbox.",
+            "reason": (
+                "Creating an Outlook draft writes the generated summary to the "
+                "signed-in local Outlook mailbox and opens the draft window."
+            ),
             "email_send_enabled": False,
         },
     )
@@ -336,7 +339,9 @@ async def run_office_task(task_id: str) -> None:
             if approval in {"cancel", "takeover"}:
                 _cancel_remaining(
                     task_id,
-                    "Manual takeover requested." if approval == "takeover" else "Office task cancelled by user.",
+                    "Manual takeover requested."
+                    if approval == "takeover"
+                    else "Office task cancelled by user.",
                 )
                 return
 
