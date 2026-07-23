@@ -25,7 +25,11 @@ def verified() -> VerificationResult:
         ok=True,
         message="Verified by Gate 3-5 contract.",
         checked_at=datetime.now(UTC),
-        raw={"email_send_enabled": False},
+        raw={
+            "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
+        },
     )
 
 
@@ -43,6 +47,8 @@ def fake_executor():
         "sender_account_email": "jiangdizhao1@outlook.com",
         "recipient_email": "jiangdizhao@gmail.com",
         "email_send_enabled": False,
+        "approval_gated_email_send_enabled": True,
+        "unrestricted_email_send_enabled": False,
     }
 
     def execute(name: str, arguments: dict):
@@ -85,13 +91,33 @@ def fake_executor():
                     "outlook_draft_created": True,
                     "outlook_draft_verified": True,
                     "outlook_draft_entry_id": "outlook-entry-contract-123",
+                    "outlook_draft_store_id": "outlook-store-contract-123",
                     "outlook_draft_displayed": True,
                     "sender_account_email": state["sender_account_email"],
                     "recipient_email": state["recipient_email"],
+                    "subject": "Contract draft",
                     "email_send_enabled": False,
+                    "approval_gated_email_send_enabled": True,
+                    "unrestricted_email_send_enabled": False,
                     "sent": False,
                 }
             )
+        elif name == "outlook_send_approved_draft":
+            data.update(
+                {
+                    "requested_state": {"outlook_email_sent": True},
+                    "source_outlook_draft_entry_id": "outlook-entry-contract-123",
+                    "sender_account_email": state["sender_account_email"],
+                    "recipient_email": state["recipient_email"],
+                    "draft_notice_removed": True,
+                    "send_invoked": True,
+                    "approval_gated_email_send_enabled": True,
+                    "unrestricted_email_send_enabled": False,
+                    "sent": True,
+                    "delivery_confirmed": False,
+                }
+            )
+            state.update(data)
         elif name == "presentation_end_slideshow":
             state["slideshow_active"] = False
         else:
@@ -104,7 +130,11 @@ def fake_executor():
             message=f"Fake executed {name}.",
             artifacts=artifacts,
             data=data,
-            raw={"email_send_enabled": False},
+            raw={
+                "email_send_enabled": False,
+                "approval_gated_email_send_enabled": True,
+                "unrestricted_email_send_enabled": False,
+            },
         )
         status = ToolResult(
             tool_name="office_get_status",
@@ -144,26 +174,35 @@ def post_office_plan(
     return response.json()
 
 
-async def run_task_with_approval(task_id: str) -> None:
+async def run_task_with_approvals(task_id: str, expected_approvals: int) -> None:
     runner = asyncio.create_task(office_sequence.run_office_task(task_id))
-    waiting_step = None
-    for _ in range(80):
+    approved_steps: set[str] = set()
+    for _ in range(240):
         task = state_store.get_task(task_id)
         if task is not None:
             waiting_step = next(
-                (step for step in task.steps if step.status == "waiting_approval"),
+                (
+                    step
+                    for step in task.steps
+                    if step.status == "waiting_approval" and step.step_id not in approved_steps
+                ),
                 None,
             )
-        if waiting_step is not None:
-            break
+            if waiting_step is not None:
+                approved_steps.add(waiting_step.step_id)
+                state_store.set_approval(
+                    task_id,
+                    waiting_step.step_id,
+                    ApprovalRequest(
+                        action="approve",
+                        note=f"Gate 3-5 contract approval {len(approved_steps)}",
+                    ),
+                )
+            if task.status in {"completed", "failed", "cancelled"}:
+                break
         await asyncio.sleep(0.025)
-    assert waiting_step is not None, "Outlook draft step did not reach the approval gate."
-    state_store.set_approval(
-        task_id,
-        waiting_step.step_id,
-        ApprovalRequest(action="approve", note="Gate 3-5 contract approval"),
-    )
     await asyncio.wait_for(runner, timeout=5.0)
+    assert len(approved_steps) == expected_approvals
 
 
 def main() -> None:
@@ -202,10 +241,15 @@ def main() -> None:
                     "language": "zh",
                     "summary_source": "latest",
                 },
+                {
+                    "name": "outlook_send_approved_draft",
+                    "draft_source": "latest_verified",
+                },
             ]
         }
     )
-    assert error is None and workflow is not None and len(workflow) == 3
+    assert error is None and workflow is not None and len(workflow) == 4
+    assert workflow[-2].requires_confirmation is True
     assert workflow[-1].requires_confirmation is True
 
     invalid, error = office_sequence.validate_office_plan(
@@ -221,6 +265,18 @@ def main() -> None:
         }
     )
     assert invalid is None and error is not None
+
+    invalid_send, error = office_sequence.validate_office_plan(
+        {
+            "steps": [
+                {
+                    "name": "outlook_send_approved_draft",
+                    "draft_source": "attacker-controlled",
+                }
+            ]
+        }
+    )
+    assert invalid_send is None and error is not None
 
     visitor = post_office_plan(
         client,
@@ -257,7 +313,7 @@ def main() -> None:
         scheduled = post_office_plan(
             client,
             actor="employee",
-            text="结束演示，生成摘要，并准备Outlook草稿。",
+            text="结束演示，生成摘要，准备Outlook草稿，审核后发送。",
             steps=[
                 {"name": "presentation_end_slideshow"},
                 {"name": "office_generate_presentation_summary", "language": "zh"},
@@ -265,6 +321,10 @@ def main() -> None:
                     "name": "outlook_create_summary_draft",
                     "language": "zh",
                     "summary_source": "latest",
+                },
+                {
+                    "name": "outlook_send_approved_draft",
+                    "draft_source": "latest_verified",
                 },
             ],
         )
@@ -279,7 +339,7 @@ def main() -> None:
     original_sequence_executor = office_sequence.execute_office_tool_call
     office_sequence.execute_office_tool_call = fake
     try:
-        asyncio.run(run_task_with_approval(task_id))
+        asyncio.run(run_task_with_approvals(task_id, expected_approvals=2))
     finally:
         office_sequence.execute_office_tool_call = original_sequence_executor
 
@@ -289,14 +349,21 @@ def main() -> None:
         "succeeded",
         "succeeded",
         "succeeded",
+        "succeeded",
     ]
-    outlook = task["steps"][-1]["result"]["data"]
-    assert outlook["outlook_draft_created"] is True
-    assert outlook["outlook_draft_verified"] is True
-    assert outlook["sender_account_email"] == "jiangdizhao1@outlook.com"
-    assert outlook["recipient_email"] == "jiangdizhao@gmail.com"
-    assert outlook["sent"] is False
-    assert outlook["email_send_enabled"] is False
+    outlook_draft = task["steps"][-2]["result"]["data"]
+    assert outlook_draft["outlook_draft_created"] is True
+    assert outlook_draft["outlook_draft_verified"] is True
+    assert outlook_draft["sender_account_email"] == "jiangdizhao1@outlook.com"
+    assert outlook_draft["recipient_email"] == "jiangdizhao@gmail.com"
+    assert outlook_draft["sent"] is False
+
+    outlook_send = task["steps"][-1]["result"]["data"]
+    assert outlook_send["draft_notice_removed"] is True
+    assert outlook_send["send_invoked"] is True
+    assert outlook_send["sent"] is True
+    assert outlook_send["approval_gated_email_send_enabled"] is True
+    assert outlook_send["unrestricted_email_send_enabled"] is False
 
     interpreter = (
         BACKEND_DIR.parent
@@ -308,16 +375,27 @@ def main() -> None:
     ).read_text(encoding="utf-8")
     assert "name: 'office_plan'" in interpreter
     assert "outlook_create_summary_draft" in interpreter
+    assert "outlook_send_approved_draft" in interpreter
     assert "fixed signed-in Classic Outlook sender account" in interpreter
-    assert "there is no send tool" in interpreter
+    assert "second Backend approval" in interpreter
+    assert "removes the sentence saying the message is only a draft" in interpreter
     assert "gmail_create_summary_draft" not in interpreter
 
-    outlook_source = (BACKEND_DIR / "app" / "outlook_drafts.py").read_text(encoding="utf-8")
-    assert 'Dispatch("Outlook.Application")' in outlook_source
-    assert "SendUsingAccount" in outlook_source
-    assert "mail.Save()" in outlook_source
-    assert "GetItemFromID" in outlook_source
-    assert ".Send()" not in outlook_source
+    outlook_draft_source = (BACKEND_DIR / "app" / "outlook_drafts.py").read_text(
+        encoding="utf-8"
+    )
+    outlook_send_source = (BACKEND_DIR / "app" / "outlook_send.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'Dispatch("Outlook.Application")' in outlook_draft_source
+    assert "SendUsingAccount" in outlook_draft_source
+    assert "mail.Save()" in outlook_draft_source
+    assert "GetItemFromID" in outlook_draft_source
+    assert ".Send()" not in outlook_draft_source
+    assert "DRAFT_ONLY_NOTICE_ZH" in outlook_send_source
+    assert "DRAFT_ONLY_NOTICE_EN" in outlook_send_source
+    assert "verified_mail.Send()" in outlook_send_source
+    assert "draft_notice_removed" in outlook_send_source
     assert "jiangdizhao1@outlook.com" in (
         BACKEND_DIR / "app" / "presentation_config.py"
     ).read_text(encoding="utf-8")
@@ -326,9 +404,10 @@ def main() -> None:
     ).read_text(encoding="utf-8")
 
     print(
-        "PASS: Phase 3 Gate 3-5 validates bounded volume/brightness actions, local "
-        "summary artifacts, approval-gated Classic Outlook draft creation from the "
-        "configured Outlook sender to Rico, visitor denial, and disabled email sending."
+        "PASS: Phase 3 Gate 3-5 validates bounded device control, local summaries, "
+        "first-approved Classic Outlook draft creation, second-approved fixed-recipient "
+        "sending after removal of the draft-only notice, visitor denial, and prohibition "
+        "of unrestricted email sending."
     )
 
 
