@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter
@@ -22,6 +23,9 @@ router = APIRouter(tags=["agent-turn"])
 Language = Literal["zh", "en"]
 InputSource = Literal["text", "voice", "touch", "keyboard", "hardware"]
 PermissionDecision = Literal["allowed", "denied", "not_required"]
+
+_CJK_PATTERN = re.compile(r"[\u3400-\u9fff]")
+_ENGLISH_WORD_PATTERN = re.compile(r"[A-Za-z]+(?:['’-][A-Za-z]+)*")
 
 
 class RealtimePresentationToolCall(BaseModel):
@@ -50,6 +54,7 @@ class TurnResponse(BaseModel):
     route: TurnRoute
     normalized_text: str
     spoken_text: str
+    response_language: Language
     task_id: str | None = None
     task_status: str | None = None
     approval_required: bool = False
@@ -70,6 +75,27 @@ class TurnResponse(BaseModel):
 
 def _normalise_text(text: str) -> str:
     return " ".join(text.strip().split())
+
+
+def _response_language(text: str, requested_language: Language) -> Language:
+    cjk_count = len(_CJK_PATTERN.findall(text))
+    english_words = _ENGLISH_WORD_PATTERN.findall(text)
+    latin_character_count = len("".join(english_words))
+
+    if cjk_count == 0 and english_words:
+        return "en"
+    if cjk_count > 0 and len(english_words) >= 3 and latin_character_count >= cjk_count * 2:
+        return "en"
+    if cjk_count > 0:
+        return "zh"
+    return requested_language
+
+
+def _guard_spoken_language(text: str, language: Language, *, fallback: str) -> str:
+    clean = text.strip()
+    if language == "en" and _CJK_PATTERN.search(clean):
+        return fallback
+    return clean
 
 
 def _actor_type(actor_context: dict[str, Any]) -> ActorType:
@@ -197,15 +223,22 @@ def _office_permission_denied(language: Language) -> str:
 def _presentation_status_reply(status: dict[str, Any], language: Language) -> str:
     if not status.get("presentation_open"):
         return "PowerPoint 当前尚未打开。" if language == "zh" else "PowerPoint is not currently open."
+
     total = status.get("total_slides")
     if status.get("slideshow_active"):
         current = status.get("current_slide")
-        monitor = status.get("slideshow_monitor_device") or status.get("target_monitor_device")
-        return (
-            f"演示正在进行，当前是第 {current} 页，共 {total} 页，放映屏幕为 {monitor}。"
-            if language == "zh"
-            else f"The slide show is active on slide {current} of {total}, on {monitor}."
-        )
+        monitor_verified = bool(status.get("monitor_placement_enforced"))
+        monitor = status.get("slideshow_monitor_device")
+        if language == "zh":
+            reply = f"当前是第 {current} 页，共 {total} 页。"
+            if monitor_verified and monitor:
+                reply += f" 放映屏幕为 {monitor}。"
+            return reply
+        reply = f"The slide show is currently on slide {current} of {total}."
+        if monitor_verified and monitor:
+            reply += f" It is displayed on {monitor}."
+        return reply
+
     return (
         f"演示文稿已经打开，共 {total} 页，但尚未开始放映。"
         if language == "zh"
@@ -226,14 +259,18 @@ def _presentation_action_reply(
             if language == "zh"
             else f"The PowerPoint action was not executed: {tool_result.message}"
         )
+
+    # A status request is a read-only question. It should answer from observed
+    # PowerPoint state even when an independent monitor probe is unavailable.
+    if name == "presentation_get_status":
+        return _presentation_status_reply(status, language)
+
     if not verification.ok:
         return (
             f"PowerPoint 已收到操作，但实际状态没有通过验证：{verification.message}"
             if language == "zh"
             else f"PowerPoint accepted the action, but the observed state did not pass verification: {verification.message}"
         )
-    if name == "presentation_get_status":
-        return _presentation_status_reply(status, language)
 
     current = status.get("current_slide")
     total = status.get("total_slides")
@@ -277,6 +314,7 @@ def turn_status() -> dict:
         "office_execution_enabled": False,
         "presentation_execution_enabled": True,
         "presentation_intent_source": "gpt_realtime_function_call",
+        "response_language_policy": "utterance_detected_with_english_output_guard",
         "knowledge_mode": knowledge_status["mode"],
         "knowledge_content_version": knowledge_status["content_version"],
     }
@@ -291,10 +329,11 @@ def conversation_status(conversation_id: str) -> dict:
 @router.post("/agent/turn", response_model=TurnResponse)
 async def handle_turn(req: TurnRequest) -> TurnResponse:
     normalized_text = _normalise_text(req.text)
+    response_language = _response_language(normalized_text, req.language)
     actor_type = _actor_type(req.actor_context)
     conversation = conversation_store.get_or_create(
         req.conversation_id,
-        language=req.language,
+        language=response_language,
         actor_type=actor_type,
     )
     if req.active_task_id:
@@ -305,14 +344,19 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
         )
         conversation = conversation_store.get_or_create(
             req.conversation_id,
-            language=req.language,
+            language=response_language,
             actor_type=actor_type,
         )
 
     if req.realtime_tool_call is not None:
         permission_decision: PermissionDecision = "denied" if actor_type == "visitor" else "allowed"
         if permission_decision == "denied":
-            spoken_text = _office_permission_denied(req.language)
+            spoken_text = _office_permission_denied(response_language)
+            spoken_text = _guard_spoken_language(
+                spoken_text,
+                response_language,
+                fallback="A visitor cannot control PowerPoint. Switch to an employee or operator identity and try again.",
+            )
             conversation_store.update(
                 req.conversation_id,
                 current_scene="office",
@@ -324,6 +368,7 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 route="office_direct",
                 normalized_text=normalized_text,
                 spoken_text=spoken_text,
+                response_language=response_language,
                 actor_type=actor_type,
                 scene="office",
                 permission_decision=permission_decision,
@@ -343,7 +388,12 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
             tool_result,
             verification,
             status,
-            req.language,
+            response_language,
+        )
+        spoken_text = _guard_spoken_language(
+            spoken_text,
+            response_language,
+            fallback="The PowerPoint request was processed. Please check the verified presentation status shown on screen.",
         )
         conversation_store.update(
             req.conversation_id,
@@ -356,6 +406,7 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
             route="office_direct",
             normalized_text=normalized_text,
             spoken_text=spoken_text,
+            response_language=response_language,
             actor_type=actor_type,
             scene="office",
             permission_decision=permission_decision,
@@ -377,27 +428,27 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
     content_url: str | None = None
 
     if decision.route == "clarification":
-        spoken_text = _direct_reply(normalized_text, req.language, conversation.last_visible_answer)
+        spoken_text = _direct_reply(normalized_text, response_language, conversation.last_visible_answer)
 
     elif decision.route == "realtime_direct":
-        spoken_text = _direct_reply(normalized_text, req.language, conversation.last_visible_answer)
+        spoken_text = _direct_reply(normalized_text, response_language, conversation.last_visible_answer)
 
     elif decision.route == "reception_knowledge":
-        match = reception_knowledge.search(normalized_text, req.language)
+        match = reception_knowledge.search(normalized_text, response_language)
         spoken_text = match.answer
         source_ids = [match.source_id]
-        content_url = f"/reception/content/{match.entry.entry_id}?lang={req.language}"
+        content_url = f"/reception/content/{match.entry.entry_id}?lang={response_language}"
         permission_decision = "allowed"
 
     elif decision.route in {"office_direct", "office_planned_task"}:
         if actor_type == "visitor":
-            spoken_text = _office_permission_denied(req.language)
+            spoken_text = _office_permission_denied(response_language)
             permission_decision = "denied"
         elif decision.route == "office_direct":
             permission_decision = "allowed"
             spoken_text = (
                 "该办公请求没有携带 GPT Realtime 的受控 PowerPoint Function Call，因此没有执行。请重新说出明确的演示命令。"
-                if req.language == "zh"
+                if response_language == "zh"
                 else "This office request did not include a controlled GPT Realtime PowerPoint function call, so it was not executed. Please state a clear presentation command."
             )
         else:
@@ -413,20 +464,20 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
             )
             spoken_text = (
                 "这是复合办公请求。Gate 2A 只执行单个演示动作，因此当前仅创建规划任务，不执行真实 Office 操作。"
-                if req.language == "zh"
+                if response_language == "zh"
                 else "This is a compound office request. Gate 2A executes one presentation action at a time, so this request is plan-only and no real Office action was executed."
             )
 
     elif decision.route == "approval_action":
         permission_decision = "allowed" if actor_type in {"employee", "operator"} else "denied"
         if permission_decision == "denied":
-            spoken_text = _office_permission_denied(req.language)
+            spoken_text = _office_permission_denied(response_language)
         else:
             target_task_id = req.active_task_id or conversation.active_task_id
             if not target_task_id or decision.approval_action is None:
                 spoken_text = (
                     "当前没有可处理的活动任务。"
-                    if req.language == "zh"
+                    if response_language == "zh"
                     else "There is no active task to update."
                 )
             else:
@@ -436,7 +487,7 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 if applied:
                     spoken_text = (
                         f"已提交任务操作：{decision.approval_action}。"
-                        if req.language == "zh"
+                        if response_language == "zh"
                         else f"Task action submitted: {decision.approval_action}."
                     )
                     if decision.approval_action in {"cancel", "takeover"}:
@@ -448,10 +499,15 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 else:
                     spoken_text = (
                         "任务存在，但目前没有正在等待该确认的步骤。"
-                        if req.language == "zh"
+                        if response_language == "zh"
                         else "The task exists, but no step is currently waiting for that approval action."
                     )
 
+    spoken_text = _guard_spoken_language(
+        spoken_text,
+        response_language,
+        fallback="The response could not be provided entirely in English. Please repeat the request.",
+    )
     conversation_store.update(
         req.conversation_id,
         current_scene=decision.scene,
@@ -464,6 +520,7 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
         route=decision.route,
         normalized_text=normalized_text,
         spoken_text=spoken_text,
+        response_language=response_language,
         task_id=task_id,
         task_status=task_status,
         approval_required=approval_required,
