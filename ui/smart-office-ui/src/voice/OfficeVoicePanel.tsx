@@ -13,6 +13,7 @@ type Actor = 'visitor' | 'employee' | 'operator'
 type Asr = 'realtime' | 'browser'
 type PanelState = 'idle' | 'connecting' | 'listening' | 'processing' | 'speaking' | 'error'
 type TaskStatus = 'created' | 'planning' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
+type RecipientEntry = { key: string; name: string; email: string }
 type OfficeStatus = {
   presentation_open?: boolean
   slideshow_active?: boolean
@@ -31,7 +32,12 @@ type OfficeStatus = {
   outlook_draft_displayed?: boolean
   source_outlook_draft_entry_id?: string | null
   sender_account_email?: string | null
+  default_recipient_key?: string | null
+  recipient_key?: string | null
+  recipient_name?: string | null
   recipient_email?: string | null
+  recipient_catalog?: RecipientEntry[]
+  allowed_recipient_keys?: string[]
   approval_gated_email_send_enabled?: boolean
   unrestricted_email_send_enabled?: boolean
   draft_notice_removed?: boolean
@@ -51,6 +57,8 @@ type ToolData = {
   outlook_draft_displayed?: boolean
   source_outlook_draft_entry_id?: string
   sender_account_email?: string
+  recipient_key?: string
+  recipient_name?: string
   recipient_email?: string
   approval_gated_email_send_enabled?: boolean
   unrestricted_email_send_enabled?: boolean
@@ -62,6 +70,7 @@ type ToolData = {
 type TaskStep = {
   index: number
   tool_name?: string | null
+  args?: { recipient_key?: string }
   status: string
   result?: { tool_name: string; ok: boolean; message: string; data?: ToolData } | null
 }
@@ -127,17 +136,19 @@ function finalTaskText(task: Task, lang: VoiceLanguage): string {
   }
   if (data?.sent || status?.sent) {
     const sender = data?.sender_account_email ?? status?.sender_account_email ?? 'configured Outlook account'
-    const recipient = data?.recipient_email ?? status?.recipient_email ?? 'configured recipient'
+    const recipientName = data?.recipient_name ?? status?.recipient_name ?? data?.recipient_key ?? status?.recipient_key ?? 'configured recipient'
+    const recipientEmail = data?.recipient_email ?? status?.recipient_email ?? 'configured email'
     return lang === 'zh'
-      ? `已在第二次批准后删除“仅保存为草稿、尚未发送”的提示，并由 Outlook 接受从 ${sender} 发往 ${recipient} 的发送操作。最终送达状态由 Outlook 和网络处理。`
-      : `After the second approval, the draft-only notice was removed and Outlook accepted the send from ${sender} to ${recipient}. Final delivery is handled by Outlook and the network.`
+      ? `已在第二次批准后删除“仅保存为草稿、尚未发送”的提示，并由 Outlook 接受从 ${sender} 发往 ${recipientName}（${recipientEmail}）的发送操作。最终送达状态由 Outlook 和网络处理。`
+      : `After the second approval, the draft-only notice was removed and Outlook accepted the send from ${sender} to ${recipientName} (${recipientEmail}). Final delivery is handled by Outlook and the network.`
   }
   if (data?.outlook_draft_created || status?.outlook_draft_created) {
     const sender = data?.sender_account_email ?? status?.sender_account_email ?? 'configured Outlook account'
-    const recipient = data?.recipient_email ?? status?.recipient_email ?? 'configured recipient'
+    const recipientName = data?.recipient_name ?? status?.recipient_name ?? data?.recipient_key ?? status?.recipient_key ?? 'configured recipient'
+    const recipientEmail = data?.recipient_email ?? status?.recipient_email ?? 'configured email'
     return lang === 'zh'
-      ? `Outlook 草稿已创建并验证。发件账号为 ${sender}，收件人为 ${recipient}，邮件尚未发送。`
-      : `A verified Outlook draft was created from ${sender} for ${recipient}; it has not been sent.`
+      ? `Outlook 草稿已创建并验证。发件账号为 ${sender}，收件人为 ${recipientName}（${recipientEmail}），邮件尚未发送。`
+      : `A verified Outlook draft was created from ${sender} for ${recipientName} (${recipientEmail}); it has not been sent.`
   }
   const summary = data?.summary_path_relative ?? status?.summary_path_relative
   if (summary) return lang === 'zh' ? `演示摘要已生成：${summary}。` : `The presentation summary was generated at ${summary}.`
@@ -168,6 +179,7 @@ export default function OfficeVoicePanel() {
   const [taskId, setTaskId] = useState<string | null>(null)
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null)
   const [pendingApprovalTool, setPendingApprovalTool] = useState<string | null>(null)
+  const [pendingRecipientKey, setPendingRecipientKey] = useState<string | null>(null)
   const [office, setOffice] = useState<OfficeStatus | null>(null)
   const [contentUrl, setContentUrl] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -221,23 +233,27 @@ export default function OfficeVoicePanel() {
       const artifact = artifactFromTask(task); if (artifact) setContentUrl(artifact)
       const waiting = waitingStep(task)
       if (task.status === 'waiting_approval' && waiting) {
-        const approvalKey = `${id}:${waiting.index}:${waiting.tool_name ?? 'unknown'}`
+        const recipientKey = waiting.args?.recipient_key ?? null
+        const approvalKey = `${id}:${waiting.index}:${waiting.tool_name ?? 'unknown'}:${recipientKey ?? 'latest'}`
         setPendingApprovalTool(waiting.tool_name ?? null)
+        setPendingRecipientKey(recipientKey)
         if (approvalPrompted.current !== approvalKey) {
           approvalPrompted.current = approvalKey
           const isSend = waiting.tool_name === 'outlook_send_approved_draft'
+          const recipientLabel = recipientKey ? `联系人 ${recipientKey}` : '最新已验证草稿的联系人'
           const prompt = lang === 'zh'
             ? isSend
-              ? '发送邮件需要第二次批准。批准后会先删除正文中的“该邮件目前仅保存为 Outlook 草稿，尚未发送。”，重新保存并核对固定发件人与收件人，然后调用 Outlook 发送。请检查草稿后再说“批准”，或使用批准、跳过、取消按钮。'
-              : '创建本机 Outlook 草稿需要第一次批准。草稿将使用已登录的 Outlook 账号发给固定收件人，但此时不会发送。请说“批准”，或使用批准、跳过、取消按钮。'
+              ? `发送给${recipientLabel}的邮件需要第二次批准。批准后会先删除正文中的“该邮件目前仅保存为 Outlook 草稿，尚未发送。”，重新保存并核对发件人与白名单收件人，然后调用 Outlook 发送。请检查草稿后再批准。`
+              : `为${recipientLabel}创建本机 Outlook 草稿需要第一次批准。草稿会使用已登录的 Outlook 账号，但此时不会发送。`
             : isSend
-              ? 'Sending requires a second approval. After approval, the draft-only notice will be removed, the fixed sender and recipient will be re-verified, and Outlook Send() will be invoked.'
-              : 'Creating the local Outlook draft requires the first approval. It will use the signed-in Outlook account for the fixed recipient, but it will not send at this stage.'
+              ? `Sending to ${recipientLabel} requires a second approval. The draft-only notice will be removed and the allowlisted recipient will be re-verified before Outlook Send() is invoked.`
+              : `Creating the Outlook draft for ${recipientLabel} requires the first approval. It will not send at this stage.`
           setAnswer(prompt); if (!realtimeAgent.status().microphoneAttached) await speak(prompt, lang)
         }
       }
       if (['completed', 'failed', 'cancelled'].includes(task.status)) {
         setPendingApprovalTool(null)
+        setPendingRecipientKey(null)
         const text = finalTaskText(task, lang); setAnswer(text)
         if (!realtimeAgent.status().microphoneAttached && task.status !== 'cancelled') await speak(text, lang)
         return
@@ -251,7 +267,7 @@ export default function OfficeVoicePanel() {
     setPanel('processing'); setError('')
     const lang = utteranceLanguage(clean, language)
     const decision = await realtimeOfficeInterpreter.interpret(clean, lang)
-    if (decision.kind === 'clarify') { const q = decision.clarification || (lang === 'zh' ? '请明确办公操作。' : 'Please clarify the office action.'); setAnswer(q); await speak(q, lang); return }
+    if (decision.kind === 'clarify') { const q = decision.clarification || (lang === 'zh' ? '请明确办公操作或选择已配置的邮件联系人。' : 'Please clarify the office action or choose a configured email recipient.'); setAnswer(q); await speak(q, lang); return }
     if (active && decision.kind === 'tool_call') { const text = lang === 'zh' ? '当前已有办公任务正在执行。请先等待、批准、跳过或取消。' : 'An office task is already active. Wait, approve, skip, or cancel it first.'; setAnswer(text); await speak(text, lang); return }
     const call = decision.kind === 'tool_call' ? decision.toolCall : null
     const endpoint = call?.name === 'office_plan' ? '/agent/office-turn' : '/agent/turn'
@@ -271,9 +287,14 @@ export default function OfficeVoicePanel() {
     const response = await fetch(`${API}/agent/tasks/${taskId}/approval`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, note: 'Submitted from Phase 3 office panel' }) })
     if (!response.ok) throw new Error(`Approval failed: ${response.status} ${await response.text()}`)
     const isSend = pendingApprovalTool === 'outlook_send_approved_draft'
-    setAnswer(action === 'approve' ? (isSend ? '已完成第二次批准，正在删除草稿提示并调用 Outlook 发送。' : '已完成第一次批准，正在创建 Outlook 草稿。') : (isSend ? '已跳过 Outlook 发送步骤，草稿保持未发送。' : '已跳过 Outlook 草稿步骤。'))
+    const recipientText = pendingRecipientKey ? `联系人 ${pendingRecipientKey}` : '所选联系人'
+    setAnswer(action === 'approve' ? (isSend ? `已完成第二次批准，正在删除草稿提示并向${recipientText}发送。` : `已完成第一次批准，正在为${recipientText}创建 Outlook 草稿。`) : (isSend ? '已跳过 Outlook 发送步骤，草稿保持未发送。' : '已跳过 Outlook 草稿步骤。'))
   }
 
+  const recipientCatalog = office?.recipient_catalog ?? []
+  const recipientCatalogText = recipientCatalog.length
+    ? recipientCatalog.map((item) => `${item.name} [${item.key}]: ${item.email}`).join(' · ')
+    : 'Rico [rico]: jiangdizhao@gmail.com'
   const stateLabel: Record<PanelState, string> = { idle: '空闲', connecting: '正在连接', listening: '正在聆听', processing: '正在处理', speaking: '正在朗读', error: '发生错误' }
   return <aside className={`voice-debug-panel ${expanded ? 'expanded' : 'collapsed'}`}>
     <button className="voice-panel-toggle" onClick={() => setExpanded(!expanded)}>{expanded ? '收起 Phase 3 控制台' : '打开 Phase 3 控制台'}</button>
@@ -287,14 +308,15 @@ export default function OfficeVoicePanel() {
       </div>
       <div className="voice-connection-row"><span>Voice WebRTC: {runtime.connectionState} / {runtime.dataChannelState}</span><span>Mic: {runtime.microphoneAttached ? 'attached' : 'released'}</span><button disabled={listening || busy || runtime.connected} onClick={() => void connect()}>{runtime.connected ? '已连接' : '连接语音'}</button></div>
       <div className="voice-ptt-row"><button className={listening ? 'voice-ptt listening' : 'voice-ptt'} disabled={busy} onClick={() => void (listening ? end() : begin())}>{listening ? '结束说话' : '点击说话'}</button><button className="voice-stop" disabled={!runtime.outputActive && panel !== 'speaking'} onClick={() => void voiceOutputManager.stop().then(() => setPanel('idle'))}>停止朗读</button><button disabled={taskStatus !== 'waiting_approval'} onClick={() => void approve('approve')}>{pendingApprovalTool === 'outlook_send_approved_draft' ? '第二次批准并发送' : '第一次批准并创建草稿'}</button><button disabled={taskStatus !== 'waiting_approval'} onClick={() => void approve('skip')}>跳过</button><button className="voice-stop" disabled={!active} onClick={() => void approve('cancel')}>取消任务</button></div>
-      <div className="voice-text-test"><input value={input} disabled={listening || busy} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void submit(input, 'text').catch((x) => { setError(String(x)); setPanel('error') }) }} placeholder="输入演示、音量、亮度、摘要、Outlook 草稿或发送命令"/><button disabled={listening || busy} onClick={() => void submit(input, 'text').catch((x) => { setError(x instanceof Error ? x.message : String(x)); setPanel('error') })}>发送</button></div>
+      <div className="voice-text-test"><input value={input} disabled={listening || busy} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void submit(input, 'text').catch((x) => { setError(String(x)); setPanel('error') }) }} placeholder="输入演示、设备、摘要或发给已配置联系人的 Outlook 邮件命令"/><button disabled={listening || busy} onClick={() => void submit(input, 'text').catch((x) => { setError(x instanceof Error ? x.message : String(x)); setPanel('error') })}>发送</button></div>
       <div className="voice-result-grid"><div><span>识别文本</span><p>{transcript || '—'}</p></div><div><span>Agent 文本</span><p>{answer || '—'}</p></div></div>
       <div className="voice-result-grid"><div><span>PowerPoint</span><p>{office?.slideshow_active ? `Presenting ${office.current_slide}/${office.total_slides}` : office?.presentation_open ? 'Ready' : 'Closed'}</p></div><div><span>设备</span><p>Volume {office?.volume_percent ?? '—'}% · Brightness {office?.brightness_percent ?? '—'}%</p></div></div>
-      <div className="voice-result-grid"><div><span>Outlook 发件账号</span><p>{office?.sender_account_email ?? 'jiangdizhao1@outlook.com'}</p></div><div><span>固定收件人 Rico</span><p>{office?.recipient_email ?? 'jiangdizhao@gmail.com'}</p></div></div>
+      <div className="voice-result-grid"><div><span>Outlook 发件账号</span><p>{office?.sender_account_email ?? 'jiangdizhao1@outlook.com'}</p></div><div><span>本次/默认收件人</span><p>{office?.recipient_name ?? 'Rico'} [{office?.recipient_key ?? office?.default_recipient_key ?? 'rico'}]: {office?.recipient_email ?? 'jiangdizhao@gmail.com'}</p></div></div>
+      <div className="voice-result-grid"><div><span>允许的邮件联系人</span><p>{recipientCatalogText}</p></div><div><span>发送边界</span><p>仅白名单联系人 · 发送前第二次批准</p></div></div>
       <div className="voice-ptt-row">{contentUrl ? <button onClick={() => window.open(`${API}${contentUrl}`, '_blank', 'noopener,noreferrer')}>打开摘要</button> : null}</div>
-      <div className="voice-diagnostics"><span>Actor: {actor}</span><span>Route: {route || '—'}</span><span>Permission: {permission || '—'}</span><span>Tool: {tool || '—'}</span><span>Verification: {verified === null ? '—' : verified ? 'PASS' : 'FAIL'}</span><span>Task: {taskId || '—'}</span><span>Task status: {taskStatus || '—'}</span><span>Email send: second approval required</span></div>
+      <div className="voice-diagnostics"><span>Actor: {actor}</span><span>Route: {route || '—'}</span><span>Permission: {permission || '—'}</span><span>Tool: {tool || '—'}</span><span>Verification: {verified === null ? '—' : verified ? 'PASS' : 'FAIL'}</span><span>Task: {taskId || '—'}</span><span>Task status: {taskStatus || '—'}</span><span>Email send: allowlist + second approval</span></div>
       {error ? <div className="voice-error">{error}</div> : null}
-      <p className="voice-safety-note">Phase 3 Gate 3–5 使用本机 Classic Outlook 账号 jiangdizhao1@outlook.com，为 Rico（jiangdizhao@gmail.com）创建草稿。创建草稿和发送邮件分别需要两次独立批准；第二次批准后会先删除“仅保存为草稿、尚未发送”的提示，再调用 Outlook 发送。任意收件人和无审批发送仍被禁止。</p>
+      <p className="voice-safety-note">本机 Classic Outlook 发件账号固定为 jiangdizhao1@outlook.com。收件人从 Backend 白名单中按联系人键名选择；创建草稿和发送邮件分别需要两次独立批准。第二次批准后会先删除“仅保存为草稿、尚未发送”的提示，再调用 Outlook 发送。模型不能直接提供任意邮箱地址。</p>
     </div> : null}
   </aside>
 }
