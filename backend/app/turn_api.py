@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter
@@ -13,6 +14,12 @@ from app.executor import run_task_plan_only
 from app.models import ApprovalRequest, TaskSession, ToolResult, VerificationResult
 from app.planner import plan_task
 from app.presentation_actions import execute_presentation_tool_call
+from app.presentation_sequence import (
+    SEQUENCE_TOOL_NAME,
+    create_presentation_sequence_task,
+    run_presentation_sequence_task,
+    validate_sequence_arguments,
+)
 from app.reception_knowledge import reception_knowledge
 from app.state_store import state_store
 from app.task_graph import build_task_graph, task_graph_event_data
@@ -70,7 +77,7 @@ class TurnResponse(BaseModel):
     tool_result: ToolResult | None = None
     verification_result: VerificationResult | None = None
     presentation_status: dict[str, Any] | None = None
-    phase: str = "m3a_fusion_phase_3_gate_2a"
+    phase: str = "m3a_fusion_phase_3_gate_2b"
 
 
 def _normalise_text(text: str) -> str:
@@ -133,10 +140,12 @@ def _create_plan_only_task(text: str) -> TaskSession:
     return task
 
 
-def _cancel_task(task_id: str) -> TaskSession | None:
+def _cancel_task(task_id: str) -> tuple[TaskSession | None, bool]:
     task = state_store.get_task(task_id)
     if task is None:
-        return None
+        return None, False
+    if task.status in {"completed", "failed", "cancelled"}:
+        return task, False
     state_store.update_pending_steps(
         task_id,
         "cancelled",
@@ -153,7 +162,7 @@ def _cancel_task(task_id: str) -> TaskSession | None:
         message="Task cancellation requested through /agent/turn.",
         data={"source": "agent_turn"},
     )
-    return state_store.get_task(task_id)
+    return state_store.get_task(task_id), True
 
 
 def _apply_approval_action(
@@ -161,7 +170,7 @@ def _apply_approval_action(
     action: ApprovalAction,
 ) -> tuple[TaskSession | None, bool]:
     if action == "cancel":
-        return _cancel_task(task_id), True
+        return _cancel_task(task_id)
 
     task = state_store.get_task(task_id)
     if task is None:
@@ -260,8 +269,6 @@ def _presentation_action_reply(
             else f"The PowerPoint action was not executed: {tool_result.message}"
         )
 
-    # A status request is a read-only question. It should answer from observed
-    # PowerPoint state even when an independent monitor probe is unavailable.
     if name == "presentation_get_status":
         return _presentation_status_reply(status, language)
 
@@ -295,12 +302,25 @@ def _presentation_action_reply(
     return messages.get(name, tool_result.message)
 
 
+def _sequence_validation_verification(error: ToolResult) -> VerificationResult:
+    return VerificationResult(
+        ok=False,
+        message="Compound presentation request failed Backend validation.",
+        process_ok=None,
+        window_ok=None,
+        expected_process_names=error.expected_process_names,
+        expected_window_keywords=error.expected_window_keywords,
+        checked_at=datetime.now(UTC),
+        raw={"validation_error": error.message},
+    )
+
+
 @router.get("/agent/turn/status")
 def turn_status() -> dict:
     knowledge_status = reception_knowledge.status()
     return {
         "ok": True,
-        "phase": "m3a_fusion_phase_3_gate_2a",
+        "phase": "m3a_fusion_phase_3_gate_2b",
         "routes": [
             "realtime_direct",
             "reception_knowledge",
@@ -313,6 +333,7 @@ def turn_status() -> dict:
         "task_creation_enabled": True,
         "office_execution_enabled": False,
         "presentation_execution_enabled": True,
+        "compound_presentation_execution_enabled": True,
         "presentation_intent_source": "gpt_realtime_function_call",
         "response_language_policy": "utterance_detected_with_english_output_guard",
         "knowledge_mode": knowledge_status["mode"],
@@ -377,6 +398,82 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 realtime_tool_call=req.realtime_tool_call,
             )
 
+        if req.realtime_tool_call.name == SEQUENCE_TOOL_NAME:
+            planned_steps, validation_error = validate_sequence_arguments(
+                req.realtime_tool_call.arguments
+            )
+            if validation_error is not None or planned_steps is None:
+                error_result = validation_error or ToolResult(
+                    tool_name=SEQUENCE_TOOL_NAME,
+                    ok=False,
+                    message="Compound presentation sequence is invalid.",
+                )
+                verification = _sequence_validation_verification(error_result)
+                spoken_text = (
+                    f"复合演示命令没有执行：{error_result.message}"
+                    if response_language == "zh"
+                    else f"The compound presentation command was not executed: {error_result.message}"
+                )
+                return TurnResponse(
+                    conversation_id=req.conversation_id,
+                    route="office_planned_task",
+                    normalized_text=normalized_text,
+                    spoken_text=spoken_text,
+                    response_language=response_language,
+                    actor_type=actor_type,
+                    scene="office",
+                    permission_decision="allowed",
+                    route_reason="GPT Realtime selected a compound presentation sequence, but Backend validation rejected it.",
+                    intent_source="gpt_realtime_function_call",
+                    realtime_tool_call=req.realtime_tool_call,
+                    tool_result=error_result,
+                    verification_result=verification,
+                )
+
+            task = create_presentation_sequence_task(normalized_text, planned_steps)
+            conversation_store.update(
+                req.conversation_id,
+                current_scene="office",
+                active_task_id=task.task_id,
+                set_active_task=True,
+                last_command=normalized_text,
+            )
+            asyncio.create_task(run_presentation_sequence_task(task.task_id))
+            scheduled_result = ToolResult(
+                tool_name=SEQUENCE_TOOL_NAME,
+                ok=True,
+                message="Compound presentation task validated and scheduled.",
+                expected_process_names=["POWERPNT.EXE"],
+                expected_window_keywords=["PowerPoint"],
+                data={
+                    "execution_mode": "real",
+                    "task_id": task.task_id,
+                    "step_count": len(planned_steps),
+                    "requested_state": {"compound_sequence": True},
+                },
+            )
+            spoken_text = (
+                f"正在执行包含 {len(planned_steps)} 个步骤的演示任务。"
+                if response_language == "zh"
+                else f"Executing a presentation task with {len(planned_steps)} steps."
+            )
+            return TurnResponse(
+                conversation_id=req.conversation_id,
+                route="office_planned_task",
+                normalized_text=normalized_text,
+                spoken_text=spoken_text,
+                response_language=response_language,
+                task_id=task.task_id,
+                task_status=task.status,
+                actor_type=actor_type,
+                scene="office",
+                permission_decision="allowed",
+                route_reason="GPT Realtime selected a bounded compound presentation sequence; Backend validated it and scheduled the existing task runtime.",
+                intent_source="gpt_realtime_function_call",
+                realtime_tool_call=req.realtime_tool_call,
+                tool_result=scheduled_result,
+            )
+
         tool_result, verification, status_result = await asyncio.to_thread(
             execute_presentation_tool_call,
             req.realtime_tool_call.name,
@@ -410,7 +507,7 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
             actor_type=actor_type,
             scene="office",
             permission_decision=permission_decision,
-            route_reason="GPT Realtime selected a registered Gate 2A presentation capability; Backend validated, executed, and verified it.",
+            route_reason="GPT Realtime selected a registered Gate 2B presentation capability; Backend validated, executed, and verified it.",
             intent_source="gpt_realtime_function_call",
             realtime_tool_call=req.realtime_tool_call,
             tool_result=tool_result,
@@ -463,9 +560,9 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 set_active_task=True,
             )
             spoken_text = (
-                "这是复合办公请求。Gate 2A 只执行单个演示动作，因此当前仅创建规划任务，不执行真实 Office 操作。"
+                "该请求不是受控的 PowerPoint 复合命令，因此只创建规划任务，没有执行真实 Office 操作。"
                 if response_language == "zh"
-                else "This is a compound office request. Gate 2A executes one presentation action at a time, so this request is plan-only and no real Office action was executed."
+                else "This request is not a bounded compound PowerPoint command, so it remains plan-only and no real Office action was executed."
             )
 
     elif decision.route == "approval_action":
@@ -498,9 +595,9 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                         )
                 else:
                     spoken_text = (
-                        "任务存在，但目前没有正在等待该确认的步骤。"
+                        "任务已经结束，当前没有可应用的任务操作。"
                         if response_language == "zh"
-                        else "The task exists, but no step is currently waiting for that approval action."
+                        else "The task has already ended, so there is no applicable task action."
                     )
 
     spoken_text = _guard_spoken_language(
