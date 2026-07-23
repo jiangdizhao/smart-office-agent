@@ -123,21 +123,15 @@ if (-not $env:SMART_OFFICE_PRESENTATION_MONITOR_NUMBER) {
 if (-not $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL) {
     $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL = "jiangdizhao1@outlook.com"
 }
-if (-not $env:SMART_OFFICE_DEMO_RECIPIENT_NAME) {
-    $env:SMART_OFFICE_DEMO_RECIPIENT_NAME = "Rico"
-}
-if (-not $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL) {
-    $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL = "jiangdizhao@gmail.com"
-}
-if (-not $env:SMART_OFFICE_DEFAULT_RECIPIENT_KEY) {
-    $env:SMART_OFFICE_DEFAULT_RECIPIENT_KEY = "rico"
+if (-not $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE) {
+    $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = Join-Path $repoRoot "config\email_recipients.json"
 }
 
 Push-Location $backendDirectory
 try {
-    $recipientProbe = & $resolvedPython -c "import json; from app.presentation_config import presentation_config as c; print(json.dumps({'default_key': c.default_recipient_key, 'recipients': c.recipient_catalog()}, ensure_ascii=False))" 2>&1
+    $recipientProbe = & $resolvedPython -c "import json; from app.presentation_config import presentation_config as c; d=c.recipient_directory(); print(json.dumps({'config_path': str(d.config_path), 'default_key': d.default_recipient_key, 'recipients': d.public_catalog()}, ensure_ascii=False))" 2>&1
     if ($LASTEXITCODE -ne 0 -or -not $recipientProbe) {
-        throw "Smart Office recipient allowlist configuration is invalid.`nDetails: $recipientProbe"
+        throw "Smart Office recipient file is missing or invalid.`nFile: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE`nDetails: $recipientProbe"
     }
     $recipientInfo = ($recipientProbe | Select-Object -Last 1) | ConvertFrom-Json
 }
@@ -147,7 +141,7 @@ finally {
 
 foreach ($recipient in $recipientInfo.recipients) {
     if ($env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL -ieq [string]$recipient.email) {
-        throw "Outlook sender and allowlisted recipient '$($recipient.key)' must be different addresses."
+        throw "Outlook sender and configured recipient '$($recipient.key)' must be different addresses."
     }
 }
 
@@ -182,11 +176,13 @@ Write-Host "Configured PPT: $env:SMART_OFFICE_DEMO_PPT"
 Write-Host "Output directory: $env:SMART_OFFICE_OUTPUT_DIR"
 Write-Host "Presentation monitor: $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE"
 Write-Host "Outlook sender: $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL"
+Write-Host "Recipient file: $($recipientInfo.config_path)"
 Write-Host "Default recipient key: $($recipientInfo.default_key)"
-Write-Host "Allowed Outlook recipients:"
+Write-Host "Configured Outlook recipients:"
 foreach ($recipient in $recipientInfo.recipients) {
     Write-Host "  - $($recipient.name) [$($recipient.key)] <$($recipient.email)>"
 }
+Write-Host "Recipient file reload: enabled before status, draft, and send actions"
 Write-Host "Backend: http://${HostAddress}:$Port"
 Write-Host "Realtime status: http://${HostAddress}:$Port/api/realtime/status"
 Write-Host "Presentation status: http://${HostAddress}:$Port/api/presentation/status"
