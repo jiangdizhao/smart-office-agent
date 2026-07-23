@@ -102,7 +102,7 @@ $resolvedPython = Resolve-CondaEnvironmentPython -EnvironmentName $CondaEnvName
 
 $dependencyProbe = & $resolvedPython -c "import fastapi, sse_starlette, uvicorn, pythoncom, win32com.client; print('ok')" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    throw "The automatically selected '$CondaEnvName' Python is missing backend or PowerPoint COM dependencies.`nRun once from the repository root:`n  conda run -n $CondaEnvName python -m pip install -r backend/requirements-smartoffice.txt`nDetails: $dependencyProbe"
+    throw "The automatically selected '$CondaEnvName' Python is missing backend or Office COM dependencies.`nRun once from the repository root:`n  conda run -n $CondaEnvName python -m pip install -r backend/requirements-smartoffice.txt`nDetails: $dependencyProbe"
 }
 
 $backendDirectory = Split-Path -Parent $PSScriptRoot
@@ -120,11 +120,17 @@ if (-not $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE) {
 if (-not $env:SMART_OFFICE_PRESENTATION_MONITOR_NUMBER) {
     $env:SMART_OFFICE_PRESENTATION_MONITOR_NUMBER = "2"
 }
+if (-not $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL) {
+    $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL = "jiangdizhao1@outlook.com"
+}
 if (-not $env:SMART_OFFICE_DEMO_RECIPIENT_NAME) {
     $env:SMART_OFFICE_DEMO_RECIPIENT_NAME = "Rico"
 }
 if (-not $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL) {
     $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL = "jiangdizhao@gmail.com"
+}
+if ($env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL -ieq $env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL) {
+    throw "SMART_OFFICE_OUTLOOK_SENDER_EMAIL and SMART_OFFICE_DEMO_RECIPIENT_EMAIL must be different addresses."
 }
 
 $secureKey = Read-Host "OpenAI API key" -AsSecureString
@@ -149,7 +155,7 @@ $env:OPENAI_REALTIME_ENABLED = "true"
 $env:OPENAI_REALTIME_MODEL = $Model
 $env:OPENAI_REALTIME_CONNECT_TIMEOUT_SECONDS = "30"
 
-Write-Host "Starting Smart Office Backend with Realtime voice and Gate 1 PowerPoint COM..." -ForegroundColor Cyan
+Write-Host "Starting Smart Office Backend with Realtime voice and Office COM..." -ForegroundColor Cyan
 Write-Host "Conda environment: $CondaEnvName"
 Write-Host "Python: $resolvedPython"
 Write-Host "Model: $Model"
@@ -157,6 +163,8 @@ Write-Host "OPENAI_API_KEY: configured (value hidden)"
 Write-Host "Configured PPT: $env:SMART_OFFICE_DEMO_PPT"
 Write-Host "Output directory: $env:SMART_OFFICE_OUTPUT_DIR"
 Write-Host "Presentation monitor: $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE"
+Write-Host "Outlook sender: $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL"
+Write-Host "Fixed recipient: $env:SMART_OFFICE_DEMO_RECIPIENT_NAME <$env:SMART_OFFICE_DEMO_RECIPIENT_EMAIL>"
 Write-Host "Backend: http://${HostAddress}:$Port"
 Write-Host "Realtime status: http://${HostAddress}:$Port/api/realtime/status"
 Write-Host "Presentation status: http://${HostAddress}:$Port/api/presentation/status"
