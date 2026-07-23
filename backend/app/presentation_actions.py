@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from app.models import ToolResult, VerificationResult
+from app.powerpoint_bootstrap import (
+    PowerPointBootstrapResult,
+    ensure_powerpoint_desktop_running,
+)
 from app.presentation_monitor import (
     inspect_slideshow_monitor,
     place_slideshow_on_target_monitor,
@@ -70,6 +74,26 @@ def _validate_no_arguments(name: str, arguments: dict[str, Any]) -> ToolResult |
     return None
 
 
+def _attach_bootstrap(
+    tool_result: ToolResult,
+    bootstrap: PowerPointBootstrapResult | None,
+) -> ToolResult:
+    if bootstrap is None:
+        return tool_result
+    return tool_result.model_copy(
+        update={
+            "data": {
+                **tool_result.data,
+                "powerpoint_bootstrap": bootstrap.to_dict(),
+            },
+            "raw": {
+                **tool_result.raw,
+                "powerpoint_bootstrap": bootstrap.to_dict(),
+            },
+        }
+    )
+
+
 def _merge_monitor_verification(
     name: str,
     verification: VerificationResult,
@@ -121,11 +145,12 @@ def execute_presentation_tool_call(
     name: str,
     arguments: dict[str, Any] | None = None,
 ) -> tuple[ToolResult, VerificationResult, ToolResult]:
-    """Execute one GPT Realtime-selected Gate 2A presentation capability.
+    """Execute one GPT Realtime-selected bounded presentation capability.
 
-    The model selects a bounded capability, while this service owns validation,
-    execution, secondary-display placement, state verification, and the final
-    observed PowerPoint status.
+    The model selects a capability, while this service owns validation,
+    PowerPoint desktop bootstrap, execution, secondary-display placement,
+    state verification, and the final observed PowerPoint status. This path is
+    shared by Gate 2A single actions and Gate 2B compound task steps.
     """
 
     clean_arguments = dict(arguments or {})
@@ -137,6 +162,8 @@ def execute_presentation_tool_call(
         )
         verification = verify_presentation_tool_result(tool_result)
         return tool_result, verification, get_presentation_status()
+
+    bootstrap: PowerPointBootstrapResult | None = None
 
     if name == "presentation_go_to_slide":
         unexpected = set(clean_arguments) - {"slide_number"}
@@ -166,8 +193,12 @@ def execute_presentation_tool_call(
         if invalid is not None:
             tool_result = invalid
         elif name == "presentation_open_configured":
+            bootstrap = ensure_powerpoint_desktop_running()
             tool_result = open_configured_presentation()
         elif name == "presentation_start_slideshow":
+            # Starting a show may also need to open the configured file, so the
+            # task/runtime path requires the same desktop bootstrap as Gate 1 API.
+            bootstrap = ensure_powerpoint_desktop_running()
             tool_result = start_configured_slideshow()
         elif name == "presentation_next_slide":
             tool_result = next_presentation_slide()
@@ -177,6 +208,8 @@ def execute_presentation_tool_call(
             tool_result = get_presentation_status()
         else:
             tool_result = end_configured_slideshow()
+
+    tool_result = _attach_bootstrap(tool_result, bootstrap)
 
     placement: dict[str, Any] | None = None
     if name == "presentation_start_slideshow" and tool_result.ok:
