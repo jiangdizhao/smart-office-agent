@@ -97,9 +97,7 @@ def _wait_for_task(client: TestClient, task_id: str) -> dict:
     raise AssertionError(f"Task did not reach a terminal state: {task_id}")
 
 
-def main() -> None:
-    client = TestClient(app)
-
+def _run_http_contract(client: TestClient) -> None:
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
@@ -194,7 +192,7 @@ def main() -> None:
         assert not any("\u3400" <= char <= "\u9fff" for char in payload["spoken_text"])
 
         task = _wait_for_task(client, payload["task_id"])
-        assert task["status"] == "completed"
+        assert task["status"] == "completed", task.get("summary")
         assert [step["status"] for step in task["steps"]] == [
             "succeeded",
             "succeeded",
@@ -207,45 +205,47 @@ def main() -> None:
     finally:
         presentation_sequence.execute_presentation_tool_call = original
 
-    async def cancellation_contract() -> None:
-        slow_started = asyncio.Event()
 
-        def slow_execute(name: str, arguments: dict):
-            slow_started_loop.call_soon_threadsafe(slow_started.set)
-            time.sleep(0.25)
-            tool = ToolResult(
-                tool_name=name,
-                ok=True,
-                message="Slow fake action completed.",
-                data={"execution_mode": "real", "requested_state": {}},
-            )
-            status = ToolResult(
-                tool_name="presentation_get_status",
-                ok=True,
-                message="Fake status.",
-                data={"presentation_open": True, "slideshow_active": False},
-            )
-            return tool, _verification(), status
+async def _run_cancellation_contract() -> None:
+    original = presentation_sequence.execute_presentation_tool_call
+    loop = asyncio.get_running_loop()
+    slow_started = asyncio.Event()
 
-        planned, validation_error = validate_sequence_arguments(
-            {
-                "steps": [
-                    {"name": "presentation_open_configured"},
-                    {"name": "presentation_get_status"},
-                ]
-            }
+    def slow_execute(name: str, arguments: dict):
+        loop.call_soon_threadsafe(slow_started.set)
+        time.sleep(0.25)
+        tool = ToolResult(
+            tool_name=name,
+            ok=True,
+            message="Slow fake action completed.",
+            data={"execution_mode": "real", "requested_state": {}},
         )
-        assert validation_error is None and planned is not None
-        task = presentation_sequence.create_presentation_sequence_task(
-            "Open and inspect the presentation.", planned
+        status = ToolResult(
+            tool_name="presentation_get_status",
+            ok=True,
+            message="Fake status.",
+            data={"presentation_open": True, "slideshow_active": False},
         )
-        presentation_sequence.execute_presentation_tool_call = slow_execute
+        return tool, _verification(), status
+
+    planned, validation_error = validate_sequence_arguments(
+        {
+            "steps": [
+                {"name": "presentation_open_configured"},
+                {"name": "presentation_get_status"},
+            ]
+        }
+    )
+    assert validation_error is None and planned is not None
+    task = presentation_sequence.create_presentation_sequence_task(
+        "Open and inspect the presentation.", planned
+    )
+    presentation_sequence.execute_presentation_tool_call = slow_execute
+    try:
         runner = asyncio.create_task(
             presentation_sequence.run_presentation_sequence_task(task.task_id)
         )
         await slow_started.wait()
-        state = presentation_sequence.state_store.get_task(task.task_id)
-        assert state is not None
         presentation_sequence.state_store.update_pending_steps(
             task.task_id, "cancelled", message="Contract cancellation."
         )
@@ -256,15 +256,14 @@ def main() -> None:
         cancelled = presentation_sequence.state_store.get_task(task.task_id)
         assert cancelled is not None and cancelled.status == "cancelled"
         assert cancelled.steps[1].status == "cancelled"
-
-    slow_started_loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(slow_started_loop)
-        slow_started_loop.run_until_complete(cancellation_contract())
     finally:
         presentation_sequence.execute_presentation_tool_call = original
-        slow_started_loop.close()
-        asyncio.set_event_loop(None)
+
+
+def main() -> None:
+    with TestClient(app) as client:
+        _run_http_contract(client)
+    asyncio.run(_run_cancellation_contract())
 
     print(
         "PASS: Gate 2B compound sequence validation, permission, task execution, "
