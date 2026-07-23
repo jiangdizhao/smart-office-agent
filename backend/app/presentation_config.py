@@ -21,6 +21,7 @@ class PresentationRuntimeConfig:
     output_directory: Path
     target_monitor_device: str
     target_monitor_number: int
+    outlook_sender_email: str
     recipient_name: str
     recipient_email: str
     close_powerpoint_when_empty: bool = False
@@ -42,11 +43,15 @@ class PresentationRuntimeConfig:
                 1,
                 int(os.environ.get("SMART_OFFICE_PRESENTATION_MONITOR_NUMBER", "2")),
             ),
+            outlook_sender_email=os.environ.get(
+                "SMART_OFFICE_OUTLOOK_SENDER_EMAIL",
+                "jiangdizhao1@outlook.com",
+            ).strip(),
             recipient_name=os.environ.get("SMART_OFFICE_DEMO_RECIPIENT_NAME", "Rico"),
             recipient_email=os.environ.get(
                 "SMART_OFFICE_DEMO_RECIPIENT_EMAIL",
-                "jiangdizhao1@outlook.com",
-            ),
+                "jiangdizhao@gmail.com",
+            ).strip(),
             close_powerpoint_when_empty=os.environ.get(
                 "SMART_OFFICE_CLOSE_POWERPOINT_WHEN_EMPTY",
                 "false",
