@@ -191,6 +191,8 @@ def send_latest_outlook_draft() -> ToolResult:
         if bool(getattr(mail, "Sent", False)):
             raise RuntimeError("The selected Outlook item has already been sent.")
 
+        draft_parent = getattr(mail, "Parent", None)
+        draft_parent_entry_id = str(getattr(draft_parent, "EntryID", "") or "")
         observed_subject = str(getattr(mail, "Subject", "") or "")
         if draft["subject"] and observed_subject != draft["subject"]:
             raise RuntimeError("The saved draft subject no longer matches the verified draft.")
@@ -237,27 +239,60 @@ def send_latest_outlook_draft() -> ToolResult:
         verified_mail.Send()
 
         stage = "send_acceptance_verification"
-        draft_still_exists = True
+        send_accepted = False
+        acceptance_evidence = ""
         for _ in range(20):
             try:
-                namespace.GetItemFromID(entry_id, store_id) if store_id else namespace.GetItemFromID(entry_id)
+                observed_item = (
+                    namespace.GetItemFromID(entry_id, store_id)
+                    if store_id
+                    else namespace.GetItemFromID(entry_id)
+                )
             except Exception:
-                draft_still_exists = False
+                send_accepted = True
+                acceptance_evidence = "original_entry_id_unavailable"
                 break
+
+            try:
+                if bool(getattr(observed_item, "Sent", False)):
+                    send_accepted = True
+                    acceptance_evidence = "sent_property_true"
+                    break
+            except Exception:
+                pass
+
+            try:
+                observed_parent = getattr(observed_item, "Parent", None)
+                observed_parent_entry_id = str(
+                    getattr(observed_parent, "EntryID", "") or ""
+                )
+                if (
+                    draft_parent_entry_id
+                    and observed_parent_entry_id
+                    and observed_parent_entry_id != draft_parent_entry_id
+                ):
+                    send_accepted = True
+                    acceptance_evidence = "moved_out_of_original_drafts_folder"
+                    break
+            except Exception:
+                pass
             time.sleep(0.25)
-        if draft_still_exists:
+
+        if not send_accepted:
             raise RuntimeError(
-                "Outlook accepted Send() but the item remained addressable as the original draft."
+                "Outlook Send() returned, but the item still appeared as an unsent item in "
+                "the original Drafts folder."
             )
 
         LOGGER.info(
-            "OUTLOOK_SEND_SUCCESS sender=%s recipient=%s entry_id=%s connection_mode=%s detected_accounts=%s notice_removed=%s",
+            "OUTLOOK_SEND_SUCCESS sender=%s recipient=%s entry_id=%s connection_mode=%s detected_accounts=%s notice_removed=%s acceptance_evidence=%s",
             sender_email,
             recipient_email,
             entry_id,
             connection_mode,
             detected_accounts,
             True,
+            acceptance_evidence,
         )
         return ToolResult(
             tool_name="outlook_send_approved_draft",
@@ -283,6 +318,7 @@ def send_latest_outlook_draft() -> ToolResult:
                 "unrestricted_email_send_enabled": False,
                 "draft_notice_removed": True,
                 "send_invoked": True,
+                "send_acceptance_evidence": acceptance_evidence,
                 "sent": True,
                 "delivery_confirmed": False,
             },
@@ -292,6 +328,7 @@ def send_latest_outlook_draft() -> ToolResult:
                 "unrestricted_email_send_enabled": False,
                 "draft_notice_removed": True,
                 "send_invoked": True,
+                "send_acceptance_evidence": acceptance_evidence,
                 "sent": True,
                 "delivery_confirmed": False,
             },
