@@ -16,6 +16,7 @@ from app.main import app  # noqa: E402
 from app.models import ApprovalRequest, ToolResult, VerificationResult  # noqa: E402
 import app.office_api as office_api  # noqa: E402
 import app.office_sequence as office_sequence  # noqa: E402
+from app.presentation_config import presentation_config  # noqa: E402
 from app.state_store import state_store  # noqa: E402
 
 
@@ -39,6 +40,8 @@ def fake_executor():
         "monitor_placement_enforced": True,
         "volume_percent": 50,
         "brightness_percent": 70,
+        "sender_account_email": "jiangdizhao1@outlook.com",
+        "recipient_email": "jiangdizhao@gmail.com",
         "email_send_enabled": False,
     }
 
@@ -75,14 +78,16 @@ def fake_executor():
                 }
             )
             artifacts.append(data["summary_path"])
-        elif name == "gmail_create_summary_draft":
+        elif name == "outlook_create_summary_draft":
             data.update(
                 {
-                    "requested_state": {"gmail_draft_created": True},
-                    "gmail_draft_created": True,
-                    "gmail_draft_id": "draft-contract-123",
-                    "gmail_drafts_url": "https://mail.google.com/mail/u/0/#drafts",
-                    "recipient_email": "jiangdizhao@gmail.com",
+                    "requested_state": {"outlook_draft_created": True},
+                    "outlook_draft_created": True,
+                    "outlook_draft_verified": True,
+                    "outlook_draft_entry_id": "outlook-entry-contract-123",
+                    "outlook_draft_displayed": True,
+                    "sender_account_email": state["sender_account_email"],
+                    "recipient_email": state["recipient_email"],
                     "email_send_enabled": False,
                     "sent": False,
                 }
@@ -152,7 +157,7 @@ async def run_task_with_approval(task_id: str) -> None:
         if waiting_step is not None:
             break
         await asyncio.sleep(0.025)
-    assert waiting_step is not None, "Gmail draft step did not reach the approval gate."
+    assert waiting_step is not None, "Outlook draft step did not reach the approval gate."
     state_store.set_approval(
         task_id,
         waiting_step.step_id,
@@ -169,8 +174,16 @@ def main() -> None:
     assert root["capabilities"]["system_volume_control"] is True
     assert root["capabilities"]["system_brightness_control"] is True
     assert root["capabilities"]["presentation_summary_artifacts"] is True
-    assert root["capabilities"]["gmail_draft_creation"] is True
+    assert root["capabilities"]["classic_outlook_draft_creation"] is True
+    assert root["capabilities"]["outlook_draft_approval_gate"] is True
     assert root["capabilities"]["email_send_enabled"] is False
+
+    assert presentation_config.outlook_sender_email == "jiangdizhao1@outlook.com"
+    assert presentation_config.recipient_email == "jiangdizhao@gmail.com"
+    assert (
+        presentation_config.outlook_sender_email.casefold()
+        != presentation_config.recipient_email.casefold()
+    )
 
     volume, error = office_sequence.validate_office_plan(
         {"steps": [{"name": "system_set_volume", "value_percent": 35}]}
@@ -185,7 +198,7 @@ def main() -> None:
                 {"name": "system_adjust_brightness", "delta_percent": -10},
                 {"name": "office_generate_presentation_summary", "language": "zh"},
                 {
-                    "name": "gmail_create_summary_draft",
+                    "name": "outlook_create_summary_draft",
                     "language": "zh",
                     "summary_source": "latest",
                 },
@@ -199,7 +212,7 @@ def main() -> None:
         {
             "steps": [
                 {
-                    "name": "gmail_create_summary_draft",
+                    "name": "outlook_create_summary_draft",
                     "language": "zh",
                     "summary_source": "latest",
                     "recipient_email": "attacker@example.com",
@@ -244,12 +257,12 @@ def main() -> None:
         scheduled = post_office_plan(
             client,
             actor="employee",
-            text="结束演示，生成摘要，并准备Gmail草稿。",
+            text="结束演示，生成摘要，并准备Outlook草稿。",
             steps=[
                 {"name": "presentation_end_slideshow"},
                 {"name": "office_generate_presentation_summary", "language": "zh"},
                 {
-                    "name": "gmail_create_summary_draft",
+                    "name": "outlook_create_summary_draft",
                     "language": "zh",
                     "summary_source": "latest",
                 },
@@ -277,10 +290,13 @@ def main() -> None:
         "succeeded",
         "succeeded",
     ]
-    gmail = task["steps"][-1]["result"]["data"]
-    assert gmail["gmail_draft_created"] is True
-    assert gmail["sent"] is False
-    assert gmail["email_send_enabled"] is False
+    outlook = task["steps"][-1]["result"]["data"]
+    assert outlook["outlook_draft_created"] is True
+    assert outlook["outlook_draft_verified"] is True
+    assert outlook["sender_account_email"] == "jiangdizhao1@outlook.com"
+    assert outlook["recipient_email"] == "jiangdizhao@gmail.com"
+    assert outlook["sent"] is False
+    assert outlook["email_send_enabled"] is False
 
     interpreter = (
         BACKEND_DIR.parent
@@ -291,19 +307,28 @@ def main() -> None:
         / "realtimeOfficeInterpreter.ts"
     ).read_text(encoding="utf-8")
     assert "name: 'office_plan'" in interpreter
-    assert "gmail_create_summary_draft" in interpreter
-    assert "Email sending is disabled" in interpreter
-    assert "gmail_send" not in interpreter
+    assert "outlook_create_summary_draft" in interpreter
+    assert "fixed signed-in Classic Outlook sender account" in interpreter
+    assert "there is no send tool" in interpreter
+    assert "gmail_create_summary_draft" not in interpreter
 
-    artifacts_source = (BACKEND_DIR / "app" / "office_artifacts.py").read_text(encoding="utf-8")
-    assert ".drafts()" in artifacts_source
-    assert ".create(userId=\"me\"" in artifacts_source
-    assert ".send(" not in artifacts_source
+    outlook_source = (BACKEND_DIR / "app" / "outlook_drafts.py").read_text(encoding="utf-8")
+    assert 'Dispatch("Outlook.Application")' in outlook_source
+    assert "SendUsingAccount" in outlook_source
+    assert "mail.Save()" in outlook_source
+    assert "GetItemFromID" in outlook_source
+    assert ".Send()" not in outlook_source
+    assert "jiangdizhao1@outlook.com" in (
+        BACKEND_DIR / "app" / "presentation_config.py"
+    ).read_text(encoding="utf-8")
+    assert "jiangdizhao@gmail.com" in (
+        BACKEND_DIR / "app" / "presentation_config.py"
+    ).read_text(encoding="utf-8")
 
     print(
         "PASS: Phase 3 Gate 3-5 validates bounded volume/brightness actions, local "
-        "summary artifacts, approval-gated Gmail draft creation, visitor denial, and "
-        "the invariant that email sending is disabled."
+        "summary artifacts, approval-gated Classic Outlook draft creation from the "
+        "configured Outlook sender to Rico, visitor denial, and disabled email sending."
     )
 
 
