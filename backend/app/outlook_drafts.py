@@ -10,6 +10,8 @@ from app.office_artifacts import latest_summary_path
 from app.presentation_config import presentation_config
 
 OUTLOOK_MAIL_ITEM = 0
+OUTLOOK_TO_RECIPIENT = 1
+PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"
 
 
 def outlook_draft_status() -> dict[str, Any]:
@@ -112,6 +114,26 @@ def _find_sender_account(namespace: Any, expected_email: str) -> tuple[Any, list
             f"Detected accounts: {visible}."
         )
     return match, detected
+
+
+def _recipient_smtp_addresses(mail: Any) -> list[str]:
+    recipients = mail.Recipients
+    addresses: list[str] = []
+    for index in range(1, int(recipients.Count) + 1):
+        recipient = recipients.Item(index)
+        value = ""
+        try:
+            value = str(
+                recipient.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) or ""
+            ).strip()
+        except Exception:
+            try:
+                value = str(getattr(recipient, "Address", "") or "").strip()
+            except Exception:
+                value = ""
+        if value:
+            addresses.append(value)
+    return addresses
 
 
 def create_outlook_summary_draft(
@@ -221,7 +243,13 @@ def create_outlook_summary_draft(
                 f"Outlook did not bind the draft to the configured sender account {sender_email}."
             )
 
-        mail.To = recipient_email
+        recipient = mail.Recipients.Add(recipient_email)
+        recipient.Type = OUTLOOK_TO_RECIPIENT
+        if not bool(mail.Recipients.ResolveAll()):
+            raise RuntimeError(
+                f"Outlook could not resolve the configured recipient: {recipient_email}."
+            )
+
         mail.Subject = clean_subject
         mail.Body = _message_body(summary_text, language)
         mail.Save()
@@ -243,22 +271,35 @@ def create_outlook_summary_draft(
         )
         saved_entry_id = str(getattr(saved, "EntryID", "") or "")
         saved_subject = str(getattr(saved, "Subject", "") or "")
-        saved_to = str(getattr(saved, "To", "") or "")
+        saved_recipient_addresses = _recipient_smtp_addresses(saved)
         saved_sender = _account_email(getattr(saved, "SendUsingAccount", None))
         saved_state = bool(getattr(saved, "Saved", False))
         sent_state = bool(getattr(saved, "Sent", False))
 
+        sender_verified = (
+            assigned_sender.casefold() == sender_email.casefold()
+            and (
+                not saved_sender
+                or saved_sender.casefold() == sender_email.casefold()
+            )
+        )
+        recipient_verified = any(
+            address.casefold() == recipient_email.casefold()
+            for address in saved_recipient_addresses
+        )
         verified = bool(
             saved_entry_id == entry_id
             and saved_subject == clean_subject
-            and recipient_email.casefold() in saved_to.casefold()
-            and saved_sender.casefold() == sender_email.casefold()
+            and recipient_verified
+            and sender_verified
             and saved_state
             and not sent_state
         )
         if not verified:
             raise RuntimeError(
-                "The Outlook draft was created but sender, recipient, saved state, or unsent state could not be verified."
+                "The Outlook draft was created but sender, recipient SMTP address, saved state, or unsent state could not be verified. "
+                f"Observed sender={saved_sender or assigned_sender or 'unknown'}, "
+                f"recipients={saved_recipient_addresses}, saved={saved_state}, sent={sent_state}."
             )
 
         displayed = False
@@ -290,6 +331,7 @@ def create_outlook_summary_draft(
                 "detected_outlook_accounts": detected_accounts,
                 "recipient_name": presentation_config.recipient_name,
                 "recipient_email": recipient_email,
+                "verified_recipient_addresses": saved_recipient_addresses,
                 "subject": clean_subject,
                 "summary_path": str(summary_path),
                 "summary_path_relative": relative_summary,
@@ -301,6 +343,7 @@ def create_outlook_summary_draft(
                 "outlook_draft_verified": True,
                 "sender_account_email": sender_email,
                 "recipient_email": recipient_email,
+                "verified_recipient_addresses": saved_recipient_addresses,
                 "email_send_enabled": False,
                 "sent": False,
             },
