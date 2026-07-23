@@ -25,9 +25,11 @@ type OfficeStatus = {
   brightness_percent?: number | null
   summary_path_relative?: string | null
   artifact_url?: string | null
-  gmail_draft_created?: boolean
-  gmail_draft_id?: string | null
-  gmail_drafts_url?: string | null
+  outlook_draft_created?: boolean
+  outlook_draft_verified?: boolean
+  outlook_draft_entry_id?: string | null
+  outlook_draft_displayed?: boolean
+  sender_account_email?: string | null
   recipient_email?: string | null
 }
 type ToolData = {
@@ -36,9 +38,11 @@ type ToolData = {
   verification?: { ok?: boolean; message?: string }
   artifact_url?: string
   summary_path_relative?: string
-  gmail_draft_created?: boolean
-  gmail_draft_id?: string
-  gmail_drafts_url?: string
+  outlook_draft_created?: boolean
+  outlook_draft_verified?: boolean
+  outlook_draft_entry_id?: string
+  outlook_draft_displayed?: boolean
+  sender_account_email?: string
   recipient_email?: string
 }
 type TaskStep = {
@@ -103,9 +107,12 @@ function finalTaskText(task: Task, lang: VoiceLanguage): string {
     const failed = task.steps.find((item) => item.status === 'failed')?.index ?? 'unknown'
     return lang === 'zh' ? `办公任务在第 ${failed} 步失败，后续步骤没有执行。` : `The office task failed at step ${failed}; later steps were not executed.`
   }
-  if (data?.gmail_draft_created || status?.gmail_draft_created) {
+  if (data?.outlook_draft_created || status?.outlook_draft_created) {
+    const sender = data?.sender_account_email ?? status?.sender_account_email ?? 'configured Outlook account'
     const recipient = data?.recipient_email ?? status?.recipient_email ?? 'configured recipient'
-    return lang === 'zh' ? `Gmail 草稿已创建并验证，收件人为 ${recipient}，邮件尚未发送。` : `A verified Gmail draft was created for ${recipient}; it has not been sent.`
+    return lang === 'zh'
+      ? `Outlook 草稿已创建并验证。发件账号为 ${sender}，收件人为 ${recipient}，邮件尚未发送。`
+      : `A verified Outlook draft was created from ${sender} for ${recipient}; it has not been sent.`
   }
   const summary = data?.summary_path_relative ?? status?.summary_path_relative
   if (summary) return lang === 'zh' ? `演示摘要已生成：${summary}。` : `The presentation summary was generated at ${summary}.`
@@ -137,7 +144,6 @@ export default function OfficeVoicePanel() {
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null)
   const [office, setOffice] = useState<OfficeStatus | null>(null)
   const [contentUrl, setContentUrl] = useState<string | null>(null)
-  const [gmailUrl, setGmailUrl] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(true)
   const listening = panel === 'listening'
@@ -185,11 +191,13 @@ export default function OfficeVoicePanel() {
       setTaskStatus(task.status)
       const state = statusFromTask(task); if (state) setOffice(state)
       const step = latestStep(task)
-      if (step?.result) { setTool(step.result.tool_name); setVerified(step.result.data?.verification?.ok ?? null); setGmailUrl(step.result.data?.gmail_drafts_url ?? step.result.data?.office_status?.gmail_drafts_url ?? null) }
+      if (step?.result) { setTool(step.result.tool_name); setVerified(step.result.data?.verification?.ok ?? null) }
       const artifact = artifactFromTask(task); if (artifact) setContentUrl(artifact)
       if (task.status === 'waiting_approval' && approvalPrompted.current !== id) {
         approvalPrompted.current = id
-        const prompt = lang === 'zh' ? '创建 Gmail 云端草稿需要批准。请说“批准”，或使用批准、跳过、取消按钮。' : 'Creating the Gmail cloud draft requires approval. Say “approve” or use the approval controls.'
+        const prompt = lang === 'zh'
+          ? '创建本机 Outlook 草稿需要批准。草稿将使用已登录的 Outlook 账号发给固定收件人，但不会自动发送。请说“批准”，或使用批准、跳过、取消按钮。'
+          : 'Creating the local Outlook draft requires approval. It will use the signed-in Outlook account for the fixed recipient, but it will not send automatically.'
         setAnswer(prompt); if (!realtimeAgent.status().microphoneAttached) await speak(prompt, lang)
       }
       if (['completed', 'failed', 'cancelled'].includes(task.status)) {
@@ -214,7 +222,7 @@ export default function OfficeVoicePanel() {
     if (!response.ok) throw new Error(`Agent turn failed: ${response.status} ${await response.text()}`)
     const payload = (await response.json()) as Turn
     const safe = lang === 'en' && CJK.test(payload.spoken_text) ? 'The office request was processed. Check the verified status shown on screen.' : payload.spoken_text
-    setRoute(payload.route); setPermission(payload.permission_decision); setAnswer(safe); setTool(payload.tool_result?.tool_name ?? call?.name ?? ''); setVerified(payload.verification_result?.ok ?? null); setOffice(payload.office_status ?? payload.presentation_status ?? null); setContentUrl(payload.content_url); setGmailUrl(payload.tool_result?.data?.gmail_drafts_url ?? null)
+    setRoute(payload.route); setPermission(payload.permission_decision); setAnswer(safe); setTool(payload.tool_result?.tool_name ?? call?.name ?? ''); setVerified(payload.verification_result?.ok ?? null); setOffice(payload.office_status ?? payload.presentation_status ?? null); setContentUrl(payload.content_url)
     if (payload.task_id) setTaskId(payload.task_id)
     if (payload.task_status) setTaskStatus(payload.task_status as TaskStatus)
     if (payload.route === 'office_planned_task' && payload.task_id && payload.tool_result?.ok) { const token = generation.current + 1; generation.current = token; await speak(safe, lang); void monitor(payload.task_id, lang, token).catch((e) => { setError(e instanceof Error ? e.message : String(e)); setPanel('error') }); return }
@@ -225,14 +233,14 @@ export default function OfficeVoicePanel() {
     if (action === 'cancel') { await fetch(`${API}/agent/tasks/${taskId}/cancel`, { method: 'POST' }); setAnswer('已请求取消当前任务。'); return }
     const response = await fetch(`${API}/agent/tasks/${taskId}/approval`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, note: 'Submitted from Phase 3 office panel' }) })
     if (!response.ok) throw new Error(`Approval failed: ${response.status} ${await response.text()}`)
-    setAnswer(action === 'approve' ? '已批准创建 Gmail 草稿。' : '已跳过 Gmail 草稿步骤。')
+    setAnswer(action === 'approve' ? '已批准创建 Outlook 草稿。' : '已跳过 Outlook 草稿步骤。')
   }
 
   const stateLabel: Record<PanelState, string> = { idle: '空闲', connecting: '正在连接', listening: '正在聆听', processing: '正在处理', speaking: '正在朗读', error: '发生错误' }
   return <aside className={`voice-debug-panel ${expanded ? 'expanded' : 'collapsed'}`}>
     <button className="voice-panel-toggle" onClick={() => setExpanded(!expanded)}>{expanded ? '收起 Phase 3 控制台' : '打开 Phase 3 控制台'}</button>
     {expanded ? <div className="voice-panel-content">
-      <div className="voice-panel-heading"><div><span className="voice-kicker">M3A-Fusion · Gate 3–5</span><strong>演示、设备、摘要与 Gmail 草稿</strong></div><span className={`voice-state state-${panel}`}>{stateLabel[panel]}</span></div>
+      <div className="voice-panel-heading"><div><span className="voice-kicker">M3A-Fusion · Gate 3–5</span><strong>演示、设备、摘要与 Outlook 草稿</strong></div><span className={`voice-state state-${panel}`}>{stateLabel[panel]}</span></div>
       <div className="voice-settings-grid">
         <label>语言<select value={language} disabled={listening || busy} onChange={(e) => setLanguage(e.target.value as VoiceLanguage)}><option value="zh">中文</option><option value="en">English</option></select></label>
         <label>身份<select value={actor} disabled={listening || busy} onChange={(e) => { const value = e.target.value as Actor; setActor(value); localStorage.setItem('smartoffice_actor_type', value) }}><option value="visitor">Visitor</option><option value="employee">Employee</option><option value="operator">Operator</option></select></label>
@@ -241,13 +249,14 @@ export default function OfficeVoicePanel() {
       </div>
       <div className="voice-connection-row"><span>Voice WebRTC: {runtime.connectionState} / {runtime.dataChannelState}</span><span>Mic: {runtime.microphoneAttached ? 'attached' : 'released'}</span><button disabled={listening || busy || runtime.connected} onClick={() => void connect()}>{runtime.connected ? '已连接' : '连接语音'}</button></div>
       <div className="voice-ptt-row"><button className={listening ? 'voice-ptt listening' : 'voice-ptt'} disabled={busy} onClick={() => void (listening ? end() : begin())}>{listening ? '结束说话' : '点击说话'}</button><button className="voice-stop" disabled={!runtime.outputActive && panel !== 'speaking'} onClick={() => void voiceOutputManager.stop().then(() => setPanel('idle'))}>停止朗读</button><button disabled={taskStatus !== 'waiting_approval'} onClick={() => void approve('approve')}>批准</button><button disabled={taskStatus !== 'waiting_approval'} onClick={() => void approve('skip')}>跳过</button><button className="voice-stop" disabled={!active} onClick={() => void approve('cancel')}>取消任务</button></div>
-      <div className="voice-text-test"><input value={input} disabled={listening || busy} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void submit(input, 'text').catch((x) => { setError(String(x)); setPanel('error') }) }} placeholder="输入演示、音量、亮度、摘要或 Gmail 草稿命令"/><button disabled={listening || busy} onClick={() => void submit(input, 'text').catch((x) => { setError(x instanceof Error ? x.message : String(x)); setPanel('error') })}>发送</button></div>
+      <div className="voice-text-test"><input value={input} disabled={listening || busy} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void submit(input, 'text').catch((x) => { setError(String(x)); setPanel('error') }) }} placeholder="输入演示、音量、亮度、摘要或 Outlook 草稿命令"/><button disabled={listening || busy} onClick={() => void submit(input, 'text').catch((x) => { setError(x instanceof Error ? x.message : String(x)); setPanel('error') })}>发送</button></div>
       <div className="voice-result-grid"><div><span>识别文本</span><p>{transcript || '—'}</p></div><div><span>Agent 文本</span><p>{answer || '—'}</p></div></div>
       <div className="voice-result-grid"><div><span>PowerPoint</span><p>{office?.slideshow_active ? `Presenting ${office.current_slide}/${office.total_slides}` : office?.presentation_open ? 'Ready' : 'Closed'}</p></div><div><span>设备</span><p>Volume {office?.volume_percent ?? '—'}% · Brightness {office?.brightness_percent ?? '—'}%</p></div></div>
-      <div className="voice-ptt-row">{contentUrl ? <button onClick={() => window.open(`${API}${contentUrl}`, '_blank', 'noopener,noreferrer')}>打开摘要</button> : null}{gmailUrl ? <button onClick={() => window.open(gmailUrl, '_blank', 'noopener,noreferrer')}>打开 Gmail 草稿箱</button> : null}</div>
+      <div className="voice-result-grid"><div><span>Outlook 发件账号</span><p>{office?.sender_account_email ?? 'jiangdizhao1@outlook.com'}</p></div><div><span>固定收件人 Rico</span><p>{office?.recipient_email ?? 'jiangdizhao@gmail.com'}</p></div></div>
+      <div className="voice-ptt-row">{contentUrl ? <button onClick={() => window.open(`${API}${contentUrl}`, '_blank', 'noopener,noreferrer')}>打开摘要</button> : null}</div>
       <div className="voice-diagnostics"><span>Actor: {actor}</span><span>Route: {route || '—'}</span><span>Permission: {permission || '—'}</span><span>Tool: {tool || '—'}</span><span>Verification: {verified === null ? '—' : verified ? 'PASS' : 'FAIL'}</span><span>Task: {taskId || '—'}</span><span>Task status: {taskStatus || '—'}</span><span>Email send: disabled</span></div>
       {error ? <div className="voice-error">{error}</div> : null}
-      <p className="voice-safety-note">Phase 3 Gate 3–5 支持受控 PowerPoint、系统音量、WMI 亮度、本地摘要和经过批准的 Gmail 草稿。收件人固定为 Backend 配置；邮件发送功能不存在。</p>
+      <p className="voice-safety-note">Phase 3 Gate 3–5 使用本机 Classic Outlook 登录账号 jiangdizhao1@outlook.com，为 Rico（jiangdizhao@gmail.com）准备经过批准的草稿。草稿会弹出供人工检查；自动发送功能仍不存在。</p>
     </div> : null}
   </aside>
 }
