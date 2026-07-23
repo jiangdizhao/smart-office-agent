@@ -31,13 +31,13 @@ def verified() -> VerificationResult:
 
 def fake_executor():
     state = {
-        "presentation_open": False,
-        "slideshow_active": False,
-        "current_slide": None,
+        "presentation_open": True,
+        "slideshow_active": True,
+        "current_slide": 5,
         "total_slides": 12,
         "target_monitor_device": r"\\.\DISPLAY2",
-        "slideshow_monitor_device": None,
-        "monitor_placement_enforced": False,
+        "slideshow_monitor_device": r"\\.\DISPLAY2",
+        "monitor_placement_enforced": True,
     }
 
     def execute(name: str, arguments: dict):
@@ -52,7 +52,10 @@ def fake_executor():
                 monitor_placement_enforced=True,
             )
         elif name == "presentation_go_to_slide":
-            state["current_slide"] = int(arguments["slide_number"])
+            if arguments.get("slide_target") == "last":
+                state["current_slide"] = int(state["total_slides"])
+            else:
+                state["current_slide"] = int(arguments["slide_number"])
         elif name == "presentation_next_slide":
             state["current_slide"] = int(state["current_slide"] or 0) + 1
         elif name == "presentation_previous_slide":
@@ -85,7 +88,7 @@ def post_plan(client: TestClient, *, actor: str, text: str, steps: list[dict], l
     response = client.post(
         "/agent/turn",
         json={
-            "conversation_id": f"unified-plan-{actor}-{language}-{len(steps)}",
+            "conversation_id": f"unified-plan-{actor}-{language}-{len(steps)}-{time.time_ns()}",
             "text": text,
             "language": language,
             "input_source": "voice",
@@ -123,6 +126,41 @@ def main() -> None:
     )
     assert error is None and many is not None and len(many) == 3
 
+    last, error = presentation_sequence.validate_sequence_arguments(
+        {
+            "steps": [
+                {"name": "presentation_go_to_slide", "slide_target": "last"},
+            ]
+        }
+    )
+    assert error is None and last is not None and last[0].args == {"slide_target": "last"}
+
+    both, error = presentation_sequence.validate_sequence_arguments(
+        {
+            "steps": [
+                {
+                    "name": "presentation_go_to_slide",
+                    "slide_number": 9,
+                    "slide_target": "last",
+                },
+            ]
+        }
+    )
+    assert both is None and error is not None
+
+    interpreter_source = (
+        BACKEND_DIR.parent
+        / "ui"
+        / "smart-office-ui"
+        / "src"
+        / "voice"
+        / "realtimePresentationInterpreter.ts"
+    ).read_text(encoding="utf-8")
+    assert "向前翻两页” must contain two presentation_previous_slide steps" in interpreter_source
+    assert "向后翻两页” must contain two presentation_next_slide steps" in interpreter_source
+    assert 'slide_target="last"' in interpreter_source
+    assert "never ask the user for the numeric last page" in interpreter_source
+
     visitor = post_plan(
         client,
         actor="visitor",
@@ -144,6 +182,13 @@ def main() -> None:
             steps=[{"name": "presentation_get_status"}],
             language="en",
         )
+        last_slide = post_plan(
+            client,
+            actor="employee",
+            text="请翻到最后一页。",
+            steps=[{"name": "presentation_go_to_slide", "slide_target": "last"}],
+            language="zh",
+        )
     finally:
         turn_api.execute_presentation_tool_call = original_direct
 
@@ -152,6 +197,11 @@ def main() -> None:
     assert single["tool_result"]["tool_name"] == "presentation_get_status"
     assert single["verification_result"]["ok"] is True
     assert not any("\u3400" <= char <= "\u9fff" for char in single["spoken_text"])
+
+    assert last_slide["route"] == "office_direct"
+    assert last_slide["tool_result"]["tool_name"] == "presentation_go_to_slide"
+    assert last_slide["presentation_status"]["current_slide"] == 12
+    assert "第 12 页" in last_slide["spoken_text"]
 
     async def no_background_runner(_task_id: str) -> None:
         return None
@@ -208,7 +258,8 @@ def main() -> None:
 
     print(
         "PASS: GPT Realtime exposes one presentation_plan function; Backend dispatches "
-        "one step directly and multiple steps through the verified Task Runtime."
+        "one step directly and multiple steps through the verified Task Runtime; "
+        "direction policy and semantic final-slide resolution are protected."
     )
 
 
