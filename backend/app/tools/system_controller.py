@@ -159,12 +159,12 @@ def _read_brightness() -> dict[str, Any]:
 
 
 def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
-    """Set brightness with explicit named WMI input parameters.
+    """Set brightness through the concrete SWbemObject monitor instance.
 
-    PowerShell successfully invokes WmiSetBrightness on the target machine, but
-    win32com's dynamic positional call can marshal the UInt8/UInt32 arguments in
-    the wrong order for SWbemObjectEx. Build the method input object explicitly
-    so Brightness and Timeout are assigned by name and type instead.
+    ``SWbemObject.ExecMethod_`` owns the underscored method. The namespace
+    service is ``SWbemServices`` and exposes ``ExecMethod`` without an
+    underscore. Calling ``service.ExecMethod_`` therefore raises AttributeError.
+    Explicit named inputs avoid the positional UInt32/UInt8 marshaling issue.
     """
     instances = list(
         service.ExecQuery(
@@ -189,16 +189,33 @@ def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
         input_parameters = method_definition.InParameters.SpawnInstance_()
         input_parameters.Properties_.Item("Timeout").Value = 1
         input_parameters.Properties_.Item("Brightness").Value = target
-        output_parameters = service.ExecMethod_(
-            instance.Path_.RelPath,
-            "WmiSetBrightness",
-            input_parameters,
-        )
+
+        exec_on_instance = getattr(instance, "ExecMethod_", None)
+        if callable(exec_on_instance):
+            output_parameters = exec_on_instance(
+                "WmiSetBrightness",
+                input_parameters,
+            )
+            invocation = "SWbemObject.ExecMethod_"
+        else:
+            exec_on_service = getattr(service, "ExecMethod", None)
+            if not callable(exec_on_service):
+                raise RuntimeError(
+                    "Neither SWbemObject.ExecMethod_ nor SWbemServices.ExecMethod is available."
+                )
+            output_parameters = exec_on_service(
+                instance.Path_.RelPath,
+                "WmiSetBrightness",
+                input_parameters,
+            )
+            invocation = "SWbemServices.ExecMethod"
+
         return_value = int(output_parameters.Properties_.Item("ReturnValue").Value)
         results.append(
             {
                 "instance_name": str(instance.InstanceName),
                 "return_value": return_value,
+                "invocation": invocation,
             }
         )
         if return_value != 0:
