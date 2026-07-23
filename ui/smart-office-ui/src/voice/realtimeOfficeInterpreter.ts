@@ -35,6 +35,7 @@ const OFFICE_ACTIONS = [
   'system_adjust_brightness',
   'office_generate_presentation_summary',
   'outlook_create_summary_draft',
+  'outlook_send_approved_draft',
 ] as const
 
 const OFFICE_TOOLS = [
@@ -42,7 +43,7 @@ const OFFICE_TOOLS = [
     type: 'function',
     name: 'office_plan',
     description:
-      'Convert one clear Smart Office request into one to eight ordered, bounded actions. This is the only model-facing execution function for PowerPoint, volume, brightness, local presentation summaries, and approval-gated Classic Outlook draft creation.',
+      'Convert one clear Smart Office request into one to eight ordered, bounded actions. This is the only model-facing execution function for PowerPoint, volume, brightness, local presentation summaries, approval-gated Classic Outlook draft creation, and separately approved sending of the latest verified draft.',
     parameters: {
       type: 'object',
       properties: {
@@ -51,7 +52,7 @@ const OFFICE_TOOLS = [
           minItems: 1,
           maxItems: 8,
           description:
-            'Exact ordered actions requested by the user. PowerPoint actions remain bounded to the configured presentation. Outlook draft creation never sends email and is paused by the Backend approval gate.',
+            'Exact ordered actions requested by the user. PowerPoint actions remain bounded to the configured presentation. Outlook draft creation and Outlook sending are separate Backend approval steps. Unrestricted or arbitrary sending is never allowed.',
           items: {
             type: 'object',
             properties: {
@@ -96,6 +97,12 @@ const OFFICE_TOOLS = [
                 enum: ['latest'],
                 description:
                   'Use latest for outlook_create_summary_draft. The Backend resolves the newest verified local summary artifact.',
+              },
+              draft_source: {
+                type: 'string',
+                enum: ['latest_verified'],
+                description:
+                  'Use latest_verified only with outlook_send_approved_draft. The Backend resolves the newest verified unsent draft and never accepts an EntryID, sender, or recipient from the model.',
               },
               subject: {
                 type: 'string',
@@ -260,7 +267,7 @@ Rules:
 - For every clear supported office request, call office_plan exactly once.
 - Put exactly one step in the plan for one requested action. Put two to eight ordered steps for a compound request.
 - Preserve the exact user-requested order. Do not silently add PowerPoint open/start prerequisites.
-- Supported actions are only the enum values in the schema. Never invent a file path, sender, recipient, application, shell command, COM method, approval, or success result.
+- Supported actions are only the enum values in the schema. Never invent a file path, sender, recipient, application, shell command, COM method, approval, EntryID, or success result.
 - PowerPoint direction is deterministic: presentation_next_slide increases the page number toward the end; presentation_previous_slide decreases it toward the beginning.
 - Chinese convention for this application: “向前翻/往前翻/翻回前面/上一页/前一页” means previous. “向后翻/往后翻/下一页/后一页/继续往下” means next. “前进两页” means next twice.
 - Repeat next or previous steps when multiple slides are requested. “向前翻两页” is previous twice; “向后翻两页” is next twice.
@@ -270,8 +277,11 @@ Rules:
 - Questions asking for current volume or brightness use system_get_status.
 - “生成演示摘要/summarize the presentation” uses office_generate_presentation_summary with the user's language. It writes only to the configured local LOG directory.
 - When the user asks to prepare an Outlook draft, email draft, or mail draft from the current presentation and does not explicitly request the existing/latest summary, include office_generate_presentation_summary first, followed by outlook_create_summary_draft with summary_source="latest".
-- outlook_create_summary_draft uses the fixed signed-in Classic Outlook sender account and fixed Backend recipient. Backend approval is mandatory before this step. Email sending is disabled and there is no send tool.
-- Requests to send email must not call a tool. Return CLARIFY: followed by a concise statement that automatic sending is disabled and an Outlook draft can be prepared for manual review and sending.
+- outlook_create_summary_draft uses the fixed signed-in Classic Outlook sender account and fixed Backend recipient. The first Backend approval is mandatory before creating and displaying the draft.
+- When the user explicitly asks to send an already-created/verified draft, use exactly one outlook_send_approved_draft step with draft_source="latest_verified".
+- When the user explicitly asks to prepare and then send in one request, plan office_generate_presentation_summary when needed, then outlook_create_summary_draft, then outlook_send_approved_draft. The Backend will pause separately before the draft step and again before the send step.
+- outlook_send_approved_draft can only send the latest verified unsent draft with the fixed Backend sender and recipient. Before Send(), the Backend removes the sentence saying the message is only a draft and not yet sent, saves and re-verifies the edit, then invokes Outlook Send().
+- There is no send tool without a second Backend approval. Never treat draft approval as send approval, and never send arbitrary recipients or arbitrary Outlook items.
 - Explicit approval/cancel/skip/takeover utterances for an already-running task are handled by the Backend router. Return exactly NO_OFFICE_ACTION for those utterances.
 - Do not call a function for reception questions, ordinary conversation, Teams, Zoom, Word, Excel, unsupported device controls, or document generation beyond the bounded presentation summary. Return exactly NO_OFFICE_ACTION.
 - Ask for clarification only when the intended action or required value genuinely remains ambiguous after applying these rules and the supplied context.
@@ -368,7 +378,7 @@ Rules:
         tool_choice: 'auto',
         tools: OFFICE_TOOLS,
         instructions:
-          'You are a bounded Smart Office planner. For clear supported requests, call the single office_plan function. Never execute tools yourself, never send email, and never claim success.',
+          'You are a bounded Smart Office planner. For clear supported requests, call the single office_plan function. Never execute tools yourself, never bypass Backend approvals, and never claim success.',
         audio: { input: { turn_detection: null } },
       },
     })
