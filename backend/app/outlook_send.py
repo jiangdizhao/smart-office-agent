@@ -194,16 +194,12 @@ def send_latest_outlook_draft() -> ToolResult:
         draft_parent = getattr(mail, "Parent", None)
         draft_parent_entry_id = str(getattr(draft_parent, "EntryID", "") or "")
         observed_subject = str(getattr(mail, "Subject", "") or "")
-        if draft["subject"] and observed_subject != draft["subject"]:
-            raise RuntimeError("The saved draft subject no longer matches the verified draft.")
-
         observed_recipients = _recipient_smtp_addresses(mail)
-        if not any(
-            address.casefold() == recipient_email.casefold()
-            for address in observed_recipients
-        ):
+        normalized_recipients = [address.casefold() for address in observed_recipients]
+        if normalized_recipients != [recipient_email.casefold()]:
             raise RuntimeError(
-                f"The draft recipient no longer matches {recipient_email}: {observed_recipients}."
+                "The approved draft must contain exactly the fixed recipient and no "
+                f"additional To, CC, or BCC recipients. Observed: {observed_recipients}."
             )
 
         stage = "sender_account_assignment"
@@ -231,7 +227,8 @@ def send_latest_outlook_draft() -> ToolResult:
         verified_body = str(getattr(verified_mail, "Body", "") or "")
         if DRAFT_ONLY_NOTICE_ZH in verified_body or DRAFT_ONLY_NOTICE_EN in verified_body:
             raise RuntimeError("The draft-only notice could not be removed before sending.")
-        if _recipient_smtp_addresses(verified_mail) != observed_recipients:
+        verified_recipients = _recipient_smtp_addresses(verified_mail)
+        if [address.casefold() for address in verified_recipients] != normalized_recipients:
             raise RuntimeError("The recipient list changed while preparing the approved send.")
 
         stage = "send_invocation"
@@ -311,7 +308,7 @@ def send_latest_outlook_draft() -> ToolResult:
                 "sender_account_email": sender_email,
                 "recipient_email": recipient_email,
                 "subject": observed_subject,
-                "verified_recipient_addresses": observed_recipients,
+                "verified_recipient_addresses": verified_recipients,
                 "outlook_connection_mode": connection_mode,
                 "detected_outlook_accounts": detected_accounts,
                 "approval_gated_email_send_enabled": True,
