@@ -54,7 +54,7 @@ def _validation_error(message: str, arguments: dict[str, Any]) -> ToolResult:
 
 def _step_arguments(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     name = item.get("name")
-    unexpected = set(item) - {"name", "slide_number"}
+    unexpected = set(item) - {"name", "slide_number", "slide_target"}
     if unexpected:
         return None, f"Unexpected presentation-plan step fields: {sorted(unexpected)}"
 
@@ -62,6 +62,19 @@ def _step_arguments(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
         return None, f"Unsupported presentation-plan action: {name}"
 
     if name == "presentation_go_to_slide":
+        has_number = "slide_number" in item
+        has_target = "slide_target" in item
+        if has_number == has_target:
+            return None, (
+                "presentation_go_to_slide requires exactly one of slide_number "
+                "or slide_target."
+            )
+        if has_target:
+            slide_target = item.get("slide_target")
+            if slide_target != "last":
+                return None, "slide_target must be 'last'."
+            return {"slide_target": "last"}, None
+
         slide_number = item.get("slide_number")
         if isinstance(slide_number, bool) or not isinstance(slide_number, int):
             return None, "presentation_go_to_slide requires an integer slide_number."
@@ -69,8 +82,8 @@ def _step_arguments(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
             return None, "slide_number must be at least 1."
         return {"slide_number": slide_number}, None
 
-    if "slide_number" in item:
-        return None, f"{name} does not accept slide_number."
+    if "slide_number" in item or "slide_target" in item:
+        return None, f"{name} does not accept slide_number or slide_target."
     return {}, None
 
 
