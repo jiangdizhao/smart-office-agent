@@ -1,0 +1,9 @@
+{
+  "default_recipient_key": "rico",
+  "recipients": {
+    "rico": {
+      "name": "Rico",
+      "email": "jiangdizhao@gmail.com"
+    }
+  }
+}
