@@ -23,10 +23,13 @@ const ACTOR_STORAGE_KEY = 'smartoffice_actor_type'
 const CJK_PATTERN = /[\u3400-\u9fff]/
 const CJK_GLOBAL_PATTERN = /[\u3400-\u9fff]/g
 const ENGLISH_WORD_PATTERN = /[A-Za-z]+(?:['’-][A-Za-z]+)*/g
+const TASK_POLL_INTERVAL_MS = 250
+const TASK_TIMEOUT_MS = 45_000
 
 type AsrProvider = 'realtime' | 'browser'
 type ActorType = 'visitor' | 'employee' | 'operator'
 type PanelState = 'idle' | 'connecting' | 'listening' | 'processing' | 'speaking' | 'error'
+type TaskStatus = 'created' | 'planning' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
 
 type PresentationStatus = {
   presentation_open?: boolean
@@ -38,11 +41,36 @@ type PresentationStatus = {
   monitor_placement_enforced?: boolean
 }
 
+type TaskStep = {
+  index: number
+  title: string
+  tool_name?: string | null
+  status: string
+  message?: string | null
+  result?: {
+    tool_name: string
+    ok: boolean
+    message: string
+    data?: {
+      presentation_status?: PresentationStatus
+      verification?: { ok?: boolean; message?: string }
+    }
+  } | null
+}
+
+type TaskSession = {
+  task_id: string
+  status: TaskStatus
+  summary?: string | null
+  steps: TaskStep[]
+}
+
 type TurnResponse = {
   conversation_id: string
   route: string
   normalized_text: string
   spoken_text: string
+  response_language?: VoiceLanguage
   task_id: string | null
   task_status: string | null
   approval_required: boolean
@@ -101,11 +129,6 @@ function stateLabel(state: PanelState): string {
   return labels[state]
 }
 
-/**
- * Select the response language from the actual utterance, not only from the
- * manual ASR selector. Chinese requests may contain necessary English product
- * names such as PowerPoint; English requests may contain a short Chinese name.
- */
 function responseLanguageForUtterance(
   text: string,
   selectedLanguage: VoiceLanguage,
@@ -170,6 +193,50 @@ function guardClarification(text: string, language: VoiceLanguage): string {
     : 'Please clarify the presentation action.'
 }
 
+function latestPresentationStatus(task: TaskSession): PresentationStatus | null {
+  for (let index = task.steps.length - 1; index >= 0; index -= 1) {
+    const status = task.steps[index]?.result?.data?.presentation_status
+    if (status) return status
+  }
+  return null
+}
+
+function taskFinalAnswer(task: TaskSession, language: VoiceLanguage): string {
+  const status = latestPresentationStatus(task)
+  const completedSteps = task.steps.filter((step) => step.status === 'succeeded').length
+
+  if (task.status === 'cancelled') {
+    return language === 'zh'
+      ? `演示任务已取消，已完成 ${completedSteps} 个步骤。`
+      : `The presentation task was cancelled after ${completedSteps} completed steps.`
+  }
+
+  if (task.status === 'failed') {
+    const failedStep = task.steps.find((step) => step.status === 'failed')
+    const stepNumber = failedStep?.index ?? 'unknown'
+    return language === 'zh'
+      ? `演示任务在第 ${stepNumber} 步失败，后续步骤没有执行。请查看界面中的失败信息。`
+      : `The presentation task failed at step ${stepNumber}. Later steps were not executed. Check the failure details shown on screen.`
+  }
+
+  if (task.status === 'completed') {
+    if (status?.slideshow_active) {
+      return language === 'zh'
+        ? `已完成并验证 ${task.steps.length} 个演示步骤。当前是第 ${status.current_slide ?? '未知'} 页，共 ${status.total_slides ?? '未知'} 页。`
+        : `Completed and verified ${task.steps.length} presentation steps. The slide show is on slide ${status.current_slide ?? 'unknown'} of ${status.total_slides ?? 'unknown'}.`
+    }
+    return language === 'zh'
+      ? `已完成并验证 ${task.steps.length} 个演示步骤。`
+      : `Completed and verified ${task.steps.length} presentation steps.`
+  }
+
+  return language === 'zh' ? '演示任务仍在执行。' : 'The presentation task is still running.'
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+}
+
 export default function VoiceDebugPanel() {
   const browserCaptureRef = useRef(new BrowserSpeechCapture())
   const [language, setLanguage] = useState<VoiceLanguage>('zh')
@@ -184,7 +251,7 @@ export default function VoiceDebugPanel() {
     initialRuntimeStatus,
   )
   const [transcript, setTranscript] = useState('')
-  const [textInput, setTextInput] = useState('请打开演示文稿')
+  const [textInput, setTextInput] = useState('请打开演示文稿，开始播放，然后跳到第五页')
   const [answer, setAnswer] = useState('')
   const [lastRoute, setLastRoute] = useState('')
   const [lastScene, setLastScene] = useState('')
@@ -192,6 +259,7 @@ export default function VoiceDebugPanel() {
   const [sourceIds, setSourceIds] = useState<string[]>([])
   const [contentUrl, setContentUrl] = useState<string | null>(null)
   const [taskId, setTaskId] = useState<string | null>(null)
+  const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null)
   const [lastToolName, setLastToolName] = useState('')
   const [verificationPassed, setVerificationPassed] = useState<boolean | null>(null)
   const [presentationStatus, setPresentationStatus] = useState<PresentationStatus | null>(null)
@@ -200,6 +268,7 @@ export default function VoiceDebugPanel() {
 
   const listening = panelState === 'listening'
   const busy = ['connecting', 'processing', 'speaking'].includes(panelState)
+  const taskActive = Boolean(taskId && taskStatus && !['completed', 'failed', 'cancelled'].includes(taskStatus))
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -259,6 +328,69 @@ export default function VoiceDebugPanel() {
     }
   }
 
+  async function waitForTaskCompletion(activeTaskId: string): Promise<TaskSession> {
+    const deadline = performance.now() + TASK_TIMEOUT_MS
+    while (performance.now() < deadline) {
+      const response = await fetch(`${API_BASE_URL}/agent/tasks/${encodeURIComponent(activeTaskId)}`, {
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        throw new Error(`Task status failed: ${response.status} ${detail}`)
+      }
+      const task = (await response.json()) as TaskSession
+      setTaskStatus(task.status)
+      const status = latestPresentationStatus(task)
+      if (status) setPresentationStatus(status)
+      const latestStep = [...task.steps].reverse().find((step) => step.result)
+      if (latestStep?.result) {
+        setLastToolName(latestStep.result.tool_name)
+        setVerificationPassed(latestStep.result.data?.verification?.ok ?? null)
+      }
+      if (['completed', 'failed', 'cancelled'].includes(task.status)) return task
+      await wait(TASK_POLL_INTERVAL_MS)
+    }
+    throw new Error('The compound presentation task did not finish within 45 seconds.')
+  }
+
+  async function cancelActiveTask(): Promise<void> {
+    if (!taskId || !taskActive) return
+    setError('')
+    try {
+      const response = await fetch(`${API_BASE_URL}/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        throw new Error(`Task cancellation failed: ${response.status} ${detail}`)
+      }
+      const task = (await response.json()) as TaskSession
+      setTaskStatus(task.status)
+      setAnswer(responseLanguage === 'zh' ? '已请求取消当前演示任务。' : 'Cancellation was requested for the current presentation task.')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }
+
+  async function speakAnswer(text: string, effectiveLanguage: VoiceLanguage): Promise<void> {
+    if (voiceProvider === 'none') {
+      setPanelState('idle')
+      return
+    }
+    setPanelState('speaking')
+    try {
+      await voiceOutputManager.speak(text, effectiveLanguage)
+      setPanelState('idle')
+    } catch (caught) {
+      if (caught instanceof Error && caught.name === 'AbortError') {
+        setPanelState('idle')
+        return
+      }
+      throw caught
+    }
+  }
+
   async function submitTurn(text: string, inputSource: 'text' | 'voice'): Promise<void> {
     const clean = text.trim()
     if (!clean) {
@@ -279,13 +411,7 @@ export default function VoiceDebugPanel() {
       setLastRoute('clarification')
       setLastScene('office')
       setPermissionDecision('not_required')
-      if (voiceProvider === 'none') {
-        setPanelState('idle')
-        return
-      }
-      setPanelState('speaking')
-      await voiceOutputManager.speak(clarification, effectiveLanguage)
-      setPanelState('idle')
+      await speakAnswer(clarification, effectiveLanguage)
       return
     }
 
@@ -298,7 +424,8 @@ export default function VoiceDebugPanel() {
         text: clean,
         language: effectiveLanguage,
         input_source: inputSource,
-        actor_context: { type: actorType, source: 'phase3_gate2a_panel' },
+        actor_context: { type: actorType, source: 'phase3_gate2b_panel' },
+        active_task_id: taskActive ? taskId : null,
         realtime_tool_call: realtimeToolCall,
       }),
     })
@@ -315,27 +442,21 @@ export default function VoiceDebugPanel() {
     setSourceIds(payload.source_ids ?? [])
     setContentUrl(payload.content_url)
     setTaskId(payload.task_id)
+    setTaskStatus((payload.task_status as TaskStatus | null) ?? null)
     setAnswer(safeAnswer)
     setLastToolName(payload.tool_result?.tool_name ?? payload.realtime_tool_call?.name ?? '')
     setVerificationPassed(payload.verification_result?.ok ?? null)
     if (payload.presentation_status) setPresentationStatus(payload.presentation_status)
 
-    if (voiceProvider === 'none') {
-      setPanelState('idle')
+    if (payload.route === 'office_planned_task' && payload.task_id && payload.tool_result?.ok) {
+      const task = await waitForTaskCompletion(payload.task_id)
+      const finalAnswer = taskFinalAnswer(task, effectiveLanguage)
+      setAnswer(finalAnswer)
+      await speakAnswer(finalAnswer, effectiveLanguage)
       return
     }
 
-    setPanelState('speaking')
-    try {
-      await voiceOutputManager.speak(safeAnswer, effectiveLanguage)
-      setPanelState('idle')
-    } catch (caught) {
-      if (caught instanceof Error && caught.name === 'AbortError') {
-        setPanelState('idle')
-        return
-      }
-      throw caught
-    }
+    await speakAnswer(safeAnswer, effectiveLanguage)
   }
 
   async function submitText(): Promise<void> {
@@ -400,15 +521,15 @@ export default function VoiceDebugPanel() {
         className="voice-panel-toggle"
         onClick={() => setExpanded((current) => !current)}
       >
-        {expanded ? '收起 Gate 2A 控制台' : '打开 Gate 2A 控制台'}
+        {expanded ? '收起 Gate 2B 控制台' : '打开 Gate 2B 控制台'}
       </button>
 
       {expanded ? (
         <div className="voice-panel-content">
           <div className="voice-panel-heading">
             <div>
-              <span className="voice-kicker">M3A-Fusion · Gate 2A</span>
-              <strong>GPT Realtime 语音控制 PowerPoint</strong>
+              <span className="voice-kicker">M3A-Fusion · Gate 2B</span>
+              <strong>GPT Realtime 复合语音控制 PowerPoint</strong>
             </div>
             <span className={`voice-state state-${panelState}`}>{stateLabel(panelState)}</span>
           </div>
@@ -499,6 +620,14 @@ export default function VoiceDebugPanel() {
             >
               停止朗读
             </button>
+            <button
+              type="button"
+              className="voice-stop"
+              disabled={!taskActive}
+              onClick={() => void cancelActiveTask()}
+            >
+              取消当前任务
+            </button>
           </div>
 
           <div className="voice-text-test">
@@ -509,7 +638,7 @@ export default function VoiceDebugPanel() {
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !busy && !listening) void submitText()
               }}
-              placeholder="输入中文或英文自然语言测试 Gate 2A"
+              placeholder="输入中文或英文自然语言测试 Gate 2B"
             />
             <button type="button" disabled={listening || busy} onClick={() => void submitText()}>
               发送
@@ -564,13 +693,14 @@ export default function VoiceDebugPanel() {
               {verificationPassed === null ? '—' : verificationPassed ? 'PASS' : 'FAIL'}
             </span>
             <span>Task: {taskId || '—'}</span>
+            <span>Task status: {taskStatus || '—'}</span>
             <span>Sources: {sourceIds.length ? sourceIds.join(', ') : '—'}</span>
             <span>Single voice owner: {voiceProvider}</span>
           </div>
 
           {error ? <div className="voice-error">{error}</div> : null}
           <p className="voice-safety-note">
-            自然语言由 GPT Realtime 解释；Backend 只执行已注册的单步 PowerPoint 能力，并在执行后验证真实页码和副屏位置。英文问题强制使用纯英文答复；中文问题以中文答复，并允许必要的英文术语。
+            Gate 2B 支持最多八个受控 PowerPoint 步骤。每一步都通过现有 Task Runtime 执行并验证；任一步失败后，后续步骤不会继续。英文问题强制使用英文答复，中文问题允许必要的英文术语。
           </p>
         </div>
       ) : null}
