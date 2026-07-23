@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sys
 import time
+from contextlib import contextmanager
 from ctypes import POINTER, cast
-from typing import Any
+from typing import Any, Iterator
 
 from app.models import ToolResult
 
@@ -11,41 +13,109 @@ def _clamp_percent(value: int | float) -> int:
     return max(0, min(100, int(round(float(value)))))
 
 
-def _volume_endpoint():
+@contextmanager
+def _audio_com_apartment() -> Iterator[None]:
+    """Initialise COM in the thread that accesses Windows Core Audio.
+
+    Office actions are executed through ``asyncio.to_thread``. Those worker
+    threads do not inherit COM initialisation from the FastAPI main thread, so
+    PyCAW's ``CoCreateInstance`` calls fail unless the worker initialises its
+    own COM apartment.
+    """
+
     try:
-        from pycaw.pycaw import AudioUtilities
+        import pythoncom
+    except ImportError:
+        import comtypes
 
-        speakers = AudioUtilities.GetSpeakers()
-        endpoint = getattr(speakers, "EndpointVolume", None)
-        if endpoint is not None:
-            return endpoint
+        comtypes.CoInitialize()
+        try:
+            yield
+        finally:
+            comtypes.CoUninitialize()
+        return
 
+    pythoncom.CoInitialize()
+    try:
+        yield
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def _volume_endpoint():
+    """Return the default render endpoint's IAudioEndpointVolume interface.
+
+    PyCAW 20251023 returns an ``AudioDevice`` wrapper whose supported public
+    access path is ``EndpointVolume``. A legacy activation fallback is retained
+    for older PyCAW releases.
+    """
+
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
+    speakers = AudioUtilities.GetSpeakers()
+    if speakers is None:
+        raise RuntimeError("Windows did not return a default audio output device.")
+
+    endpoint = getattr(speakers, "EndpointVolume", None)
+    if endpoint is not None:
+        return endpoint
+
+    # Compatibility with older PyCAW versions that returned the raw IMMDevice.
+    activate = getattr(speakers, "Activate", None)
+    if callable(activate):
         from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import IAudioEndpointVolume
 
-        interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        interface = activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        query_interface = getattr(interface, "QueryInterface", None)
+        if callable(query_interface):
+            return query_interface(IAudioEndpointVolume)
         return cast(interface, POINTER(IAudioEndpointVolume))
-    except Exception as exc:  # pragma: no cover - exercised on Windows acceptance
-        raise RuntimeError(
-            "Windows Core Audio is unavailable. Install pycaw in the smartoffice environment."
-        ) from exc
+
+    raw_device = getattr(speakers, "_dev", None)
+    if raw_device is not None:
+        import comtypes
+
+        interface = raw_device.Activate(
+            IAudioEndpointVolume._iid_,
+            comtypes.CLSCTX_ALL,
+            None,
+        )
+        return interface.QueryInterface(IAudioEndpointVolume)
+
+    raise RuntimeError(
+        "PyCAW returned an audio device without an EndpointVolume interface."
+    )
+
+
+def _audio_error(exc: Exception) -> str:
+    return (
+        "Windows Core Audio initialization failed: "
+        f"{type(exc).__name__}: {exc}. Backend Python: {sys.executable}"
+    )
 
 
 def _read_volume() -> dict[str, Any]:
     try:
-        endpoint = _volume_endpoint()
+        with _audio_com_apartment():
+            endpoint = _volume_endpoint()
+            volume_percent = _clamp_percent(
+                endpoint.GetMasterVolumeLevelScalar() * 100
+            )
+            muted = bool(endpoint.GetMute())
         return {
             "available": True,
-            "volume_percent": _clamp_percent(endpoint.GetMasterVolumeLevelScalar() * 100),
-            "muted": bool(endpoint.GetMute()),
+            "volume_percent": volume_percent,
+            "muted": muted,
             "error": None,
+            "backend_python": sys.executable,
         }
     except Exception as exc:
         return {
             "available": False,
             "volume_percent": None,
             "muted": None,
-            "error": str(exc),
+            "error": _audio_error(exc),
+            "backend_python": sys.executable,
         }
 
 
@@ -123,32 +193,45 @@ def get_system_control_status() -> ToolResult:
 def set_system_volume(value_percent: int) -> ToolResult:
     target = _clamp_percent(value_percent)
     try:
-        endpoint = _volume_endpoint()
-        endpoint.SetMasterVolumeLevelScalar(target / 100.0, None)
-        if target > 0 and bool(endpoint.GetMute()):
-            endpoint.SetMute(0, None)
-        time.sleep(0.1)
-        observed = _read_volume()
+        with _audio_com_apartment():
+            endpoint = _volume_endpoint()
+            endpoint.SetMasterVolumeLevelScalar(target / 100.0, None)
+            if target > 0 and bool(endpoint.GetMute()):
+                endpoint.SetMute(0, None)
+            time.sleep(0.1)
+            observed_percent = _clamp_percent(
+                endpoint.GetMasterVolumeLevelScalar() * 100
+            )
+            observed_muted = bool(endpoint.GetMute())
+
+        observed = {
+            "available": True,
+            "volume_percent": observed_percent,
+            "muted": observed_muted,
+            "error": None,
+            "backend_python": sys.executable,
+        }
         return ToolResult(
             tool_name="system_set_volume",
-            ok=bool(observed["available"]),
+            ok=True,
             message=f"System volume set to {target}%.",
             data={
                 "execution_mode": "real",
                 "requested_state": {"volume_percent": target},
                 "volume": observed,
-                "volume_percent": observed.get("volume_percent"),
+                "volume_percent": observed_percent,
             },
         )
     except Exception as exc:
         return ToolResult(
             tool_name="system_set_volume",
             ok=False,
-            message=f"System volume could not be changed: {exc}",
+            message=f"System volume could not be changed: {_audio_error(exc)}",
             data={
                 "execution_mode": "failed",
                 "requested_state": {"volume_percent": target},
-                "error": str(exc),
+                "error": _audio_error(exc),
+                "backend_python": sys.executable,
             },
         )
 
