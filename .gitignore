@@ -10,6 +10,7 @@ demo_files/*.ppsx
 demo_files/*.ppsm
 demo_files/LOG/
 
+test.py
 critical.txt
 download_cli.ps1
 .env
