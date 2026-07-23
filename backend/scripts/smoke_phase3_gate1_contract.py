@@ -19,7 +19,7 @@ def main() -> None:
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
-    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_2a"
+    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_2b"
     assert health_payload["capabilities"]["presentation_controller"] is True
     assert health_payload["capabilities"]["presentation_state_verifier"] is True
     assert health_payload["capabilities"]["presentation_execution_via_turn"] is True
@@ -52,9 +52,6 @@ def main() -> None:
     )
     assert unconfirmed_close.status_code == 409
 
-    # Linux CI cannot run PowerPoint COM. The endpoint must still return a
-    # structured unsupported/failure result instead of crashing or exposing an
-    # unrestricted shell fallback.
     if os.name != "nt":
         open_result = client.post("/api/presentation/open")
         open_result.raise_for_status()
@@ -67,8 +64,9 @@ def main() -> None:
     turn_status.raise_for_status()
     assert turn_status.json()["office_execution_enabled"] is False
     assert turn_status.json()["presentation_execution_enabled"] is True
+    assert turn_status.json()["compound_presentation_execution_enabled"] is True
 
-    print("PASS: Gate 1 presentation API and safety contracts remain available under Gate 2A.")
+    print("PASS: Gate 1 presentation API and safety contracts remain available under Gate 2B.")
 
 
 if __name__ == "__main__":
