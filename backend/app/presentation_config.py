@@ -196,31 +196,46 @@ class PresentationRuntimeConfig:
         # is running, and the next status/draft/send action sees the new contents.
         return load_email_recipient_directory(self.recipient_config_path)
 
+    def recipient_directory_status(
+        self,
+    ) -> tuple[EmailRecipientDirectory | None, str | None]:
+        try:
+            return self.recipient_directory(), None
+        except (OSError, ValueError) as exc:
+            return None, str(exc)
+
     @property
     def email_recipients(self) -> tuple[EmailRecipient, ...]:
-        return self.recipient_directory().recipients
+        directory, _ = self.recipient_directory_status()
+        return directory.recipients if directory else ()
 
     @property
     def default_recipient_key(self) -> str:
-        return self.recipient_directory().default_recipient_key
+        directory, _ = self.recipient_directory_status()
+        return directory.default_recipient_key if directory else ""
 
     def resolve_recipient(self, key: str | None = None) -> EmailRecipient:
+        # Execution paths remain strict: malformed/missing files and unknown contacts
+        # fail explicitly and never fall back to stale or hard-coded recipients.
         return self.recipient_directory().resolve(key)
 
     @property
     def recipient_name(self) -> str:
-        return self.resolve_recipient().name
+        directory, _ = self.recipient_directory_status()
+        return directory.resolve().name if directory else ""
 
     @property
     def recipient_email(self) -> str:
-        return self.resolve_recipient().email
+        directory, _ = self.recipient_directory_status()
+        return directory.resolve().email if directory else ""
 
     def recipient_catalog(self) -> list[dict[str, str]]:
-        return self.recipient_directory().public_catalog()
+        directory, _ = self.recipient_directory_status()
+        return directory.public_catalog() if directory else []
 
     def public_dict(self) -> dict:
-        directory = self.recipient_directory()
-        default_recipient = directory.resolve()
+        directory, config_error = self.recipient_directory_status()
+        default_recipient = directory.resolve() if directory else None
         payload = asdict(self)
         payload["presentation_path"] = str(self.presentation_path)
         payload["presentation_path_relative"] = _relative_or_absolute(self.presentation_path)
@@ -233,11 +248,17 @@ class PresentationRuntimeConfig:
             self.recipient_config_path
         )
         payload["recipient_config_exists"] = self.recipient_config_path.is_file()
-        payload["email_recipients"] = directory.public_catalog()
-        payload["default_recipient_key"] = directory.default_recipient_key
-        payload["default_recipient"] = default_recipient.public_dict()
-        payload["recipient_name"] = default_recipient.name
-        payload["recipient_email"] = default_recipient.email
+        payload["recipient_config_error"] = config_error
+        payload["recipient_file_hot_reload_enabled"] = True
+        payload["email_recipients"] = directory.public_catalog() if directory else []
+        payload["default_recipient_key"] = (
+            directory.default_recipient_key if directory else None
+        )
+        payload["default_recipient"] = (
+            default_recipient.public_dict() if default_recipient else None
+        )
+        payload["recipient_name"] = default_recipient.name if default_recipient else None
+        payload["recipient_email"] = default_recipient.email if default_recipient else None
         payload["email_send_enabled"] = False
         payload["approval_gated_email_send_enabled"] = True
         payload["unrestricted_email_send_enabled"] = False
