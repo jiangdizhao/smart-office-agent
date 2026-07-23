@@ -57,11 +57,6 @@ class FakePath:
     RelPath = 'WmiMonitorBrightnessMethods.InstanceName="DISPLAY\\\\TEST"'
 
 
-class FakeOutput:
-    def __init__(self):
-        self.Properties_ = FakeProperties()
-
-
 class FakeInstance:
     Active = True
     InstanceName = r"DISPLAY\TEST"
@@ -78,7 +73,10 @@ class FakeInstance:
                 "brightness": input_parameters.Properties_.Item("Brightness").Value,
             }
         )
-        return FakeOutput()
+        # Reproduce the target Windows/pywin32 behaviour: the provider accepts
+        # the command but win32com returns no output object. The production code
+        # must rely on the subsequent CurrentBrightness readback.
+        return None
 
 
 class FakeService:
@@ -110,15 +108,16 @@ def main() -> None:
     assert results == [
         {
             "instance_name": r"DISPLAY\TEST",
-            "return_value": 0,
+            "return_value": None,
+            "provider_output_present": False,
             "invocation": "SWbemObject.ExecMethod_",
         }
     ]
     assert not hasattr(service, "ExecMethod_")
 
     print(
-        "PASS: WMI brightness uses SWbemObject.ExecMethod_ with named Timeout and "
-        "Brightness inputs; it does not call the nonexistent SWbemServices.ExecMethod_."
+        "PASS: WMI brightness accepts a missing provider output object and leaves "
+        "final success to observed CurrentBrightness verification."
     )
 
 
