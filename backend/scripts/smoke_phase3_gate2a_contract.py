@@ -121,7 +121,7 @@ def main() -> None:
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
-    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_2b"
+    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_3_5"
     assert health_payload["capabilities"]["presentation_execution_via_turn"] is True
     assert health_payload["capabilities"]["general_office_execution_via_turn"] is False
 
@@ -220,7 +220,7 @@ def main() -> None:
 
     print(
         "PASS: one-step GPT Realtime presentation plans execute directly with permission, "
-        "language, status, and verification guarantees."
+        "language, status, and verification guarantees under Phase 3 Gate 3-5."
     )
 
 
