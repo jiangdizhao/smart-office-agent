@@ -45,7 +45,7 @@ class PresentationRuntimeConfig:
             recipient_name=os.environ.get("SMART_OFFICE_DEMO_RECIPIENT_NAME", "Rico"),
             recipient_email=os.environ.get(
                 "SMART_OFFICE_DEMO_RECIPIENT_EMAIL",
-                "jiangdizhao@gmail.com",
+                "jiangdizhao1@outlook.com",
             ),
             close_powerpoint_when_empty=os.environ.get(
                 "SMART_OFFICE_CLOSE_POWERPOINT_WHEN_EMPTY",
