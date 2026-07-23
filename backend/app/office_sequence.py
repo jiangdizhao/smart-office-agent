@@ -28,6 +28,7 @@ _ACTION_TITLES = {
     "system_adjust_brightness": "Adjust the display brightness",
     "office_generate_presentation_summary": "Generate a presentation summary",
     "outlook_create_summary_draft": "Create a Classic Outlook summary draft",
+    "outlook_send_approved_draft": "Send the latest verified Outlook draft",
 }
 
 
@@ -43,8 +44,15 @@ def _validation_error(message: str, arguments: dict[str, Any]) -> ToolResult:
             "arguments": arguments,
             "requested_state": {},
             "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
         },
-        raw={"validation_error": message, "email_send_enabled": False},
+        raw={
+            "validation_error": message,
+            "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
+        },
     )
 
 
@@ -126,6 +134,14 @@ def _step_arguments(
             args["subject"] = " ".join(subject.split())
         return args, True, None
 
+    if name == "outlook_send_approved_draft":
+        unexpected = set(item) - {"name", "draft_source"}
+        if unexpected:
+            return None, True, f"Unexpected fields: {sorted(unexpected)}"
+        if item.get("draft_source", "latest_verified") != "latest_verified":
+            return None, True, "draft_source must be 'latest_verified'."
+        return {"draft_source": "latest_verified"}, True, None
+
     unexpected = set(item) - {"name"}
     if unexpected:
         return None, False, f"{name} does not accept fields: {sorted(unexpected)}"
@@ -192,6 +208,8 @@ def create_office_task(user_request: str, planned_steps: list[PlannedStep]) -> T
             "source": graph.source,
             "approval_required": any(step.requires_confirmation for step in graph.steps),
             "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
         },
     )
     event_bus.publish(
@@ -223,6 +241,20 @@ async def _approval_action(task_id: str, step: Any) -> str:
     if not step.requires_confirmation:
         return "approve"
 
+    is_send = step.tool_name == "outlook_send_approved_draft"
+    waiting_message = (
+        "A second approval is required before sending the verified Outlook draft."
+        if is_send
+        else "Approval is required before creating a Classic Outlook draft."
+    )
+    reason = (
+        "The second approval removes the draft-only notice, saves and re-verifies the "
+        "fixed sender and recipient, and then invokes Outlook Send()."
+        if is_send
+        else "Creating an Outlook draft writes the generated summary to the signed-in "
+        "local Outlook mailbox and opens the draft window."
+    )
+
     state_store.set_status(
         task_id,
         "waiting_approval",
@@ -232,7 +264,7 @@ async def _approval_action(task_id: str, step: Any) -> str:
         task_id,
         step.step_id,
         "waiting_approval",
-        message="Approval is required before creating a Classic Outlook draft.",
+        message=waiting_message,
     )
     event_bus.publish(
         task_id=task_id,
@@ -244,11 +276,11 @@ async def _approval_action(task_id: str, step: Any) -> str:
             "title": step.title,
             "tool_name": step.tool_name,
             "actions": ["approve", "cancel", "skip", "takeover"],
-            "reason": (
-                "Creating an Outlook draft writes the generated summary to the "
-                "signed-in local Outlook mailbox and opens the draft window."
-            ),
+            "reason": reason,
+            "approval_stage": "send" if is_send else "draft",
             "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
         },
     )
 
@@ -302,6 +334,8 @@ def _merge_step_result(
                 **result.raw,
                 "office_plan": True,
                 "email_send_enabled": False,
+                "approval_gated_email_send_enabled": True,
+                "unrestricted_email_send_enabled": False,
             },
         }
     )
@@ -318,7 +352,13 @@ async def run_office_task(task_id: str) -> None:
             task_id=task_id,
             event_type="planning",
             message="Bounded Office workflow execution started.",
-            data={"execute": True, "mode": "office_plan", "email_send_enabled": False},
+            data={
+                "execute": True,
+                "mode": "office_plan",
+                "email_send_enabled": False,
+                "approval_gated_email_send_enabled": True,
+                "unrestricted_email_send_enabled": False,
+            },
         )
 
         for step in task.steps:
@@ -472,6 +512,8 @@ async def run_office_task(task_id: str) -> None:
                 "steps": completed_steps,
                 "mode": "office_plan",
                 "email_send_enabled": False,
+                "approval_gated_email_send_enabled": True,
+                "unrestricted_email_send_enabled": False,
             },
         )
     except Exception as exc:
