@@ -4,15 +4,7 @@ const API_BASE_URL =
 const CONNECTION_TIMEOUT_MS = 15_000
 const DECISION_TIMEOUT_MS = 20_000
 
-export type PresentationToolName =
-  | 'presentation_open_configured'
-  | 'presentation_start_slideshow'
-  | 'presentation_next_slide'
-  | 'presentation_previous_slide'
-  | 'presentation_go_to_slide'
-  | 'presentation_get_status'
-  | 'presentation_end_slideshow'
-  | 'presentation_execute_sequence'
+export type PresentationToolName = 'presentation_plan'
 
 export type RealtimePresentationToolCall = {
   name: PresentationToolName
@@ -26,7 +18,7 @@ export type RealtimePresentationDecision =
   | { kind: 'clarify'; clarification: string }
   | { kind: 'none'; reason: string }
 
-const SINGLE_PRESENTATION_ACTIONS = [
+const PRESENTATION_ACTIONS = [
   'presentation_open_configured',
   'presentation_start_slideshow',
   'presentation_next_slide',
@@ -39,83 +31,24 @@ const SINGLE_PRESENTATION_ACTIONS = [
 const PRESENTATION_TOOLS = [
   {
     type: 'function',
-    name: 'presentation_open_configured',
+    name: 'presentation_plan',
     description:
-      'Open the configured demo presentation Loss.pptx. Use only when the user clearly asks to open the presentation or PowerPoint demo.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    type: 'function',
-    name: 'presentation_start_slideshow',
-    description:
-      'Start the slide show for the configured presentation. Use when the user clearly asks to start, play, present, or begin the slide show.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    type: 'function',
-    name: 'presentation_next_slide',
-    description:
-      'Advance exactly one slide. Chinese examples include 下一页, 下一张, 翻到下一页, 继续往后. English examples include next slide, move forward, advance one slide.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    type: 'function',
-    name: 'presentation_previous_slide',
-    description:
-      'Return exactly one slide. Chinese examples include 上一页, 上一张, 回到前一页. English examples include previous slide, go back one slide.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    type: 'function',
-    name: 'presentation_go_to_slide',
-    description:
-      'Jump to one explicitly requested slide number. Never invent a slide number.',
-    parameters: {
-      type: 'object',
-      properties: {
-        slide_number: {
-          type: 'integer',
-          minimum: 1,
-          description: 'The explicitly requested one-based slide number.',
-        },
-      },
-      required: ['slide_number'],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: 'function',
-    name: 'presentation_get_status',
-    description:
-      'Inspect presentation status, including whether it is open, whether the slide show is active, and the current slide. Use for questions such as 现在是第几页 or what slide are we on.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    type: 'function',
-    name: 'presentation_end_slideshow',
-    description:
-      'End the active slide show without closing the PowerPoint presentation. Use when the user clearly asks to end or stop the presentation.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    type: 'function',
-    name: 'presentation_execute_sequence',
-    description:
-      'Execute two to eight explicit supported presentation actions in the exact order requested by the user. Use only for a compound request containing at least two presentation actions.',
+      'Convert one clear user request into an ordered plan of one to eight supported presentation actions. Use this same function for both single-action and compound presentation requests.',
     parameters: {
       type: 'object',
       properties: {
         steps: {
           type: 'array',
-          minItems: 2,
+          minItems: 1,
           maxItems: 8,
-          description: 'Ordered presentation actions. Repeat next or previous steps when the user asks to move multiple slides.',
+          description:
+            'The exact ordered presentation actions requested by the user. Use one item for a single action. Repeat next or previous actions when the user asks to move multiple slides.',
           items: {
             type: 'object',
             properties: {
               name: {
                 type: 'string',
-                enum: SINGLE_PRESENTATION_ACTIONS,
+                enum: PRESENTATION_ACTIONS,
               },
               slide_number: {
                 type: 'integer',
@@ -240,11 +173,13 @@ Language: ${languageLabel}.
 User utterance: ${clean}
 
 Rules:
-- For one clear supported presentation action, call exactly one matching single-action function.
-- For two to eight explicit supported presentation actions, call presentation_execute_sequence exactly once and preserve the requested order.
+- For every clear supported presentation request, call presentation_plan exactly once.
+- Put exactly one step in the plan for one requested action.
+- Put two to eight ordered steps in the plan for a compound request.
 - A request such as “open the presentation, start the slide show, then go to slide five” must become open, start, and go-to-five in that order.
-- A request such as “move forward two slides” must become a sequence containing two presentation_next_slide steps.
-- Do not silently add prerequisites the user did not request. The Backend owns state validation and will report a clear failure when a prerequisite is missing.
+- A request such as “move forward two slides” must contain two presentation_next_slide steps.
+- A request such as “what slide are we on” must contain one presentation_get_status step.
+- Do not silently add prerequisites the user did not request. The Backend owns state validation and reports prerequisite failures.
 - Understand natural Chinese and English paraphrases; do not require fixed wording.
 - Do not call a function for reception questions, ordinary conversation, Teams, Word, Excel, email, volume, brightness, document generation, or any unsupported action. Return exactly NO_PRESENTATION_ACTION instead.
 - If it sounds presentation-related but the intended action, action order, or required slide number is genuinely ambiguous, return CLARIFY: followed by one concise question in the user's language.
@@ -342,7 +277,7 @@ Rules:
         tool_choice: 'auto',
         tools: PRESENTATION_TOOLS,
         instructions:
-          'You are a bounded presentation-intent interpreter. Select only registered presentation functions, including the bounded compound sequence function. Never execute tools yourself and never claim success.',
+          'You are a bounded presentation planner. For every clear supported presentation request, call the single presentation_plan function with one to eight ordered steps. Never execute tools yourself and never claim success.',
         audio: { input: { turn_detection: null } },
       },
     })
@@ -376,10 +311,9 @@ Rules:
     if (!pending) return
 
     if (event.type === 'response.function_call_arguments.done') {
-      const name = event.name as PresentationToolName | undefined
-      if (name) {
+      if (event.name === 'presentation_plan') {
         pending.toolCall = {
-          name,
+          name: 'presentation_plan',
           arguments: safeArguments(event.arguments),
           call_id: event.call_id ?? null,
           source: 'gpt_realtime',
@@ -475,7 +409,7 @@ Rules:
       }
       const onError = () => {
         cleanup()
-        reject(new Error('Could not open presentation interpreter data channel.'))
+        reject(new Error('Presentation interpreter data channel failed to open.'))
       }
       channel.addEventListener('open', onOpen)
       channel.addEventListener('error', onError)
