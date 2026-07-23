@@ -5,11 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from app.models import ToolResult, VerificationResult
-from app.office_artifacts import (
-    create_gmail_summary_draft,
-    generate_presentation_summary,
-    office_artifact_status,
-)
+from app.office_artifacts import generate_presentation_summary, office_artifact_status
+from app.outlook_drafts import create_outlook_summary_draft, outlook_draft_status
 from app.presentation_actions import (
     PRESENTATION_TOOL_NAMES,
     execute_presentation_tool_call,
@@ -32,7 +29,7 @@ OFFICE_TOOL_NAMES: set[str] = {
     "system_set_brightness",
     "system_adjust_brightness",
     "office_generate_presentation_summary",
-    "gmail_create_summary_draft",
+    "outlook_create_summary_draft",
 }
 
 
@@ -68,13 +65,18 @@ def get_office_status() -> ToolResult:
     presentation = get_presentation_status()
     system = get_system_control_status()
     artifacts = office_artifact_status()
+    outlook = outlook_draft_status()
     data = {
         **dict(presentation.data),
         "presentation": dict(presentation.data),
         "system": dict(system.data),
         "artifacts": artifacts,
+        "outlook": outlook,
         "volume_percent": system.data.get("volume_percent"),
         "brightness_percent": system.data.get("brightness_percent"),
+        "outlook_draft_configured": outlook.get("outlook_draft_configured"),
+        "recipient_name": outlook.get("recipient_name"),
+        "recipient_email": outlook.get("recipient_email"),
         "email_send_enabled": False,
     }
     return ToolResult(
@@ -89,7 +91,7 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
     if not result.ok:
         return _verification(
             ok=False,
-            message="Office tool execution failed; state verification was not attempted.",
+            message=f"Office tool execution failed: {result.message}",
             result=result,
             observed=dict(status.data),
         )
@@ -154,26 +156,29 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
             },
         )
 
-    if result.tool_name == "gmail_create_summary_draft":
-        draft_id = result.data.get("gmail_draft_id")
+    if result.tool_name == "outlook_create_summary_draft":
+        entry_id = result.data.get("outlook_draft_entry_id")
         ok = bool(
-            draft_id
-            and result.data.get("gmail_draft_created") is True
+            entry_id
+            and result.data.get("outlook_draft_created") is True
+            and result.data.get("outlook_draft_verified") is True
             and result.data.get("sent") is False
             and result.data.get("email_send_enabled") is False
         )
         return _verification(
             ok=ok,
             message=(
-                "Verified that a Gmail draft was created and no send action occurred."
+                "Verified that a Classic Outlook draft was saved, reopened by EntryID, and not sent."
                 if ok
-                else "Gmail draft creation was not verified."
+                else "Classic Outlook draft creation was not verified."
             ),
             result=result,
             observed={
                 **observed,
-                "gmail_draft_id": draft_id,
-                "gmail_draft_created": result.data.get("gmail_draft_created"),
+                "outlook_draft_entry_id": entry_id,
+                "outlook_draft_created": result.data.get("outlook_draft_created"),
+                "outlook_draft_verified": result.data.get("outlook_draft_verified"),
+                "outlook_draft_displayed": result.data.get("outlook_draft_displayed"),
                 "sent": result.data.get("sent"),
                 "email_send_enabled": False,
             },
@@ -233,9 +238,10 @@ def execute_office_tool_call(
             task_snapshot=task_snapshot,
         )
     else:
-        result = create_gmail_summary_draft(
+        result = create_outlook_summary_draft(
             language="en" if clean.get("language") == "en" else "zh",
             subject=(str(clean.get("subject")) if clean.get("subject") else None),
+            display=True,
         )
 
     status = get_office_status()
@@ -254,9 +260,12 @@ def execute_office_tool_call(
                 "summary_json_path",
                 "summary_json_path_relative",
                 "artifact_url",
-                "gmail_draft_created",
-                "gmail_draft_id",
-                "gmail_drafts_url",
+                "outlook_draft_created",
+                "outlook_draft_verified",
+                "outlook_draft_entry_id",
+                "outlook_draft_store_id",
+                "outlook_draft_displayed",
+                "outlook_connection_mode",
                 "recipient_name",
                 "recipient_email",
                 "subject",
