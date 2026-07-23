@@ -44,7 +44,7 @@ const PRESENTATION_TOOLS = [
           minItems: 1,
           maxItems: 8,
           description:
-            'The exact ordered presentation actions requested by the user. Use one item for a single action. Repeat next or previous actions when the user asks to move multiple slides.',
+            'The exact ordered presentation actions requested by the user. presentation_next_slide moves toward the end and increases the page number. presentation_previous_slide moves toward the beginning and decreases the page number. Repeat next or previous actions when the user requests multiple slides.',
           items: {
             type: 'object',
             properties: {
@@ -55,7 +55,14 @@ const PRESENTATION_TOOLS = [
               slide_number: {
                 type: 'integer',
                 minimum: 1,
-                description: 'Required only for presentation_go_to_slide.',
+                description:
+                  'A concrete one-based page number. Use only for presentation_go_to_slide and do not combine with slide_target.',
+              },
+              slide_target: {
+                type: 'string',
+                enum: ['last'],
+                description:
+                  'Use slide_target="last" with presentation_go_to_slide for the last/final slide. The Backend resolves the live total slide count; never ask the user for the numeric last page.',
               },
             },
             required: ['name'],
@@ -179,12 +186,19 @@ Rules:
 - Put exactly one step in the plan for one requested action.
 - Put two to eight ordered steps in the plan for a compound request.
 - A request such as “open the presentation, start the slide show, then go to slide five” must become open, start, and go-to-five in that order.
+- Direction semantics are deterministic. presentation_next_slide means page number +1, toward the end. presentation_previous_slide means page number -1, toward the beginning.
+- Chinese presentation convention for this application: “向前翻/往前翻/翻回前面/上一页/前一页” means presentation_previous_slide. “向后翻/往后翻/下一页/后一页/继续往下” means presentation_next_slide.
+- Distinguish “向前翻两页” from “前进两页”: “向前翻两页” means two presentation_previous_slide steps; “前进两页” means two presentation_next_slide steps.
+- English “next/forward/advance” means presentation_next_slide; “previous/back/backward” means presentation_previous_slide.
 - A request such as “move forward two slides” must contain two presentation_next_slide steps.
+- “向前翻两页” must contain two presentation_previous_slide steps. “向后翻两页” must contain two presentation_next_slide steps.
+- “最后一页/末页/last slide/final slide” is not ambiguous and does not require a numeric page. Use one presentation_go_to_slide step with slide_target="last". The Backend resolves the current total slide count.
+- Use slide_number only for an explicit numeric page. Use slide_target="last" only for the semantic final page. Never provide both.
 - A request such as “what slide are we on” must contain one presentation_get_status step.
 - Do not silently add prerequisites the user did not request. The Backend owns state validation and reports prerequisite failures.
 - Understand natural Chinese and English paraphrases; do not require fixed wording.
 - Do not call a function for reception questions, ordinary conversation, Teams, Word, Excel, email, volume, brightness, document generation, or any unsupported action. Return exactly NO_PRESENTATION_ACTION instead.
-- If it sounds presentation-related but the intended action, action order, or required slide number is genuinely ambiguous, return CLARIFY: followed by one concise question in the user's language.
+- Ask for clarification only when the intended action truly remains ambiguous after applying the direction and final-slide rules above.
 - Never invent a slide number, file path, action, approval, or success result.
 - Do not answer the user and do not claim an action succeeded.
 `.trim(),
@@ -279,7 +293,7 @@ Rules:
         tool_choice: 'auto',
         tools: PRESENTATION_TOOLS,
         instructions:
-          'You are a bounded presentation planner. For every clear supported presentation request, call the single presentation_plan function with one to eight ordered steps. Never execute tools yourself and never claim success.',
+          'You are a bounded presentation planner. Always distinguish previous/toward-beginning from next/toward-end. In this application, Chinese 向前翻 means previous and 向后翻 means next. Resolve last/final slide with presentation_go_to_slide and slide_target="last"; never ask for its numeric page. For every clear supported request, call presentation_plan once with one to eight ordered steps. Never execute tools yourself and never claim success.',
         audio: { input: { turn_detection: null } },
       },
     })
