@@ -1,6 +1,6 @@
 # Phase 3 Gate 3–5 Local Windows Acceptance
 
-This acceptance batch covers bounded Windows volume and brightness control, local presentation-summary artifacts, Classic Outlook draft creation, Backend-managed recipient aliases, and second-approval email sending.
+This acceptance batch covers bounded Windows volume and brightness control, local presentation-summary artifacts, Classic Outlook draft creation, an editable recipient directory, and second-approval email sending.
 
 ## Preconditions
 
@@ -27,46 +27,74 @@ pip install -r backend\requirements-smartoffice.txt
 
 The local dependencies include `pycaw` for Windows Core Audio and `pywin32` for PowerPoint and Classic Outlook COM. Brightness uses Windows WMI and therefore only works when the display exposes `WmiMonitorBrightness`; many external monitors do not expose that interface.
 
-## Configure Outlook sender and recipient aliases
+## Edit the Outlook recipient file
 
-The default configuration is:
+The default editable file is:
 
 ```text
-Outlook sender: jiangdizhao1@outlook.com
-Default recipient key: rico
-Rico: jiangdizhao@gmail.com
+F:\smart-office-agent\config\email_recipients.json
 ```
 
-Additional recipients are configured in the same PowerShell window before starting the Backend. Replace the example address with a real address controlled by the intended recipient:
+Initial contents:
+
+```json
+{
+  "default_recipient_key": "rico",
+  "recipients": {
+    "rico": {
+      "name": "Rico",
+      "email": "jiangdizhao@gmail.com"
+    }
+  }
+}
+```
+
+To add Tom, edit the same file and add a comma plus a new entry. Replace the example address with Tom's actual valid address:
+
+```json
+{
+  "default_recipient_key": "rico",
+  "recipients": {
+    "rico": {
+      "name": "Rico",
+      "email": "jiangdizhao@gmail.com"
+    },
+    "tom": {
+      "name": "Tom",
+      "email": "tom@example.com"
+    }
+  }
+}
+```
+
+To make Tom the default, change only:
+
+```json
+"default_recipient_key": "tom"
+```
+
+Recipient keys must contain only lowercase letters, digits, underscores, or hyphens. The Backend rejects malformed JSON, invalid addresses, duplicate addresses, unknown recipient keys, sender/recipient equality, raw model-supplied addresses, and draft/send steps that target different recipient keys.
+
+The recipient file is hot-read at runtime. After saving the file, the next `/api/office/status`, draft-creation action, or send action uses the new contents; restarting the Backend is not required. Save the file completely before issuing the next command so the Backend never reads a partially written JSON document.
+
+An alternative file can be selected before startup:
 
 ```powershell
-$env:SMART_OFFICE_EMAIL_RECIPIENTS_JSON = '{"tom":{"name":"Tom","email":"tom@example.com"}}'
+$env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = "F:\somewhere\my_email_recipients.json"
 ```
 
-Multiple entries are supported:
-
-```powershell
-$env:SMART_OFFICE_EMAIL_RECIPIENTS_JSON = '{"tom":{"name":"Tom","email":"tom@example.com"},"supervisor":{"name":"Supervisor","email":"supervisor@example.com"}}'
-```
-
-The JSON entries are merged with the default Rico entry. To change the default recipient:
-
-```powershell
-$env:SMART_OFFICE_DEFAULT_RECIPIENT_KEY = "tom"
-```
-
-The Backend rejects malformed email addresses, unknown recipient keys, sender/recipient equality, raw model-supplied email addresses, and draft/send steps that target different recipient keys.
+This environment variable controls only the file path. Contact names and email addresses remain in the editable JSON file.
 
 ## Start
 
-Backend, from the same PowerShell window containing the recipient environment variables:
+Backend:
 
 ```powershell
 cd F:\smart-office-agent\backend
 powershell -ExecutionPolicy Bypass -File .\scripts\start_backend_realtime.ps1
 ```
 
-The startup output must list the fixed Outlook sender, default recipient key, and every allowed recipient. Invalid recipient JSON prevents startup.
+The startup output must show the recipient-file path, default recipient key, and all configured contacts. A missing or invalid file prevents startup.
 
 Frontend:
 
@@ -81,7 +109,7 @@ Close old Smart Office browser tabs and open:
 http://127.0.0.1:5173/
 ```
 
-Check Backend capabilities:
+Check Backend state:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/ | ConvertTo-Json -Depth 10
@@ -102,7 +130,7 @@ approval_gated_email_send_enabled = true
 unrestricted_email_send_enabled = false
 ```
 
-`status.recipient_catalog` must list `rico` and all additional configured aliases.
+`status.recipient_catalog` must match the current file contents.
 
 ## Test A: volume
 
@@ -138,7 +166,7 @@ Open or start `Loss.pptx`, then say:
 
 Expected: one Markdown summary and one JSON record are created in `demo_files/LOG`, the UI displays `打开摘要`, and the Backend verifies the non-empty artifact.
 
-## Test D: draft for the default recipient
+## Test D: draft for Rico
 
 Say:
 
@@ -150,20 +178,29 @@ Expected:
 
 1. the summary is generated;
 2. the task pauses for the first approval;
-3. the approval prompt identifies recipient key `rico`;
+3. the approval prompt identifies `Rico <jiangdizhao@gmail.com>`;
 4. after approval, Outlook creates and displays a draft from `jiangdizhao1@outlook.com` to `jiangdizhao@gmail.com`;
 5. the body contains `该邮件目前仅保存为 Outlook 草稿，尚未发送。`;
-6. result data contains `recipient_key= rico`, `outlook_draft_verified=true`, and `sent=false`.
+6. result data contains `recipient_key=rico`, `outlook_draft_verified=true`, and `sent=false`.
 
-## Test E: draft for an additional recipient
+## Test E: runtime file reload and Tom
 
-After configuring a real `tom` address, say:
+Keep the Backend running. Add a valid `tom` entry to `config/email_recipients.json`, save the file, and check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/office/status |
+  ConvertTo-Json -Depth 12
+```
+
+The returned recipient catalog must now contain Tom without restarting Uvicorn.
+
+Then say:
 
 ```text
 生成当前演示的摘要，并准备一封发给 Tom 的 Outlook 草稿。
 ```
 
-Expected: Realtime uses `recipient_key="tom"`; Backend resolves the actual address from the allowlist; the approval prompt and displayed draft identify Tom. No raw email address appears in the tool arguments.
+Expected: Realtime uses `recipient_key="tom"`; Backend resolves the address from the current file; the approval prompt and displayed draft identify Tom. No raw email address appears in the tool arguments.
 
 Then test an unknown person:
 
@@ -171,9 +208,13 @@ Then test an unknown person:
 准备一封发给 Alice 的邮件。
 ```
 
-Expected: the assistant requests clarification or asks the user to choose/configure an available recipient; no task is executed for an unknown alias.
+Expected: the assistant requests clarification or asks the user to add/select a configured contact; no task is executed for an unknown alias.
 
-## Test F: second-approved sending
+## Test F: invalid file rejection
+
+While the Backend is running, temporarily introduce malformed JSON or an invalid address into the recipient file, then request status or a draft. The operation must fail instead of using stale cached contacts. Restore valid JSON before continuing.
+
+## Test G: second-approved sending
 
 With a verified unsent draft open, say:
 
@@ -195,7 +236,7 @@ Expected:
 
 Repeat with `跳过` or `取消任务`. The draft must remain unsent.
 
-## Test G: compound two-approval workflow
+## Test H: compound two-approval workflow
 
 Say:
 
@@ -212,13 +253,13 @@ Expected ordered behavior:
 5. remove the draft-only notice and send;
 6. both draft and send steps use the same `recipient_key`.
 
-## Test H: recipient tampering
+## Test I: recipient tampering
 
 Create a verified draft, then manually add another To, CC, or BCC recipient before the second approval. Approve sending.
 
-Expected: Backend refuses to send because the message no longer contains exactly one selected allowlisted recipient.
+Expected: Backend refuses to send because the message no longer contains exactly one selected configured recipient.
 
-## Test I: permission
+## Test J: permission
 
 Switch Actor to `visitor` and test device control, summary generation, Outlook draft creation, and Outlook sending. Expected: permission denied and no Office task scheduled.
 
@@ -228,9 +269,10 @@ Gate 3–5 passes local Windows acceptance when:
 
 - volume and supported brightness controls mutate and verify real state;
 - summary artifacts remain bounded to the configured LOG directory;
-- recipient aliases are read from Backend configuration rather than generated by the model;
-- unknown or malformed recipients are rejected;
-- the fixed sender can create drafts for Rico and other configured aliases;
+- contacts are loaded from the editable recipient file rather than environment-variable JSON or model-generated addresses;
+- valid file edits become effective without Backend restart;
+- unknown, malformed, or duplicate contacts are rejected without using stale data;
+- the fixed sender can create drafts for Rico and other configured contacts;
 - draft creation and sending require separate approvals;
 - sending removes the draft-only notice before Outlook `Send()`;
 - altered or additional recipients prevent sending;
