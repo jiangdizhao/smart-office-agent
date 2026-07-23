@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 from app.event_bus import event_bus
@@ -9,8 +10,11 @@ from app.presentation_actions import execute_presentation_tool_call
 from app.state_store import state_store
 from app.task_graph import build_task_graph, task_graph_event_data
 
-SEQUENCE_TOOL_NAME = "presentation_execute_sequence"
-MAX_SEQUENCE_STEPS = 8
+PLAN_TOOL_NAME = "presentation_plan"
+# Kept as an import-compatible alias while Gate 2B callers migrate to the
+# unified plan terminology.
+SEQUENCE_TOOL_NAME = PLAN_TOOL_NAME
+MAX_PLAN_STEPS = 8
 ALLOWED_SEQUENCE_ACTIONS = {
     "presentation_open_configured",
     "presentation_start_slideshow",
@@ -34,7 +38,7 @@ _ACTION_TITLES = {
 
 def _validation_error(message: str, arguments: dict[str, Any]) -> ToolResult:
     return ToolResult(
-        tool_name=SEQUENCE_TOOL_NAME,
+        tool_name=PLAN_TOOL_NAME,
         ok=False,
         message=message,
         expected_process_names=["POWERPNT.EXE"],
@@ -52,10 +56,10 @@ def _step_arguments(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
     name = item.get("name")
     unexpected = set(item) - {"name", "slide_number"}
     if unexpected:
-        return None, f"Unexpected sequence step fields: {sorted(unexpected)}"
+        return None, f"Unexpected presentation-plan step fields: {sorted(unexpected)}"
 
     if name not in ALLOWED_SEQUENCE_ACTIONS:
-        return None, f"Unsupported presentation sequence action: {name}"
+        return None, f"Unsupported presentation-plan action: {name}"
 
     if name == "presentation_go_to_slide":
         slide_number = item.get("slide_number")
@@ -73,25 +77,32 @@ def _step_arguments(item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
 def validate_sequence_arguments(
     arguments: dict[str, Any] | None,
 ) -> tuple[list[PlannedStep] | None, ToolResult | None]:
+    """Validate the single GPT Realtime presentation-plan schema.
+
+    One step represents a single action. Two to eight steps represent a compound
+    request. Natural-language interpretation is not performed here; Backend only
+    validates the structured plan selected by GPT Realtime.
+    """
+
     clean_arguments = dict(arguments or {})
     unexpected = set(clean_arguments) - {"steps"}
     if unexpected:
         return None, _validation_error(
-            f"Unexpected sequence arguments: {sorted(unexpected)}",
+            f"Unexpected presentation-plan arguments: {sorted(unexpected)}",
             clean_arguments,
         )
 
     raw_steps = clean_arguments.get("steps")
     if not isinstance(raw_steps, list):
         return None, _validation_error("steps must be an array.", clean_arguments)
-    if len(raw_steps) < 2:
+    if len(raw_steps) < 1:
         return None, _validation_error(
-            "A compound presentation sequence requires at least two steps.",
+            "A presentation plan requires at least one step.",
             clean_arguments,
         )
-    if len(raw_steps) > MAX_SEQUENCE_STEPS:
+    if len(raw_steps) > MAX_PLAN_STEPS:
         return None, _validation_error(
-            f"A presentation sequence may contain at most {MAX_SEQUENCE_STEPS} steps.",
+            f"A presentation plan may contain at most {MAX_PLAN_STEPS} steps.",
             clean_arguments,
         )
 
@@ -99,14 +110,14 @@ def validate_sequence_arguments(
     for index, raw_item in enumerate(raw_steps, start=1):
         if not isinstance(raw_item, dict):
             return None, _validation_error(
-                f"Sequence step {index} must be an object.",
+                f"Presentation-plan step {index} must be an object.",
                 clean_arguments,
             )
         name = raw_item.get("name")
         args, error = _step_arguments(raw_item)
         if error is not None or not isinstance(name, str):
             return None, _validation_error(
-                f"Sequence step {index} is invalid: {error or 'name is required.'}",
+                f"Presentation-plan step {index} is invalid: {error or 'name is required.'}",
                 clean_arguments,
             )
         planned_steps.append(
@@ -127,7 +138,7 @@ def create_presentation_sequence_task(
     planned_steps: list[PlannedStep],
 ) -> TaskSession:
     task_graph = build_task_graph(planned_steps)
-    task_graph.source = "gpt_realtime_presentation_sequence"
+    task_graph.source = "gpt_realtime_presentation_plan"
     task = state_store.create_task(
         user_request=user_request,
         execute=True,
@@ -136,7 +147,7 @@ def create_presentation_sequence_task(
     event_bus.publish(
         task_id=task.task_id,
         event_type="task_created",
-        message="Gate 2B compound presentation task created.",
+        message="Gate 2B presentation-plan task created.",
         data={
             "execute": True,
             "step_count": len(task_graph.steps),
@@ -146,7 +157,7 @@ def create_presentation_sequence_task(
     event_bus.publish(
         task_id=task.task_id,
         event_type="planning",
-        message="GPT Realtime sequence validated and converted into a bounded task graph.",
+        message="GPT Realtime plan validated and converted into a bounded task graph.",
         data=task_graph_event_data(task_graph),
     )
     return task
@@ -176,7 +187,7 @@ def _merge_step_result(
             },
             "raw": {
                 **result.raw,
-                "gate2b_sequence": True,
+                "gate2b_presentation_plan": True,
             },
         }
     )
@@ -191,13 +202,13 @@ async def run_presentation_sequence_task(task_id: str) -> None:
         state_store.set_status(
             task_id,
             "running",
-            summary="Compound presentation task is running.",
+            summary="Presentation-plan task is running.",
         )
         event_bus.publish(
             task_id=task_id,
             event_type="planning",
-            message="Gate 2B presentation sequence execution started.",
-            data={"execute": True, "mode": "presentation_sequence"},
+            message="Gate 2B presentation-plan execution started.",
+            data={"execute": True, "mode": "presentation_plan"},
         )
 
         for step in task.steps:
@@ -219,29 +230,27 @@ async def run_presentation_sequence_task(task_id: str) -> None:
                 data={
                     "tool_name": step.tool_name,
                     "args": step.args,
-                    "sequence_index": step.index,
+                    "plan_index": step.index,
                 },
             )
 
             if step.tool_name is None:
                 result = _validation_error(
-                    f"Sequence step {step.index} has no presentation tool.",
+                    f"Presentation-plan step {step.index} has no executable tool.",
                     {"step_id": step.step_id},
                 )
-                verification = VerificationResult.model_validate(
-                    {
-                        "ok": False,
-                        "message": "Presentation step has no executable tool.",
-                        "process_ok": None,
-                        "window_ok": None,
-                        "expected_process_names": [],
-                        "found_process_names": [],
-                        "expected_window_keywords": [],
-                        "found_window_titles": [],
-                        "require_window_match": False,
-                        "raw": {"invalid_step": True},
-                        "checked_at": __import__("datetime").datetime.now(__import__("datetime").UTC),
-                    }
+                verification = VerificationResult(
+                    ok=False,
+                    message="Presentation step has no executable tool.",
+                    process_ok=None,
+                    window_ok=None,
+                    expected_process_names=[],
+                    found_process_names=[],
+                    expected_window_keywords=[],
+                    found_window_titles=[],
+                    require_window_match=False,
+                    raw={"invalid_step": True},
+                    checked_at=datetime.now(UTC),
                 )
                 status = ToolResult(
                     tool_name="presentation_get_status",
@@ -300,13 +309,16 @@ async def run_presentation_sequence_task(task_id: str) -> None:
                 state_store.set_status(
                     task_id,
                     "failed",
-                    summary=f"Step {step.index} failed: {result.message if not result.ok else verification.message}",
+                    summary=(
+                        f"Step {step.index} failed: "
+                        f"{result.message if not result.ok else verification.message}"
+                    ),
                 )
                 event_bus.publish(
                     task_id=task_id,
                     step_id=step.step_id,
                     event_type="error",
-                    message=f"Gate 2B presentation sequence failed at step {step.index}.",
+                    message=f"Gate 2B presentation plan failed at step {step.index}.",
                     data={
                         "tool_result": merged_result.model_dump(mode="json"),
                         "verification_result": verification.model_dump(mode="json"),
@@ -328,8 +340,8 @@ async def run_presentation_sequence_task(task_id: str) -> None:
         event_bus.publish(
             task_id=task_id,
             event_type="completed",
-            message="Gate 2B compound presentation task completed and verified.",
-            data={"steps": len(task.steps), "mode": "presentation_sequence"},
+            message="Gate 2B presentation plan completed and verified.",
+            data={"steps": len(task.steps), "mode": "presentation_plan"},
         )
     except Exception as exc:
         state_store.update_pending_steps(
@@ -340,11 +352,11 @@ async def run_presentation_sequence_task(task_id: str) -> None:
         state_store.set_status(
             task_id,
             "failed",
-            summary=f"Compound presentation task failed: {exc}",
+            summary=f"Presentation-plan task failed: {exc}",
         )
         event_bus.publish(
             task_id=task_id,
             event_type="error",
-            message=f"Compound presentation task failed: {exc}",
+            message=f"Presentation-plan task failed: {exc}",
             data={"error": str(exc)},
         )
