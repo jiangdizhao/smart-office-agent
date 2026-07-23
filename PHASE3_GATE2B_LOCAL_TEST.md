@@ -172,10 +172,24 @@ Use a longer sequence, for example:
 下一页，然后下一页，再下一页，再回到上一页，然后告诉我现在是第几页。
 ```
 
-Immediately click `取消当前任务` while the task is active.
+While the task is active, test both cancellation paths separately:
+
+```text
+取消当前任务。
+```
+
+and the `取消当前任务` button.
+
+English voice cancellation may be tested with:
+
+```text
+Cancel the current task.
+```
 
 Expected:
 
+- the panel remains available for Push-to-Talk while the background task runs;
+- the voice request is routed to the active TaskSession rather than treated as a new PowerPoint sequence;
 - task reaches `cancelled`;
 - the currently executing COM call may finish, but no later pending step starts;
 - UI and spoken answer report cancellation without claiming full completion.
@@ -187,7 +201,7 @@ Gate 2B passes local Windows acceptance when:
 - Chinese and English compound commands preserve action order;
 - each step stores a real ToolResult and VerificationResult;
 - the sequence stops after the first failed step;
-- cancellation prevents later pending steps from running;
+- voice and button cancellation prevent later pending steps from running;
 - Visitor cannot create or execute a sequence;
 - English transcript, final text, and speech stay English;
 - Gate 2A single commands still work;
