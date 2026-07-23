@@ -9,6 +9,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Compatibility/documentation note only: the shipped template initially contains
+# Rico <jiangdizhao@gmail.com>. Runtime contact data is always read from the editable file.
 _RECIPIENT_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
