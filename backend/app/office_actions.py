@@ -7,6 +7,7 @@ from typing import Any
 from app.models import ToolResult, VerificationResult
 from app.office_artifacts import generate_presentation_summary, office_artifact_status
 from app.outlook_drafts import create_outlook_summary_draft, outlook_draft_status
+from app.outlook_send import send_latest_outlook_draft
 from app.presentation_actions import (
     PRESENTATION_TOOL_NAMES,
     execute_presentation_tool_call,
@@ -30,6 +31,7 @@ OFFICE_TOOL_NAMES: set[str] = {
     "system_adjust_brightness",
     "office_generate_presentation_summary",
     "outlook_create_summary_draft",
+    "outlook_send_approved_draft",
 }
 
 
@@ -56,6 +58,8 @@ def _verification(
             "requested_state": dict(result.data.get("requested_state") or {}),
             "observed_state": observed,
             "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
         },
         checked_at=datetime.now(UTC),
     )
@@ -78,6 +82,8 @@ def get_office_status() -> ToolResult:
         "recipient_name": outlook.get("recipient_name"),
         "recipient_email": outlook.get("recipient_email"),
         "email_send_enabled": False,
+        "approval_gated_email_send_enabled": True,
+        "unrestricted_email_send_enabled": False,
     }
     return ToolResult(
         tool_name="office_get_status",
@@ -181,6 +187,38 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
                 "outlook_draft_displayed": result.data.get("outlook_draft_displayed"),
                 "sent": result.data.get("sent"),
                 "email_send_enabled": False,
+                "approval_gated_email_send_enabled": True,
+                "unrestricted_email_send_enabled": False,
+            },
+        )
+
+    if result.tool_name == "outlook_send_approved_draft":
+        ok = bool(
+            result.data.get("send_invoked") is True
+            and result.data.get("sent") is True
+            and result.data.get("draft_notice_removed") is True
+            and result.data.get("approval_gated_email_send_enabled") is True
+            and result.data.get("unrestricted_email_send_enabled") is False
+        )
+        return _verification(
+            ok=ok,
+            message=(
+                "Verified that the draft-only notice was removed and Outlook accepted the approved send."
+                if ok
+                else "The approved Outlook send was not verified."
+            ),
+            result=result,
+            observed={
+                **observed,
+                "source_outlook_draft_entry_id": result.data.get(
+                    "source_outlook_draft_entry_id"
+                ),
+                "draft_notice_removed": result.data.get("draft_notice_removed"),
+                "send_invoked": result.data.get("send_invoked"),
+                "sent": result.data.get("sent"),
+                "delivery_confirmed": result.data.get("delivery_confirmed"),
+                "approval_gated_email_send_enabled": True,
+                "unrestricted_email_send_enabled": False,
             },
         )
 
@@ -237,12 +275,14 @@ def execute_office_tool_call(
             language="en" if clean.get("language") == "en" else "zh",
             task_snapshot=task_snapshot,
         )
-    else:
+    elif name == "outlook_create_summary_draft":
         result = create_outlook_summary_draft(
             language="en" if clean.get("language") == "en" else "zh",
             subject=(str(clean.get("subject")) if clean.get("subject") else None),
             display=True,
         )
+    else:
+        result = send_latest_outlook_draft()
 
     status = get_office_status()
     status_data = dict(status.data)
@@ -266,8 +306,15 @@ def execute_office_tool_call(
                 "outlook_draft_store_id",
                 "outlook_draft_displayed",
                 "outlook_connection_mode",
+                "source_outlook_draft_entry_id",
+                "draft_notice_removed",
+                "send_invoked",
+                "delivery_confirmed",
+                "approval_gated_email_send_enabled",
+                "unrestricted_email_send_enabled",
                 "recipient_name",
                 "recipient_email",
+                "sender_account_email",
                 "subject",
                 "email_send_enabled",
                 "sent",
