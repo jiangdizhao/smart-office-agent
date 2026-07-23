@@ -43,7 +43,7 @@ const OFFICE_TOOLS = [
     type: 'function',
     name: 'office_plan',
     description:
-      'Convert one clear Smart Office request into one to eight ordered, bounded actions. This is the only model-facing execution function for PowerPoint, volume, brightness, local presentation summaries, approval-gated Classic Outlook draft creation, and separately approved sending of the latest verified draft.',
+      'Convert one clear Smart Office request into one to eight ordered, bounded actions. This is the only model-facing execution function for PowerPoint, volume, brightness, local presentation summaries, approval-gated Classic Outlook drafts, and separately approved sending to Backend-allowlisted recipients.',
     parameters: {
       type: 'object',
       properties: {
@@ -52,7 +52,7 @@ const OFFICE_TOOLS = [
           minItems: 1,
           maxItems: 8,
           description:
-            'Exact ordered actions requested by the user. PowerPoint actions remain bounded to the configured presentation. Outlook draft creation and Outlook sending are separate Backend approval steps. Unrestricted or arbitrary sending is never allowed.',
+            'Exact ordered actions requested by the user. Outlook recipient_key values must come from the Backend recipient catalog. Draft creation and sending are separate approval steps. Raw email addresses and unrestricted sending are never accepted.',
           items: {
             type: 'object',
             properties: {
@@ -89,8 +89,7 @@ const OFFICE_TOOLS = [
               language: {
                 type: 'string',
                 enum: ['zh', 'en'],
-                description:
-                  'Output language for a generated summary or Outlook draft.',
+                description: 'Output language for a generated summary or Outlook draft.',
               },
               summary_source: {
                 type: 'string',
@@ -102,13 +101,19 @@ const OFFICE_TOOLS = [
                 type: 'string',
                 enum: ['latest_verified'],
                 description:
-                  'Use latest_verified only with outlook_send_approved_draft. The Backend resolves the newest verified unsent draft and never accepts an EntryID, sender, or recipient from the model.',
+                  'Use latest_verified only with outlook_send_approved_draft. The Backend resolves the newest verified unsent draft for the selected recipient alias.',
+              },
+              recipient_key: {
+                type: 'string',
+                pattern: '^[a-z0-9][a-z0-9_-]{0,31}$',
+                description:
+                  'Optional Backend allowlist alias such as rico or tom. Use only a key present in the observed recipient_catalog/allowed_recipient_keys. Never put an email address in this field.',
               },
               subject: {
                 type: 'string',
                 maxLength: 180,
                 description:
-                  'Optional Outlook draft subject. Sender account and recipient are fixed by Backend configuration and cannot be supplied by the model.',
+                  'Optional Outlook draft subject. Sender account and recipient email are resolved by the Backend and cannot be supplied by the model.',
               },
             },
             required: ['name'],
@@ -239,7 +244,7 @@ class RealtimeOfficeInterpreter {
       const historyText = historyBeforeCurrent.length
         ? historyBeforeCurrent.map((item, index) => `${index + 1}. ${item}`).join('\n')
         : '(none)'
-      const contextText = JSON.stringify(runtimeContext).slice(0, 6000)
+      const contextText = JSON.stringify(runtimeContext).slice(0, 8000)
 
       this.send({
         type: 'response.create',
@@ -267,7 +272,7 @@ Rules:
 - For every clear supported office request, call office_plan exactly once.
 - Put exactly one step in the plan for one requested action. Put two to eight ordered steps for a compound request.
 - Preserve the exact user-requested order. Do not silently add PowerPoint open/start prerequisites.
-- Supported actions are only the enum values in the schema. Never invent a file path, sender, recipient, application, shell command, COM method, approval, EntryID, or success result.
+- Supported actions are only the enum values in the schema. Never invent a file path, sender, recipient, raw email address, application, shell command, COM method, approval, EntryID, or success result.
 - PowerPoint direction is deterministic: presentation_next_slide increases the page number toward the end; presentation_previous_slide decreases it toward the beginning.
 - Chinese convention for this application: “向前翻/往前翻/翻回前面/上一页/前一页” means previous. “向后翻/往后翻/下一页/后一页/继续往下” means next. “前进两页” means next twice.
 - Repeat next or previous steps when multiple slides are requested. “向前翻两页” is previous twice; “向后翻两页” is next twice.
@@ -276,15 +281,19 @@ Rules:
 - For relative volume or brightness, use system_adjust_volume/system_adjust_brightness with signed delta_percent. When the user says only “一点/a little” without a number, use 10 percentage points in the requested direction.
 - Questions asking for current volume or brightness use system_get_status.
 - “生成演示摘要/summarize the presentation” uses office_generate_presentation_summary with the user's language. It writes only to the configured local LOG directory.
-- When the user asks to prepare an Outlook draft, email draft, or mail draft from the current presentation and does not explicitly request the existing/latest summary, include office_generate_presentation_summary first, followed by outlook_create_summary_draft with summary_source="latest".
-- outlook_create_summary_draft uses the fixed signed-in Classic Outlook sender account and fixed Backend recipient. The first Backend approval is mandatory before creating and displaying the draft.
-- When the user explicitly asks to send an already-created/verified draft, use exactly one outlook_send_approved_draft step with draft_source="latest_verified".
-- When the user explicitly asks to prepare and then send in one request, plan office_generate_presentation_summary when needed, then outlook_create_summary_draft, then outlook_send_approved_draft. The Backend will pause separately before the draft step and again before the send step.
-- outlook_send_approved_draft can only send the latest verified unsent draft with the fixed Backend sender and recipient. Before Send(), the Backend removes the sentence saying the message is only a draft and not yet sent, saves and re-verifies the edit, then invokes Outlook Send().
-- There is no send tool without a second Backend approval. Never treat draft approval as send approval, and never send arbitrary recipients or arbitrary Outlook items.
+- The observed Backend status contains recipient_catalog, allowed_recipient_keys, and default_recipient_key. Treat that catalog as authoritative.
+- When the user names a known recipient, map the person's name to the exact catalog key and pass only recipient_key. Example: a catalog entry {key:"rico",name:"Rico",...} means “发给 Rico” uses recipient_key="rico".
+- When the user does not name a recipient for draft creation, use the observed default_recipient_key or omit recipient_key so the Backend applies it.
+- When the user names a person or email that is not present in recipient_catalog, do not invent a key and do not pass the raw email. Return CLARIFY: followed by a concise request to choose or configure an available recipient.
+- When the user asks to prepare an Outlook draft from the current presentation and does not explicitly request the existing/latest summary, include office_generate_presentation_summary first, followed by outlook_create_summary_draft with summary_source="latest" and the selected recipient_key.
+- outlook_create_summary_draft uses the fixed signed-in Classic Outlook sender account and the Backend-resolved allowlisted recipient. The first Backend approval is mandatory before creating and displaying the draft.
+- When the user explicitly asks to send an already-created/verified draft, use exactly one outlook_send_approved_draft step with draft_source="latest_verified". Include recipient_key when a recipient is explicitly named; otherwise the Backend selects the latest verified unsent draft.
+- When the user explicitly asks to prepare and then send in one request, use the same recipient_key in outlook_create_summary_draft and outlook_send_approved_draft. The Backend will pause separately before the draft step and again before the send step.
+- outlook_send_approved_draft can only send a verified unsent draft whose recipient is still in the Backend allowlist. Before Send(), the Backend removes the sentence saying the message is only a draft and not yet sent, saves and re-verifies the sender and sole recipient, then invokes Outlook Send().
+- There is no send path without a second Backend approval. Never treat draft approval as send approval, and never send arbitrary recipients or arbitrary Outlook items.
 - Explicit approval/cancel/skip/takeover utterances for an already-running task are handled by the Backend router. Return exactly NO_OFFICE_ACTION for those utterances.
 - Do not call a function for reception questions, ordinary conversation, Teams, Zoom, Word, Excel, unsupported device controls, or document generation beyond the bounded presentation summary. Return exactly NO_OFFICE_ACTION.
-- Ask for clarification only when the intended action or required value genuinely remains ambiguous after applying these rules and the supplied context.
+- Ask for clarification only when the intended action, value, or allowlisted recipient genuinely remains ambiguous after applying these rules and the supplied context.
 - Do not answer the user and do not claim an action succeeded.
 `.trim(),
         },
@@ -378,7 +387,7 @@ Rules:
         tool_choice: 'auto',
         tools: OFFICE_TOOLS,
         instructions:
-          'You are a bounded Smart Office planner. For clear supported requests, call the single office_plan function. Never execute tools yourself, never bypass Backend approvals, and never claim success.',
+          'You are a bounded Smart Office planner. Use only Backend allowlisted recipient keys, never raw email addresses, never bypass Backend approvals, and never claim success.',
         audio: { input: { turn_detection: null } },
       },
     })
