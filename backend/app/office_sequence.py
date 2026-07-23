@@ -7,6 +7,7 @@ from typing import Any
 from app.event_bus import event_bus
 from app.models import PlannedStep, TaskSession, ToolResult, VerificationResult
 from app.office_actions import OFFICE_TOOL_NAMES, execute_office_tool_call
+from app.presentation_config import presentation_config
 from app.state_store import state_store
 from app.task_graph import build_task_graph, task_graph_event_data
 
@@ -60,6 +61,20 @@ def _integer(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _validated_recipient_key(value: Any, *, default: bool) -> tuple[str | None, str | None]:
+    if value is None:
+        if not default:
+            return None, None
+        value = presentation_config.default_recipient_key
+    if not isinstance(value, str) or not value.strip():
+        return None, "recipient_key must be a non-empty string."
+    try:
+        recipient = presentation_config.resolve_recipient(value)
+    except ValueError as exc:
+        return None, str(exc)
+    return recipient.key, None
 
 
 def _step_arguments(
@@ -118,7 +133,13 @@ def _step_arguments(
         return {"language": language}, False, None
 
     if name == "outlook_create_summary_draft":
-        unexpected = set(item) - {"name", "language", "subject", "summary_source"}
+        unexpected = set(item) - {
+            "name",
+            "language",
+            "subject",
+            "summary_source",
+            "recipient_key",
+        }
         if unexpected:
             return None, True, f"Unexpected fields: {sorted(unexpected)}"
         language = item.get("language", "zh")
@@ -126,7 +147,17 @@ def _step_arguments(
             return None, True, "language must be 'zh' or 'en'."
         if item.get("summary_source", "latest") != "latest":
             return None, True, "summary_source must be 'latest'."
-        args: dict[str, Any] = {"language": language, "summary_source": "latest"}
+        recipient_key, recipient_error = _validated_recipient_key(
+            item.get("recipient_key"),
+            default=True,
+        )
+        if recipient_error:
+            return None, True, recipient_error
+        args: dict[str, Any] = {
+            "language": language,
+            "summary_source": "latest",
+            "recipient_key": recipient_key,
+        }
         subject = item.get("subject")
         if subject is not None:
             if not isinstance(subject, str) or not subject.strip() or len(subject) > 180:
@@ -135,12 +166,21 @@ def _step_arguments(
         return args, True, None
 
     if name == "outlook_send_approved_draft":
-        unexpected = set(item) - {"name", "draft_source"}
+        unexpected = set(item) - {"name", "draft_source", "recipient_key"}
         if unexpected:
             return None, True, f"Unexpected fields: {sorted(unexpected)}"
         if item.get("draft_source", "latest_verified") != "latest_verified":
             return None, True, "draft_source must be 'latest_verified'."
-        return {"draft_source": "latest_verified"}, True, None
+        recipient_key, recipient_error = _validated_recipient_key(
+            item.get("recipient_key"),
+            default=False,
+        )
+        if recipient_error:
+            return None, True, recipient_error
+        args: dict[str, Any] = {"draft_source": "latest_verified"}
+        if recipient_key:
+            args["recipient_key"] = recipient_key
+        return args, True, None
 
     unexpected = set(item) - {"name"}
     if unexpected:
@@ -169,6 +209,7 @@ def validate_office_plan(
         )
 
     planned_steps: list[PlannedStep] = []
+    latest_draft_recipient_key: str | None = None
     for index, raw_item in enumerate(raw_steps, start=1):
         if not isinstance(raw_item, dict):
             return None, _validation_error(
@@ -182,12 +223,24 @@ def validate_office_plan(
                 f"Office-plan step {index} is invalid: {error or 'name is required.'}",
                 clean,
             )
+        step_args = args or {}
+        if name == "outlook_create_summary_draft":
+            latest_draft_recipient_key = str(step_args["recipient_key"])
+        elif name == "outlook_send_approved_draft" and latest_draft_recipient_key:
+            send_recipient_key = step_args.get("recipient_key")
+            if send_recipient_key and send_recipient_key != latest_draft_recipient_key:
+                return None, _validation_error(
+                    "An Outlook send step in the same plan must target the same recipient_key "
+                    "as the preceding draft step.",
+                    clean,
+                )
+            step_args["recipient_key"] = latest_draft_recipient_key
         planned_steps.append(
             PlannedStep(
                 index=index,
                 title=_ACTION_TITLES[name],
                 tool_name=name,
-                args=args or {},
+                args=step_args,
                 requires_confirmation=requires_confirmation,
             )
         )
@@ -242,17 +295,27 @@ async def _approval_action(task_id: str, step: Any) -> str:
         return "approve"
 
     is_send = step.tool_name == "outlook_send_approved_draft"
+    recipient_key = step.args.get("recipient_key")
+    recipient = None
+    if recipient_key:
+        try:
+            recipient = presentation_config.resolve_recipient(str(recipient_key))
+        except ValueError:
+            recipient = None
+    recipient_label = (
+        f"{recipient.name} <{recipient.email}>" if recipient else "the latest verified recipient"
+    )
     waiting_message = (
-        "A second approval is required before sending the verified Outlook draft."
+        f"A second approval is required before sending the verified Outlook draft to {recipient_label}."
         if is_send
-        else "Approval is required before creating a Classic Outlook draft."
+        else f"Approval is required before creating a Classic Outlook draft for {recipient_label}."
     )
     reason = (
         "The second approval removes the draft-only notice, saves and re-verifies the "
-        "fixed sender and recipient, and then invokes Outlook Send()."
+        f"fixed sender and selected allowlisted recipient {recipient_label}, then invokes Outlook Send()."
         if is_send
         else "Creating an Outlook draft writes the generated summary to the signed-in "
-        "local Outlook mailbox and opens the draft window."
+        f"local Outlook mailbox for selected allowlisted recipient {recipient_label} and opens the draft window."
     )
 
     state_store.set_status(
@@ -275,6 +338,9 @@ async def _approval_action(task_id: str, step: Any) -> str:
             "step_index": step.index,
             "title": step.title,
             "tool_name": step.tool_name,
+            "recipient_key": recipient.key if recipient else recipient_key,
+            "recipient_name": recipient.name if recipient else None,
+            "recipient_email": recipient.email if recipient else None,
             "actions": ["approve", "cancel", "skip", "takeover"],
             "reason": reason,
             "approval_stage": "send" if is_send else "draft",
