@@ -33,10 +33,11 @@ def main() -> None:
     status = client.get("/agent/turn/status")
     status.raise_for_status()
     status_payload = status.json()
-    assert status_payload["phase"] == "m3a_fusion_phase_3_gate_2a"
+    assert status_payload["phase"] == "m3a_fusion_phase_3_gate_2b"
     assert status_payload["task_creation_enabled"] is True
     assert status_payload["office_execution_enabled"] is False
     assert status_payload["presentation_execution_enabled"] is True
+    assert status_payload["compound_presentation_execution_enabled"] is True
     assert "reception_knowledge" in status_payload["routes"]
     assert "office_planned_task" in status_payload["routes"]
     assert "approval_action" in status_payload["routes"]
@@ -124,7 +125,7 @@ def main() -> None:
     conversation.raise_for_status()
     assert conversation.json()["conversation"]["actor_type"] == "visitor"
 
-    print("PASS: Phase 2 routing, grounded reception, and permission gates remain healthy under Gate 2A.")
+    print("PASS: Phase 2 routing, grounded reception, and permission gates remain healthy under Gate 2B.")
 
 
 if __name__ == "__main__":
