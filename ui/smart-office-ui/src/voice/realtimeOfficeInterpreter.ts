@@ -34,7 +34,7 @@ const OFFICE_ACTIONS = [
   'system_set_brightness',
   'system_adjust_brightness',
   'office_generate_presentation_summary',
-  'gmail_create_summary_draft',
+  'outlook_create_summary_draft',
 ] as const
 
 const OFFICE_TOOLS = [
@@ -42,7 +42,7 @@ const OFFICE_TOOLS = [
     type: 'function',
     name: 'office_plan',
     description:
-      'Convert one clear Smart Office request into one to eight ordered, bounded actions. This is the only model-facing execution function for PowerPoint, volume, brightness, local presentation summaries, and approval-gated Gmail draft creation.',
+      'Convert one clear Smart Office request into one to eight ordered, bounded actions. This is the only model-facing execution function for PowerPoint, volume, brightness, local presentation summaries, and approval-gated Classic Outlook draft creation.',
     parameters: {
       type: 'object',
       properties: {
@@ -51,7 +51,7 @@ const OFFICE_TOOLS = [
           minItems: 1,
           maxItems: 8,
           description:
-            'Exact ordered actions requested by the user. PowerPoint actions remain bounded to the configured presentation. Gmail draft creation never sends email and is paused by the Backend approval gate.',
+            'Exact ordered actions requested by the user. PowerPoint actions remain bounded to the configured presentation. Outlook draft creation never sends email and is paused by the Backend approval gate.',
           items: {
             type: 'object',
             properties: {
@@ -89,19 +89,19 @@ const OFFICE_TOOLS = [
                 type: 'string',
                 enum: ['zh', 'en'],
                 description:
-                  'Output language for a generated summary or Gmail draft.',
+                  'Output language for a generated summary or Outlook draft.',
               },
               summary_source: {
                 type: 'string',
                 enum: ['latest'],
                 description:
-                  'Use latest for gmail_create_summary_draft. The Backend resolves the newest verified local summary artifact.',
+                  'Use latest for outlook_create_summary_draft. The Backend resolves the newest verified local summary artifact.',
               },
               subject: {
                 type: 'string',
                 maxLength: 180,
                 description:
-                  'Optional Gmail draft subject. Recipient is fixed by Backend configuration and cannot be supplied by the model.',
+                  'Optional Outlook draft subject. Sender account and recipient are fixed by Backend configuration and cannot be supplied by the model.',
               },
             },
             required: ['name'],
@@ -260,7 +260,7 @@ Rules:
 - For every clear supported office request, call office_plan exactly once.
 - Put exactly one step in the plan for one requested action. Put two to eight ordered steps for a compound request.
 - Preserve the exact user-requested order. Do not silently add PowerPoint open/start prerequisites.
-- Supported actions are only the enum values in the schema. Never invent a file path, recipient, application, shell command, COM method, approval, or success result.
+- Supported actions are only the enum values in the schema. Never invent a file path, sender, recipient, application, shell command, COM method, approval, or success result.
 - PowerPoint direction is deterministic: presentation_next_slide increases the page number toward the end; presentation_previous_slide decreases it toward the beginning.
 - Chinese convention for this application: “向前翻/往前翻/翻回前面/上一页/前一页” means previous. “向后翻/往后翻/下一页/后一页/继续往下” means next. “前进两页” means next twice.
 - Repeat next or previous steps when multiple slides are requested. “向前翻两页” is previous twice; “向后翻两页” is next twice.
@@ -269,9 +269,9 @@ Rules:
 - For relative volume or brightness, use system_adjust_volume/system_adjust_brightness with signed delta_percent. When the user says only “一点/a little” without a number, use 10 percentage points in the requested direction.
 - Questions asking for current volume or brightness use system_get_status.
 - “生成演示摘要/summarize the presentation” uses office_generate_presentation_summary with the user's language. It writes only to the configured local LOG directory.
-- When the user asks to create a Gmail draft from the current presentation and does not explicitly say to use an existing/latest summary, include office_generate_presentation_summary first, followed by gmail_create_summary_draft with summary_source="latest".
-- gmail_create_summary_draft creates a cloud draft for the fixed Backend recipient. Backend approval is mandatory before this step. Email sending is disabled and there is no send tool.
-- Requests to send email must not call a tool. Return CLARIFY: followed by a concise statement that sending is disabled and only a draft can be created.
+- When the user asks to prepare an Outlook draft, email draft, or mail draft from the current presentation and does not explicitly request the existing/latest summary, include office_generate_presentation_summary first, followed by outlook_create_summary_draft with summary_source="latest".
+- outlook_create_summary_draft uses the fixed signed-in Classic Outlook sender account and fixed Backend recipient. Backend approval is mandatory before this step. Email sending is disabled and there is no send tool.
+- Requests to send email must not call a tool. Return CLARIFY: followed by a concise statement that automatic sending is disabled and an Outlook draft can be prepared for manual review and sending.
 - Explicit approval/cancel/skip/takeover utterances for an already-running task are handled by the Backend router. Return exactly NO_OFFICE_ACTION for those utterances.
 - Do not call a function for reception questions, ordinary conversation, Teams, Zoom, Word, Excel, unsupported device controls, or document generation beyond the bounded presentation summary. Return exactly NO_OFFICE_ACTION.
 - Ask for clarification only when the intended action or required value genuinely remains ambiguous after applying these rules and the supplied context.
