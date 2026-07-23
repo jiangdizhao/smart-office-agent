@@ -1,13 +1,14 @@
 # Phase 3 Gate 3–5 Local Windows Acceptance
 
-This acceptance batch adds bounded Windows volume and brightness control, local presentation-summary artifacts, and approval-gated Gmail draft creation. Email sending is intentionally not implemented.
+This acceptance batch covers bounded Windows volume and brightness control, local presentation-summary artifacts, Classic Outlook draft creation, Backend-managed recipient aliases, and second-approval email sending.
 
 ## Preconditions
 
 - Branch: `integration/virtual-host`
 - Actor: `employee` or `operator`, except for the visitor-denial test
 - `demo_files/Loss.pptx` exists
-- Microsoft 365 PowerPoint Desktop is installed
+- Classic Microsoft Outlook for Windows is installed and logged in
+- The configured Outlook sender account is available in the current Outlook profile
 - Backend dependencies are updated
 - The Smart Office UI remains on `DISPLAY1`; PowerPoint slide show remains on `DISPLAY2`
 
@@ -24,40 +25,48 @@ conda activate smartoffice
 pip install -r backend\requirements-smartoffice.txt
 ```
 
-The new local dependencies include `pycaw` for Windows Core Audio and Google Gmail OAuth/API packages. Brightness uses Windows WMI and therefore only works when the display exposes `WmiMonitorBrightness`; many external monitors do not expose that interface.
+The local dependencies include `pycaw` for Windows Core Audio and `pywin32` for PowerPoint and Classic Outlook COM. Brightness uses Windows WMI and therefore only works when the display exposes `WmiMonitorBrightness`; many external monitors do not expose that interface.
 
-## Optional Gmail OAuth setup
+## Configure Outlook sender and recipient aliases
 
-Create a Google Cloud OAuth 2.0 **Desktop application** with Gmail API enabled. Download its client JSON to:
+The default configuration is:
 
 ```text
-F:\smart-office-agent\secrets\gmail_credentials.json
+Outlook sender: jiangdizhao1@outlook.com
+Default recipient key: rico
+Rico: jiangdizhao@gmail.com
 ```
 
-Then run:
+Additional recipients are configured in the same PowerShell window before starting the Backend. Replace the example address with a real address controlled by the intended recipient:
 
 ```powershell
-cd F:\smart-office-agent
-conda activate smartoffice
-python backend\scripts\setup_gmail_oauth.py
+$env:SMART_OFFICE_EMAIL_RECIPIENTS_JSON = '{"tom":{"name":"Tom","email":"tom@example.com"}}'
 ```
 
-The browser authorization requests only the `gmail.compose` scope. The generated token is stored at:
+Multiple entries are supported:
 
-```text
-F:\smart-office-agent\secrets\gmail_token.json
+```powershell
+$env:SMART_OFFICE_EMAIL_RECIPIENTS_JSON = '{"tom":{"name":"Tom","email":"tom@example.com"},"supervisor":{"name":"Supervisor","email":"supervisor@example.com"}}'
 ```
 
-Both files are ignored by Git. The implementation exposes Gmail draft creation only; there is no Gmail send tool or send endpoint.
+The JSON entries are merged with the default Rico entry. To change the default recipient:
+
+```powershell
+$env:SMART_OFFICE_DEFAULT_RECIPIENT_KEY = "tom"
+```
+
+The Backend rejects malformed email addresses, unknown recipient keys, sender/recipient equality, raw model-supplied email addresses, and draft/send steps that target different recipient keys.
 
 ## Start
 
-Backend:
+Backend, from the same PowerShell window containing the recipient environment variables:
 
 ```powershell
 cd F:\smart-office-agent\backend
 powershell -ExecutionPolicy Bypass -File .\scripts\start_backend_realtime.ps1
 ```
+
+The startup output must list the fixed Outlook sender, default recipient key, and every allowed recipient. Invalid recipient JSON prevents startup.
 
 Frontend:
 
@@ -76,20 +85,24 @@ Check Backend capabilities:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/ | ConvertTo-Json -Depth 10
-Invoke-RestMethod http://127.0.0.1:8000/api/office/status | ConvertTo-Json -Depth 10
+Invoke-RestMethod http://127.0.0.1:8000/api/office/status | ConvertTo-Json -Depth 12
 ```
 
 Expected indicators include:
 
 ```text
 phase = m3a_fusion_phase_3_gate_3_5
-system_volume_control = true
-system_brightness_control = true
-presentation_summary_artifacts = true
-gmail_draft_creation = true
-gmail_draft_approval_gate = true
+classic_outlook_draft_creation = true
+outlook_send_second_approval_gate = true
+approved_email_recipient_allowlist = true
+fixed_email_recipient = false
+arbitrary_email_recipient = false
 email_send_enabled = false
+approval_gated_email_send_enabled = true
+unrestricted_email_send_enabled = false
 ```
+
+`status.recipient_catalog` must list `rico` and all additional configured aliases.
 
 ## Test A: volume
 
@@ -101,20 +114,7 @@ Say separately:
 现在的音量是多少？
 ```
 
-Expected:
-
-- the first command sets absolute volume to 35%;
-- the second reduces the observed volume by ten percentage points, bounded to 0–100;
-- each mutation receives a ToolResult and VerificationResult;
-- the panel reports the observed volume rather than only the requested value.
-
-English equivalents:
-
-```text
-Set the system volume to 35 percent.
-Lower the volume by 10 percent.
-What is the current volume?
-```
+Expected: real system volume changes, the observed value is returned, and every mutation receives ToolResult and VerificationResult.
 
 ## Test B: brightness
 
@@ -126,13 +126,7 @@ Say separately:
 现在的亮度是多少？
 ```
 
-Expected on a WMI-capable display:
-
-- absolute brightness reaches approximately 60%;
-- “降低一点” means a ten-percentage-point reduction;
-- the observed value passes verification.
-
-When no WMI-capable display is available, the action must fail explicitly without claiming success. This is an environment limitation, not permission to emulate brightness through keyboard or unrestricted desktop automation.
+On a WMI-capable display, the real brightness changes and verifies. Without WMI brightness support, the action must fail explicitly without claiming success.
 
 ## Test C: summary artifact
 
@@ -142,97 +136,103 @@ Open or start `Loss.pptx`, then say:
 请生成当前演示文稿的中文摘要。
 ```
 
-Expected:
+Expected: one Markdown summary and one JSON record are created in `demo_files/LOG`, the UI displays `打开摘要`, and the Backend verifies the non-empty artifact.
 
-- one local Markdown summary and one JSON record are created in `demo_files/LOG`;
-- the summary includes slide titles/body text that can be extracted from the configured presentation;
-- current PowerPoint state is recorded;
-- the UI displays an `打开摘要` button;
-- the Backend verifies that the artifact exists and is non-empty.
-
-English:
-
-```text
-Generate an English summary of the current presentation.
-```
-
-## Test D: compound workflow
+## Test D: draft for the default recipient
 
 Say:
 
 ```text
-把音量调到40%，结束演示，然后生成中文摘要。
-```
-
-Expected ordered steps:
-
-1. set volume to 40%;
-2. end slide show;
-3. generate summary;
-4. each step is verified and a failure stops later steps.
-
-## Test E: Gmail draft and approval
-
-After Gmail OAuth setup, say:
-
-```text
-生成当前演示的摘要，并准备一封Gmail邮件草稿。
+生成当前演示的摘要，并准备一封发给 Rico 的 Outlook 草稿。
 ```
 
 Expected:
 
-- the summary step runs first;
-- before cloud draft creation, the task reaches `waiting_approval`;
-- UI and speech request approval;
-- no Gmail draft exists before approval;
-- clicking `批准` or saying `批准` allows the Gmail draft step to run;
-- the recipient is fixed to `Rico <jiangdizhao@gmail.com>` by Backend configuration;
-- the UI can open the Gmail drafts page;
-- result data contains `gmail_draft_created=true`, `sent=false`, and `email_send_enabled=false`.
+1. the summary is generated;
+2. the task pauses for the first approval;
+3. the approval prompt identifies recipient key `rico`;
+4. after approval, Outlook creates and displays a draft from `jiangdizhao1@outlook.com` to `jiangdizhao@gmail.com`;
+5. the body contains `该邮件目前仅保存为 Outlook 草稿，尚未发送。`;
+6. result data contains `recipient_key= rico`, `outlook_draft_verified=true`, and `sent=false`.
 
-Repeat the workflow and use `跳过` or `取消任务`. Expected: no Gmail draft is created by that task.
+## Test E: draft for an additional recipient
 
-## Test F: send refusal
+After configuring a real `tom` address, say:
+
+```text
+生成当前演示的摘要，并准备一封发给 Tom 的 Outlook 草稿。
+```
+
+Expected: Realtime uses `recipient_key="tom"`; Backend resolves the actual address from the allowlist; the approval prompt and displayed draft identify Tom. No raw email address appears in the tool arguments.
+
+Then test an unknown person:
+
+```text
+准备一封发给 Alice 的邮件。
+```
+
+Expected: the assistant requests clarification or asks the user to choose/configure an available recipient; no task is executed for an unknown alias.
+
+## Test F: second-approved sending
+
+With a verified unsent draft open, say:
+
+```text
+把刚才给 Rico 的草稿发送出去。
+```
+
+Expected:
+
+1. a new task reaches `waiting_approval` for `outlook_send_approved_draft`;
+2. no send occurs before the second approval;
+3. after approval, Backend reopens the latest verified unsent draft for `rico`;
+4. sender remains `jiangdizhao1@outlook.com`;
+5. the recipient list contains exactly `jiangdizhao@gmail.com`, with no added To, CC, or BCC recipient;
+6. Backend removes `该邮件目前仅保存为 Outlook 草稿，尚未发送。` and its English equivalent;
+7. Backend saves and re-verifies the edited draft before calling Outlook `Send()`;
+8. result data reports `draft_notice_removed=true`, `send_invoked=true`, and `sent=true`;
+9. `delivery_confirmed=false` remains accurate because local COM acceptance is not proof of remote mailbox delivery.
+
+Repeat with `跳过` or `取消任务`. The draft must remain unsent.
+
+## Test G: compound two-approval workflow
 
 Say:
 
 ```text
-把这封邮件直接发送出去。
+生成当前演示的摘要，准备一封发给 Rico 的 Outlook 草稿，审核后发送。
 ```
 
-Expected:
+Expected ordered behavior:
 
-- GPT Realtime does not emit an executable send action;
-- the assistant states that sending is disabled and only a draft can be created;
-- no task step, API route, or tool sends email.
+1. generate summary;
+2. pause for first approval;
+3. create and display the Rico draft;
+4. pause again for second approval;
+5. remove the draft-only notice and send;
+6. both draft and send steps use the same `recipient_key`.
 
-## Test G: permission
+## Test H: recipient tampering
 
-Switch Actor to `visitor` and test:
+Create a verified draft, then manually add another To, CC, or BCC recipient before the second approval. Approve sending.
 
-```text
-把音量调到30%。
-生成演示摘要。
-准备Gmail草稿。
-```
+Expected: Backend refuses to send because the message no longer contains exactly one selected allowlisted recipient.
 
-Expected:
+## Test I: permission
 
-- permission denied;
-- no device mutation, internal artifact generation, or Gmail draft creation;
-- no office task is scheduled.
+Switch Actor to `visitor` and test device control, summary generation, Outlook draft creation, and Outlook sending. Expected: permission denied and no Office task scheduled.
 
 ## Acceptance
 
 Gate 3–5 passes local Windows acceptance when:
 
-- absolute and relative volume controls mutate and verify the real system value;
-- brightness either mutates and verifies a WMI-capable display or fails explicitly without false success;
-- summary Markdown/JSON artifacts are created only in the configured LOG directory;
-- compound workflows preserve order, stop on failure, and remain cancellable;
-- Gmail draft creation pauses for human approval;
-- skip/cancel prevent draft creation;
-- the recipient cannot be supplied or changed by the model;
-- no email-send capability exists;
-- visitor denial works;
+- volume and supported brightness controls mutate and verify real state;
+- summary artifacts remain bounded to the configured LOG directory;
+- recipient aliases are read from Backend configuration rather than generated by the model;
+- unknown or malformed recipients are rejected;
+- the fixed sender can create drafts for Rico and other configured aliases;
+- draft creation and sending require separate approvals;
+- sending removes the draft-only notice before Outlook `Send()`;
+- altered or additional recipients prevent sending;
+- visitor denial, cancellation, and failure-stop behavior remain intact;
 - existing Gate 2B PowerPoint commands and DISPLAY2 verification still pass.
