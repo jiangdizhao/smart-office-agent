@@ -4,7 +4,9 @@ const API_BASE_URL =
 const CONNECTION_TIMEOUT_MS = 15_000
 const DECISION_TIMEOUT_MS = 20_000
 
-export type PresentationToolName = 'presentation_plan'
+// The legacy name remains in the TypeScript union only so existing UI guards
+// compile during migration. GPT Realtime is exposed only presentation_plan.
+export type PresentationToolName = 'presentation_plan' | 'presentation_execute_sequence'
 
 export type RealtimePresentationToolCall = {
   name: PresentationToolName
