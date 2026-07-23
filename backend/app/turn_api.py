@@ -11,11 +11,11 @@ from pydantic import BaseModel, Field
 from app.conversation_store import ActorType, conversation_store
 from app.event_bus import event_bus
 from app.executor import run_task_plan_only
-from app.models import ApprovalRequest, TaskSession, ToolResult, VerificationResult
+from app.models import ApprovalRequest, PlannedStep, TaskSession, ToolResult, VerificationResult
 from app.planner import plan_task
 from app.presentation_actions import execute_presentation_tool_call
 from app.presentation_sequence import (
-    SEQUENCE_TOOL_NAME,
+    PLAN_TOOL_NAME,
     create_presentation_sequence_task,
     run_presentation_sequence_task,
     validate_sequence_arguments,
@@ -43,11 +43,7 @@ class RealtimePresentationToolCall(BaseModel):
 
 
 class TurnRequest(BaseModel):
-    conversation_id: str = Field(
-        "smart-office-debug",
-        min_length=1,
-        max_length=160,
-    )
+    conversation_id: str = Field("smart-office-debug", min_length=1, max_length=160)
     text: str = Field(..., max_length=8_000)
     language: Language = "zh"
     input_source: InputSource = "text"
@@ -88,7 +84,6 @@ def _response_language(text: str, requested_language: Language) -> Language:
     cjk_count = len(_CJK_PATTERN.findall(text))
     english_words = _ENGLISH_WORD_PATTERN.findall(text)
     latin_character_count = len("".join(english_words))
-
     if cjk_count == 0 and english_words:
         return "en"
     if cjk_count > 0 and len(english_words) >= 3 and latin_character_count >= cjk_count * 2:
@@ -115,11 +110,7 @@ def _actor_type(actor_context: dict[str, Any]) -> ActorType:
 def _create_plan_only_task(text: str) -> TaskSession:
     planned_steps = plan_task(text)
     task_graph = build_task_graph(planned_steps)
-    task = state_store.create_task(
-        user_request=text,
-        execute=False,
-        task_graph=task_graph,
-    )
+    task = state_store.create_task(user_request=text, execute=False, task_graph=task_graph)
     event_bus.publish(
         task_id=task.task_id,
         event_type="task_created",
@@ -171,17 +162,12 @@ def _apply_approval_action(
 ) -> tuple[TaskSession | None, bool]:
     if action == "cancel":
         return _cancel_task(task_id)
-
     task = state_store.get_task(task_id)
     if task is None:
         return None, False
-    waiting_step = next(
-        (step for step in task.steps if step.status == "waiting_approval"),
-        None,
-    )
+    waiting_step = next((step for step in task.steps if step.status == "waiting_approval"), None)
     if waiting_step is None:
         return task, False
-
     state_store.set_approval(
         task_id,
         waiting_step.step_id,
@@ -190,30 +176,22 @@ def _apply_approval_action(
     return state_store.get_task(task_id), True
 
 
-def _direct_reply(
-    text: str,
-    language: Language,
-    last_visible_answer: str,
-) -> str:
+def _direct_reply(text: str, language: Language, last_visible_answer: str) -> str:
     lowered = text.casefold()
     if not text or text == "__UNCLEAR__":
         return "我没有听清，请再说一次。" if language == "zh" else "I did not catch that. Please try again."
-
     if lowered in {"停止", "停下", "别说了", "stop", "stop speaking", "cancel speech"}:
         return "好的，我已停止语音输出。" if language == "zh" else "Okay, I have stopped speaking."
-
     if lowered in {"重复", "再说一遍", "请重复", "repeat", "say that again"}:
         if last_visible_answer:
             return last_visible_answer
         return "目前没有可以重复的上一条答复。" if language == "zh" else "There is no previous answer to repeat."
-
     if lowered in {"你好", "您好", "hello", "hi", "good morning", "good afternoon"}:
         return (
             "您好，我是 Smart Office 虚拟接待与办公助手。您可以询问公开资料，也可以以员工身份控制当前演示。"
             if language == "zh"
             else "Hello. I am the Smart Office virtual host and office assistant. You can ask about approved public information or control the current presentation as an employee."
         )
-
     return (
         f"我已理解您的话：{text}。当前请求不需要创建办公任务。"
         if language == "zh"
@@ -232,7 +210,6 @@ def _office_permission_denied(language: Language) -> str:
 def _presentation_status_reply(status: dict[str, Any], language: Language) -> str:
     if not status.get("presentation_open"):
         return "PowerPoint 当前尚未打开。" if language == "zh" else "PowerPoint is not currently open."
-
     total = status.get("total_slides")
     if status.get("slideshow_active"):
         current = status.get("current_slide")
@@ -247,7 +224,6 @@ def _presentation_status_reply(status: dict[str, Any], language: Language) -> st
         if monitor_verified and monitor:
             reply += f" It is displayed on {monitor}."
         return reply
-
     return (
         f"演示文稿已经打开，共 {total} 页，但尚未开始放映。"
         if language == "zh"
@@ -268,17 +244,14 @@ def _presentation_action_reply(
             if language == "zh"
             else f"The PowerPoint action was not executed: {tool_result.message}"
         )
-
     if name == "presentation_get_status":
         return _presentation_status_reply(status, language)
-
     if not verification.ok:
         return (
             f"PowerPoint 已收到操作，但实际状态没有通过验证：{verification.message}"
             if language == "zh"
             else f"PowerPoint accepted the action, but the observed state did not pass verification: {verification.message}"
         )
-
     current = status.get("current_slide")
     total = status.get("total_slides")
     monitor = status.get("slideshow_monitor_device") or status.get("target_monitor_device")
@@ -298,14 +271,13 @@ def _presentation_action_reply(
         "presentation_go_to_slide": f"Moved to slide {current} of {total}.",
         "presentation_end_slideshow": "The slide show has ended.",
     }
-    messages = zh_messages if language == "zh" else en_messages
-    return messages.get(name, tool_result.message)
+    return (zh_messages if language == "zh" else en_messages).get(name, tool_result.message)
 
 
-def _sequence_validation_verification(error: ToolResult) -> VerificationResult:
+def _plan_validation_verification(error: ToolResult) -> VerificationResult:
     return VerificationResult(
         ok=False,
-        message="Compound presentation request failed Backend validation.",
+        message="Presentation plan failed Backend validation.",
         process_ok=None,
         window_ok=None,
         expected_process_names=error.expected_process_names,
@@ -313,6 +285,25 @@ def _sequence_validation_verification(error: ToolResult) -> VerificationResult:
         checked_at=datetime.now(UTC),
         raw={"validation_error": error.message},
     )
+
+
+async def _execute_single_planned_step(
+    step: PlannedStep,
+) -> tuple[ToolResult, VerificationResult, ToolResult]:
+    if step.tool_name is None:
+        error = ToolResult(
+            tool_name=PLAN_TOOL_NAME,
+            ok=False,
+            message="The one-step presentation plan has no executable action.",
+            data={"execution_mode": "rejected", "requested_state": {}},
+        )
+        return error, _plan_validation_verification(error), ToolResult(
+            tool_name="presentation_get_status",
+            ok=True,
+            message="Presentation status was not queried.",
+            data={},
+        )
+    return await asyncio.to_thread(execute_presentation_tool_call, step.tool_name, step.args)
 
 
 @router.get("/agent/turn/status")
@@ -334,7 +325,8 @@ def turn_status() -> dict:
         "office_execution_enabled": False,
         "presentation_execution_enabled": True,
         "compound_presentation_execution_enabled": True,
-        "presentation_intent_source": "gpt_realtime_function_call",
+        "unified_presentation_plan_enabled": True,
+        "presentation_intent_source": "gpt_realtime_presentation_plan",
         "response_language_policy": "utterance_detected_with_english_output_guard",
         "knowledge_mode": knowledge_status["mode"],
         "knowledge_content_version": knowledge_status["content_version"],
@@ -372,9 +364,8 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
     if req.realtime_tool_call is not None:
         permission_decision: PermissionDecision = "denied" if actor_type == "visitor" else "allowed"
         if permission_decision == "denied":
-            spoken_text = _office_permission_denied(response_language)
             spoken_text = _guard_spoken_language(
-                spoken_text,
+                _office_permission_denied(response_language),
                 response_language,
                 fallback="A visitor cannot control PowerPoint. Switch to an employee or operator identity and try again.",
             )
@@ -392,42 +383,81 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 response_language=response_language,
                 actor_type=actor_type,
                 scene="office",
-                permission_decision=permission_decision,
-                route_reason="GPT Realtime selected a presentation capability, but the actor permission gate denied execution.",
-                intent_source="gpt_realtime_function_call",
+                permission_decision="denied",
+                route_reason="GPT Realtime selected a presentation plan, but the actor permission gate denied execution.",
+                intent_source="gpt_realtime_presentation_plan",
                 realtime_tool_call=req.realtime_tool_call,
             )
 
-        if req.realtime_tool_call.name == SEQUENCE_TOOL_NAME:
+        if req.realtime_tool_call.name == PLAN_TOOL_NAME:
             planned_steps, validation_error = validate_sequence_arguments(
                 req.realtime_tool_call.arguments
             )
             if validation_error is not None or planned_steps is None:
                 error_result = validation_error or ToolResult(
-                    tool_name=SEQUENCE_TOOL_NAME,
+                    tool_name=PLAN_TOOL_NAME,
                     ok=False,
-                    message="Compound presentation sequence is invalid.",
+                    message="Presentation plan is invalid.",
                 )
-                verification = _sequence_validation_verification(error_result)
+                verification = _plan_validation_verification(error_result)
                 spoken_text = (
-                    f"复合演示命令没有执行：{error_result.message}"
+                    f"演示计划没有执行：{error_result.message}"
                     if response_language == "zh"
-                    else f"The compound presentation command was not executed: {error_result.message}"
+                    else f"The presentation plan was not executed: {error_result.message}"
                 )
                 return TurnResponse(
                     conversation_id=req.conversation_id,
-                    route="office_planned_task",
+                    route="office_direct",
                     normalized_text=normalized_text,
                     spoken_text=spoken_text,
                     response_language=response_language,
                     actor_type=actor_type,
                     scene="office",
                     permission_decision="allowed",
-                    route_reason="GPT Realtime selected a compound presentation sequence, but Backend validation rejected it.",
-                    intent_source="gpt_realtime_function_call",
+                    route_reason="GPT Realtime returned a presentation plan, but Backend validation rejected it.",
+                    intent_source="gpt_realtime_presentation_plan",
                     realtime_tool_call=req.realtime_tool_call,
                     tool_result=error_result,
                     verification_result=verification,
+                )
+
+            if len(planned_steps) == 1:
+                step = planned_steps[0]
+                tool_result, verification, status_result = await _execute_single_planned_step(step)
+                status = dict(status_result.data)
+                action_name = step.tool_name or PLAN_TOOL_NAME
+                spoken_text = _guard_spoken_language(
+                    _presentation_action_reply(
+                        action_name,
+                        tool_result,
+                        verification,
+                        status,
+                        response_language,
+                    ),
+                    response_language,
+                    fallback="The PowerPoint request was processed. Please check the verified presentation status shown on screen.",
+                )
+                conversation_store.update(
+                    req.conversation_id,
+                    current_scene="office",
+                    last_visible_answer=spoken_text,
+                    last_command=normalized_text,
+                )
+                return TurnResponse(
+                    conversation_id=req.conversation_id,
+                    route="office_direct",
+                    normalized_text=normalized_text,
+                    spoken_text=spoken_text,
+                    response_language=response_language,
+                    actor_type=actor_type,
+                    scene="office",
+                    permission_decision="allowed",
+                    route_reason="GPT Realtime produced a validated one-step presentation plan; Backend executed and verified the single action directly.",
+                    intent_source="gpt_realtime_presentation_plan",
+                    realtime_tool_call=req.realtime_tool_call,
+                    tool_result=tool_result,
+                    verification_result=verification,
+                    presentation_status=status,
                 )
 
             task = create_presentation_sequence_task(normalized_text, planned_steps)
@@ -440,16 +470,16 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
             )
             asyncio.create_task(run_presentation_sequence_task(task.task_id))
             scheduled_result = ToolResult(
-                tool_name=SEQUENCE_TOOL_NAME,
+                tool_name=PLAN_TOOL_NAME,
                 ok=True,
-                message="Compound presentation task validated and scheduled.",
+                message="Multi-step presentation plan validated and scheduled.",
                 expected_process_names=["POWERPNT.EXE"],
                 expected_window_keywords=["PowerPoint"],
                 data={
                     "execution_mode": "real",
                     "task_id": task.task_id,
                     "step_count": len(planned_steps),
-                    "requested_state": {"compound_sequence": True},
+                    "requested_state": {"presentation_plan": True},
                 },
             )
             spoken_text = (
@@ -468,35 +498,31 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 actor_type=actor_type,
                 scene="office",
                 permission_decision="allowed",
-                route_reason="GPT Realtime selected a bounded compound presentation sequence; Backend validated it and scheduled the existing task runtime.",
-                intent_source="gpt_realtime_function_call",
+                route_reason="GPT Realtime produced a validated multi-step presentation plan; Backend scheduled the existing task runtime.",
+                intent_source="gpt_realtime_presentation_plan",
                 realtime_tool_call=req.realtime_tool_call,
                 tool_result=scheduled_result,
             )
 
+        # Compatibility path for older clients that still submit a direct
+        # registered presentation function. The current Realtime planner exposes
+        # only presentation_plan and never uses this path.
         tool_result, verification, status_result = await asyncio.to_thread(
             execute_presentation_tool_call,
             req.realtime_tool_call.name,
             req.realtime_tool_call.arguments,
         )
         status = dict(status_result.data)
-        spoken_text = _presentation_action_reply(
-            req.realtime_tool_call.name,
-            tool_result,
-            verification,
-            status,
-            response_language,
-        )
         spoken_text = _guard_spoken_language(
-            spoken_text,
+            _presentation_action_reply(
+                req.realtime_tool_call.name,
+                tool_result,
+                verification,
+                status,
+                response_language,
+            ),
             response_language,
             fallback="The PowerPoint request was processed. Please check the verified presentation status shown on screen.",
-        )
-        conversation_store.update(
-            req.conversation_id,
-            current_scene="office",
-            last_visible_answer=spoken_text,
-            last_command=normalized_text,
         )
         return TurnResponse(
             conversation_id=req.conversation_id,
@@ -506,9 +532,9 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
             response_language=response_language,
             actor_type=actor_type,
             scene="office",
-            permission_decision=permission_decision,
-            route_reason="GPT Realtime selected a registered Gate 2B presentation capability; Backend validated, executed, and verified it.",
-            intent_source="gpt_realtime_function_call",
+            permission_decision="allowed",
+            route_reason="Legacy direct presentation function compatibility path.",
+            intent_source="legacy_gpt_realtime_function_call",
             realtime_tool_call=req.realtime_tool_call,
             tool_result=tool_result,
             verification_result=verification,
@@ -524,19 +550,14 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
     source_ids: list[str] = []
     content_url: str | None = None
 
-    if decision.route == "clarification":
+    if decision.route in {"clarification", "realtime_direct"}:
         spoken_text = _direct_reply(normalized_text, response_language, conversation.last_visible_answer)
-
-    elif decision.route == "realtime_direct":
-        spoken_text = _direct_reply(normalized_text, response_language, conversation.last_visible_answer)
-
     elif decision.route == "reception_knowledge":
         match = reception_knowledge.search(normalized_text, response_language)
         spoken_text = match.answer
         source_ids = [match.source_id]
         content_url = f"/reception/content/{match.entry.entry_id}?lang={response_language}"
         permission_decision = "allowed"
-
     elif decision.route in {"office_direct", "office_planned_task"}:
         if actor_type == "visitor":
             spoken_text = _office_permission_denied(response_language)
@@ -544,9 +565,9 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
         elif decision.route == "office_direct":
             permission_decision = "allowed"
             spoken_text = (
-                "该办公请求没有携带 GPT Realtime 的受控 PowerPoint Function Call，因此没有执行。请重新说出明确的演示命令。"
+                "该办公请求没有携带 GPT Realtime 的受控演示计划，因此没有执行。请重新说出明确的演示命令。"
                 if response_language == "zh"
-                else "This office request did not include a controlled GPT Realtime PowerPoint function call, so it was not executed. Please state a clear presentation command."
+                else "This office request did not include a controlled GPT Realtime presentation plan, so it was not executed. Please state a clear presentation command."
             )
         else:
             permission_decision = "allowed"
@@ -560,11 +581,10 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
                 set_active_task=True,
             )
             spoken_text = (
-                "该请求不是受控的 PowerPoint 复合命令，因此只创建规划任务，没有执行真实 Office 操作。"
+                "该请求不是受控的 PowerPoint 演示计划，因此只创建规划任务，没有执行真实 Office 操作。"
                 if response_language == "zh"
-                else "This request is not a bounded compound PowerPoint command, so it remains plan-only and no real Office action was executed."
+                else "This request is not a bounded PowerPoint presentation plan, so it remains plan-only and no real Office action was executed."
             )
-
     elif decision.route == "approval_action":
         permission_decision = "allowed" if actor_type in {"employee", "operator"} else "denied"
         if permission_decision == "denied":
@@ -611,7 +631,6 @@ async def handle_turn(req: TurnRequest) -> TurnResponse:
         last_visible_answer=spoken_text,
         last_command=normalized_text,
     )
-
     return TurnResponse(
         conversation_id=req.conversation_id,
         route=decision.route,
