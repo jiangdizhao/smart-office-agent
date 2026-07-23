@@ -29,7 +29,14 @@ const TASK_TIMEOUT_MS = 45_000
 type AsrProvider = 'realtime' | 'browser'
 type ActorType = 'visitor' | 'employee' | 'operator'
 type PanelState = 'idle' | 'connecting' | 'listening' | 'processing' | 'speaking' | 'error'
-type TaskStatus = 'created' | 'planning' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled'
+type TaskStatus =
+  | 'created'
+  | 'planning'
+  | 'running'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 type PresentationStatus = {
   presentation_open?: boolean
@@ -239,6 +246,7 @@ function wait(milliseconds: number): Promise<void> {
 
 export default function VoiceDebugPanel() {
   const browserCaptureRef = useRef(new BrowserSpeechCapture())
+  const taskMonitorGenerationRef = useRef(0)
   const [language, setLanguage] = useState<VoiceLanguage>('zh')
   const [responseLanguage, setResponseLanguage] = useState<VoiceLanguage>('zh')
   const [actorType, setActorType] = useState<ActorType>(storedActorType)
@@ -268,13 +276,18 @@ export default function VoiceDebugPanel() {
 
   const listening = panelState === 'listening'
   const busy = ['connecting', 'processing', 'speaking'].includes(panelState)
-  const taskActive = Boolean(taskId && taskStatus && !['completed', 'failed', 'cancelled'].includes(taskStatus))
+  const taskActive = Boolean(
+    taskId && taskStatus && !['completed', 'failed', 'cancelled'].includes(taskStatus),
+  )
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       setRuntimeStatus(realtimeAgent.status())
     }, 500)
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearInterval(timer)
+      taskMonitorGenerationRef.current += 1
+    }
   }, [])
 
   async function connectRealtime(): Promise<void> {
@@ -328,51 +341,6 @@ export default function VoiceDebugPanel() {
     }
   }
 
-  async function waitForTaskCompletion(activeTaskId: string): Promise<TaskSession> {
-    const deadline = performance.now() + TASK_TIMEOUT_MS
-    while (performance.now() < deadline) {
-      const response = await fetch(`${API_BASE_URL}/agent/tasks/${encodeURIComponent(activeTaskId)}`, {
-        headers: { Accept: 'application/json' },
-      })
-      if (!response.ok) {
-        const detail = await response.text().catch(() => '')
-        throw new Error(`Task status failed: ${response.status} ${detail}`)
-      }
-      const task = (await response.json()) as TaskSession
-      setTaskStatus(task.status)
-      const status = latestPresentationStatus(task)
-      if (status) setPresentationStatus(status)
-      const latestStep = [...task.steps].reverse().find((step) => step.result)
-      if (latestStep?.result) {
-        setLastToolName(latestStep.result.tool_name)
-        setVerificationPassed(latestStep.result.data?.verification?.ok ?? null)
-      }
-      if (['completed', 'failed', 'cancelled'].includes(task.status)) return task
-      await wait(TASK_POLL_INTERVAL_MS)
-    }
-    throw new Error('The compound presentation task did not finish within 45 seconds.')
-  }
-
-  async function cancelActiveTask(): Promise<void> {
-    if (!taskId || !taskActive) return
-    setError('')
-    try {
-      const response = await fetch(`${API_BASE_URL}/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {
-        method: 'POST',
-        headers: { Accept: 'application/json' },
-      })
-      if (!response.ok) {
-        const detail = await response.text().catch(() => '')
-        throw new Error(`Task cancellation failed: ${response.status} ${detail}`)
-      }
-      const task = (await response.json()) as TaskSession
-      setTaskStatus(task.status)
-      setAnswer(responseLanguage === 'zh' ? '已请求取消当前演示任务。' : 'Cancellation was requested for the current presentation task.')
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    }
-  }
-
   async function speakAnswer(text: string, effectiveLanguage: VoiceLanguage): Promise<void> {
     if (voiceProvider === 'none') {
       setPanelState('idle')
@@ -388,6 +356,91 @@ export default function VoiceDebugPanel() {
         return
       }
       throw caught
+    }
+  }
+
+  async function monitorTaskCompletion(
+    activeTaskId: string,
+    effectiveLanguage: VoiceLanguage,
+    generation: number,
+  ): Promise<void> {
+    const deadline = performance.now() + TASK_TIMEOUT_MS
+    try {
+      while (
+        performance.now() < deadline &&
+        taskMonitorGenerationRef.current === generation
+      ) {
+        const response = await fetch(
+          `${API_BASE_URL}/agent/tasks/${encodeURIComponent(activeTaskId)}`,
+          { headers: { Accept: 'application/json' } },
+        )
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '')
+          throw new Error(`Task status failed: ${response.status} ${detail}`)
+        }
+        const task = (await response.json()) as TaskSession
+        if (taskMonitorGenerationRef.current !== generation) return
+
+        setTaskStatus(task.status)
+        const status = latestPresentationStatus(task)
+        if (status) setPresentationStatus(status)
+        const latestStep = [...task.steps].reverse().find((step) => step.result)
+        if (latestStep?.result) {
+          setLastToolName(latestStep.result.tool_name)
+          setVerificationPassed(latestStep.result.data?.verification?.ok ?? null)
+        }
+
+        if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+          const finalAnswer = taskFinalAnswer(task, effectiveLanguage)
+          setAnswer(finalAnswer)
+          // A spoken cancel command already receives its own immediate response.
+          // Do not duplicate it when the background monitor observes cancellation.
+          if (
+            task.status !== 'cancelled' &&
+            !realtimeAgent.status().microphoneAttached &&
+            taskMonitorGenerationRef.current === generation
+          ) {
+            await speakAnswer(finalAnswer, effectiveLanguage)
+          }
+          return
+        }
+        await wait(TASK_POLL_INTERVAL_MS)
+      }
+      if (taskMonitorGenerationRef.current === generation) {
+        throw new Error('The compound presentation task did not finish within 45 seconds.')
+      }
+    } catch (caught) {
+      if (taskMonitorGenerationRef.current !== generation) return
+      setError(caught instanceof Error ? caught.message : String(caught))
+      setPanelState('error')
+    }
+  }
+
+  async function cancelActiveTask(): Promise<void> {
+    if (!taskId || !taskActive) return
+    setError('')
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/agent/tasks/${encodeURIComponent(taskId)}/cancel`,
+        {
+          method: 'POST',
+          headers: { Accept: 'application/json' },
+        },
+      )
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        throw new Error(`Task cancellation failed: ${response.status} ${detail}`)
+      }
+      const task = (await response.json()) as TaskSession
+      setTaskStatus(task.status)
+      const cancellationText =
+        responseLanguage === 'zh'
+          ? '已请求取消当前演示任务。'
+          : 'Cancellation was requested for the current presentation task.'
+      setAnswer(cancellationText)
+      await speakAnswer(cancellationText, responseLanguage)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
     }
   }
 
@@ -412,6 +465,20 @@ export default function VoiceDebugPanel() {
       setLastScene('office')
       setPermissionDecision('not_required')
       await speakAnswer(clarification, effectiveLanguage)
+      return
+    }
+
+    if (
+      taskActive &&
+      decision.kind === 'tool_call' &&
+      decision.toolCall.name === 'presentation_execute_sequence'
+    ) {
+      const activeMessage =
+        effectiveLanguage === 'zh'
+          ? '当前已有演示任务正在执行。请先等待完成或说“取消当前任务”。'
+          : 'A presentation task is already running. Wait for it to finish or say “cancel the current task”.'
+      setAnswer(activeMessage)
+      await speakAnswer(activeMessage, effectiveLanguage)
       return
     }
 
@@ -441,18 +508,18 @@ export default function VoiceDebugPanel() {
     setPermissionDecision(payload.permission_decision)
     setSourceIds(payload.source_ids ?? [])
     setContentUrl(payload.content_url)
-    setTaskId(payload.task_id)
-    setTaskStatus((payload.task_status as TaskStatus | null) ?? null)
+    if (payload.task_id) setTaskId(payload.task_id)
+    if (payload.task_status) setTaskStatus(payload.task_status as TaskStatus)
     setAnswer(safeAnswer)
     setLastToolName(payload.tool_result?.tool_name ?? payload.realtime_tool_call?.name ?? '')
     setVerificationPassed(payload.verification_result?.ok ?? null)
     if (payload.presentation_status) setPresentationStatus(payload.presentation_status)
 
     if (payload.route === 'office_planned_task' && payload.task_id && payload.tool_result?.ok) {
-      const task = await waitForTaskCompletion(payload.task_id)
-      const finalAnswer = taskFinalAnswer(task, effectiveLanguage)
-      setAnswer(finalAnswer)
-      await speakAnswer(finalAnswer, effectiveLanguage)
+      const generation = taskMonitorGenerationRef.current + 1
+      taskMonitorGenerationRef.current = generation
+      await speakAnswer(safeAnswer, effectiveLanguage)
+      void monitorTaskCompletion(payload.task_id, effectiveLanguage, generation)
       return
     }
 
@@ -700,7 +767,7 @@ export default function VoiceDebugPanel() {
 
           {error ? <div className="voice-error">{error}</div> : null}
           <p className="voice-safety-note">
-            Gate 2B 支持最多八个受控 PowerPoint 步骤。每一步都通过现有 Task Runtime 执行并验证；任一步失败后，后续步骤不会继续。英文问题强制使用英文答复，中文问题允许必要的英文术语。
+            Gate 2B 支持最多八个受控 PowerPoint 步骤。每一步都通过现有 Task Runtime 执行并验证；任一步失败后，后续步骤不会继续。任务运行期间仍可说“取消当前任务”或使用取消按钮。英文问题强制使用英文答复，中文问题允许必要的英文术语。
           </p>
         </div>
       ) : null}
