@@ -97,7 +97,9 @@ def _wait_for_task(client: TestClient, task_id: str) -> dict:
     raise AssertionError(f"Task did not reach a terminal state: {task_id}")
 
 
-def _run_http_contract(client: TestClient) -> None:
+def main() -> None:
+    client = TestClient(app)
+
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
@@ -105,6 +107,12 @@ def _run_http_contract(client: TestClient) -> None:
     assert health_payload["capabilities"]["compound_presentation_execution"] is True
     assert health_payload["capabilities"]["compound_task_cancellation"] is True
     assert health_payload["capabilities"]["general_office_execution_via_turn"] is False
+
+    single_steps, single_error = validate_sequence_arguments(
+        {"steps": [{"name": "presentation_get_status"}]}
+    )
+    assert single_error is None
+    assert single_steps is not None and len(single_steps) == 1
 
     valid_steps, error = validate_sequence_arguments(
         {
@@ -139,14 +147,14 @@ def _run_http_contract(client: TestClient) -> None:
             "input_source": "voice",
             "actor_context": {"type": "visitor"},
             "realtime_tool_call": {
-                "name": "presentation_execute_sequence",
+                "name": "presentation_plan",
                 "arguments": {
                     "steps": [
                         {"name": "presentation_open_configured"},
                         {"name": "presentation_start_slideshow"},
                     ]
                 },
-                "call_id": "visitor-sequence",
+                "call_id": "visitor-plan",
                 "source": "gpt_realtime",
             },
         },
@@ -168,7 +176,7 @@ def _run_http_contract(client: TestClient) -> None:
                 "input_source": "voice",
                 "actor_context": {"type": "employee"},
                 "realtime_tool_call": {
-                    "name": "presentation_execute_sequence",
+                    "name": "presentation_plan",
                     "arguments": {
                         "steps": [
                             {"name": "presentation_open_configured"},
@@ -176,7 +184,7 @@ def _run_http_contract(client: TestClient) -> None:
                             {"name": "presentation_go_to_slide", "slide_number": 5},
                         ]
                     },
-                    "call_id": "employee-sequence",
+                    "call_id": "employee-plan",
                     "source": "gpt_realtime",
                 },
             },
@@ -186,13 +194,14 @@ def _run_http_contract(client: TestClient) -> None:
         assert payload["route"] == "office_planned_task"
         assert payload["permission_decision"] == "allowed"
         assert payload["response_language"] == "en"
+        assert payload["intent_source"] == "gpt_realtime_presentation_plan"
         assert payload["task_id"]
-        assert payload["tool_result"]["tool_name"] == "presentation_execute_sequence"
+        assert payload["tool_result"]["tool_name"] == "presentation_plan"
         assert payload["tool_result"]["data"]["step_count"] == 3
         assert not any("\u3400" <= char <= "\u9fff" for char in payload["spoken_text"])
 
         task = _wait_for_task(client, payload["task_id"])
-        assert task["status"] == "completed", task.get("summary")
+        assert task["status"] == "completed"
         assert [step["status"] for step in task["steps"]] == [
             "succeeded",
             "succeeded",
@@ -205,47 +214,45 @@ def _run_http_contract(client: TestClient) -> None:
     finally:
         presentation_sequence.execute_presentation_tool_call = original
 
+    async def cancellation_contract() -> None:
+        slow_started = asyncio.Event()
 
-async def _run_cancellation_contract() -> None:
-    original = presentation_sequence.execute_presentation_tool_call
-    loop = asyncio.get_running_loop()
-    slow_started = asyncio.Event()
+        def slow_execute(name: str, arguments: dict):
+            slow_started_loop.call_soon_threadsafe(slow_started.set)
+            time.sleep(0.25)
+            tool = ToolResult(
+                tool_name=name,
+                ok=True,
+                message="Slow fake action completed.",
+                data={"execution_mode": "real", "requested_state": {}},
+            )
+            status = ToolResult(
+                tool_name="presentation_get_status",
+                ok=True,
+                message="Fake status.",
+                data={"presentation_open": True, "slideshow_active": False},
+            )
+            return tool, _verification(), status
 
-    def slow_execute(name: str, arguments: dict):
-        loop.call_soon_threadsafe(slow_started.set)
-        time.sleep(0.25)
-        tool = ToolResult(
-            tool_name=name,
-            ok=True,
-            message="Slow fake action completed.",
-            data={"execution_mode": "real", "requested_state": {}},
+        planned, validation_error = validate_sequence_arguments(
+            {
+                "steps": [
+                    {"name": "presentation_open_configured"},
+                    {"name": "presentation_get_status"},
+                ]
+            }
         )
-        status = ToolResult(
-            tool_name="presentation_get_status",
-            ok=True,
-            message="Fake status.",
-            data={"presentation_open": True, "slideshow_active": False},
+        assert validation_error is None and planned is not None
+        task = presentation_sequence.create_presentation_sequence_task(
+            "Open and inspect the presentation.", planned
         )
-        return tool, _verification(), status
-
-    planned, validation_error = validate_sequence_arguments(
-        {
-            "steps": [
-                {"name": "presentation_open_configured"},
-                {"name": "presentation_get_status"},
-            ]
-        }
-    )
-    assert validation_error is None and planned is not None
-    task = presentation_sequence.create_presentation_sequence_task(
-        "Open and inspect the presentation.", planned
-    )
-    presentation_sequence.execute_presentation_tool_call = slow_execute
-    try:
+        presentation_sequence.execute_presentation_tool_call = slow_execute
         runner = asyncio.create_task(
             presentation_sequence.run_presentation_sequence_task(task.task_id)
         )
         await slow_started.wait()
+        state = presentation_sequence.state_store.get_task(task.task_id)
+        assert state is not None
         presentation_sequence.state_store.update_pending_steps(
             task.task_id, "cancelled", message="Contract cancellation."
         )
@@ -256,18 +263,19 @@ async def _run_cancellation_contract() -> None:
         cancelled = presentation_sequence.state_store.get_task(task.task_id)
         assert cancelled is not None and cancelled.status == "cancelled"
         assert cancelled.steps[1].status == "cancelled"
+
+    slow_started_loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(slow_started_loop)
+        slow_started_loop.run_until_complete(cancellation_contract())
     finally:
         presentation_sequence.execute_presentation_tool_call = original
-
-
-def main() -> None:
-    with TestClient(app) as client:
-        _run_http_contract(client)
-    asyncio.run(_run_cancellation_contract())
+        slow_started_loop.close()
+        asyncio.set_event_loop(None)
 
     print(
-        "PASS: Gate 2B compound sequence validation, permission, task execution, "
-        "step verification, final state, language, and cancellation are available."
+        "PASS: unified GPT Realtime presentation plans support validated multi-step execution, "
+        "permission, per-step verification, final state, language, and cancellation."
     )
 
 
