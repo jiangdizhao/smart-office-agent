@@ -43,6 +43,25 @@ def _write_directory(
     )
 
 
+def _assert_strict_recipient_failure(
+    runtime_config: PresentationRuntimeConfig,
+    expected_text: str,
+) -> None:
+    directory, config_error = runtime_config.recipient_directory_status()
+    assert directory is None
+    assert config_error is not None and expected_text in config_error
+    assert runtime_config.recipient_catalog() == []
+    assert runtime_config.default_recipient_key == ""
+    assert runtime_config.recipient_name == ""
+    assert runtime_config.recipient_email == ""
+    try:
+        runtime_config.resolve_recipient("rico")
+    except ValueError as exc:
+        assert expected_text in str(exc)
+    else:
+        raise AssertionError("Strict recipient resolution did not reject the invalid file.")
+
+
 def main() -> None:
     assert presentation_config.recipient_config_path == (
         REPO_ROOT / "config" / "email_recipients.example.json"
@@ -153,20 +172,10 @@ def main() -> None:
                 "broken": {"name": "Broken", "email": "missing-at.example.com"},
             },
         )
-        try:
-            runtime_config.recipient_catalog()
-        except ValueError as exc:
-            assert "Invalid email address" in str(exc)
-        else:
-            raise AssertionError("Invalid recipient email in the editable file was not rejected.")
+        _assert_strict_recipient_failure(runtime_config, "Invalid email address")
 
         config_path.write_text("{not-json", encoding="utf-8")
-        try:
-            runtime_config.recipient_catalog()
-        except ValueError as exc:
-            assert "not valid JSON" in str(exc)
-        else:
-            raise AssertionError("Malformed recipient JSON was not rejected at runtime.")
+        _assert_strict_recipient_failure(runtime_config, "not valid JSON")
 
     interpreter = (
         REPO_ROOT
@@ -199,8 +208,8 @@ def main() -> None:
 
     print(
         "PASS: Outlook recipients are loaded from a local editable JSON file created "
-        "from a tracked template, hot-reloaded without Backend restart, rejected when "
-        "unknown or malformed, and remain sole-recipient and second-approval gated."
+        "from a tracked template, hot-reloaded without Backend restart, reported safely "
+        "in status, rejected strictly during actions, and remain second-approval gated."
     )
 
 
