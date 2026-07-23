@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "config/**"
       - "data/company_knowledge/**"
       - "ui/smart-office-ui/**"
       - ".github/workflows/virtual-host-phase1-check.yml"
@@ -53,7 +54,7 @@ jobs:
         run: python backend/scripts/smoke_phase3_gate3_5_contract.py
       - name: Run Phase 3 WMI brightness invocation contract
         run: python backend/scripts/smoke_phase3_brightness_wmi_contract.py
-      - name: Run Outlook recipient allowlist contract
+      - name: Run Outlook recipient file contract
         run: python backend/scripts/smoke_phase3_outlook_recipient_allowlist_contract.py
 
   frontend-build:
