@@ -94,6 +94,49 @@ def _attach_bootstrap(
     )
 
 
+def _go_to_last_slide(arguments: dict[str, Any]) -> ToolResult:
+    """Resolve the semantic `last` target from live PowerPoint state.
+
+    GPT Realtime should not guess the numeric page count. The Backend already owns
+    the authoritative presentation state, so it resolves the final page immediately
+    before execution and then delegates to the existing bounded go-to-slide action.
+    """
+
+    status_before = get_presentation_status()
+    total_slides = status_before.data.get("total_slides")
+    if isinstance(total_slides, bool) or not isinstance(total_slides, int) or total_slides < 1:
+        return _invalid_tool_result(
+            "presentation_go_to_slide",
+            "The final slide could not be resolved because the presentation slide count is unavailable.",
+            arguments=arguments,
+        )
+
+    result = go_to_presentation_slide(total_slides)
+    return result.model_copy(
+        update={
+            "message": (
+                f"Moved to the final slide ({total_slides})."
+                if result.ok
+                else result.message
+            ),
+            "data": {
+                **result.data,
+                "requested_state": {
+                    **dict(result.data.get("requested_state") or {}),
+                    "current_slide": total_slides,
+                },
+                "resolved_slide_target": "last",
+                "resolved_slide_number": total_slides,
+            },
+            "raw": {
+                **result.raw,
+                "resolved_slide_target": "last",
+                "resolved_slide_number": total_slides,
+            },
+        }
+    )
+
+
 def _merge_monitor_verification(
     name: str,
     verification: VerificationResult,
@@ -166,28 +209,47 @@ def execute_presentation_tool_call(
     bootstrap: PowerPointBootstrapResult | None = None
 
     if name == "presentation_go_to_slide":
-        unexpected = set(clean_arguments) - {"slide_number"}
-        value = clean_arguments.get("slide_number")
+        unexpected = set(clean_arguments) - {"slide_number", "slide_target"}
+        has_number = "slide_number" in clean_arguments
+        has_target = "slide_target" in clean_arguments
         if unexpected:
             tool_result = _invalid_tool_result(
                 name,
                 f"Unexpected arguments for {name}: {sorted(unexpected)}",
                 arguments=clean_arguments,
             )
-        elif isinstance(value, bool) or not isinstance(value, int):
+        elif has_number == has_target:
             tool_result = _invalid_tool_result(
                 name,
-                "slide_number must be an integer.",
+                "presentation_go_to_slide requires exactly one of slide_number or slide_target.",
                 arguments=clean_arguments,
             )
-        elif value < 1:
-            tool_result = _invalid_tool_result(
-                name,
-                "slide_number must be at least 1.",
-                arguments=clean_arguments,
-            )
+        elif has_target:
+            target = clean_arguments.get("slide_target")
+            if target != "last":
+                tool_result = _invalid_tool_result(
+                    name,
+                    "slide_target must be 'last'.",
+                    arguments=clean_arguments,
+                )
+            else:
+                tool_result = _go_to_last_slide(clean_arguments)
         else:
-            tool_result = go_to_presentation_slide(value)
+            value = clean_arguments.get("slide_number")
+            if isinstance(value, bool) or not isinstance(value, int):
+                tool_result = _invalid_tool_result(
+                    name,
+                    "slide_number must be an integer.",
+                    arguments=clean_arguments,
+                )
+            elif value < 1:
+                tool_result = _invalid_tool_result(
+                    name,
+                    "slide_number must be at least 1.",
+                    arguments=clean_arguments,
+                )
+            else:
+                tool_result = go_to_presentation_slide(value)
     else:
         invalid = _validate_no_arguments(name, clean_arguments)
         if invalid is not None:
