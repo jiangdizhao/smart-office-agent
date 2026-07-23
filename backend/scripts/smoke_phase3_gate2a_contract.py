@@ -12,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.main import app  # noqa: E402
 from app.models import ToolResult, VerificationResult  # noqa: E402
+from app.presentation_actions import _merge_monitor_verification  # noqa: E402
 import app.turn_api as turn_api  # noqa: E402
 
 
@@ -22,13 +23,14 @@ def _post_tool_call(
     text: str,
     name: str,
     arguments: dict | None = None,
+    language: str = "zh",
 ) -> dict:
     response = client.post(
         "/agent/turn",
         json={
-            "conversation_id": f"gate2a-{actor}-{name}",
+            "conversation_id": f"gate2a-{actor}-{name}-{language}",
             "text": text,
-            "language": "zh",
+            "language": language,
             "input_source": "voice",
             "actor_context": {"type": actor, "source": "contract"},
             "realtime_tool_call": {
@@ -87,6 +89,41 @@ def _fake_execution(name: str, arguments: dict):
     return tool, verification, status
 
 
+def _fake_status_with_unverified_monitor(name: str, arguments: dict):
+    assert name == "presentation_get_status"
+    tool = ToolResult(
+        tool_name=name,
+        ok=True,
+        message="Presentation status inspected.",
+        expected_process_names=["POWERPNT.EXE"],
+        expected_window_keywords=["PowerPoint"],
+        data={"execution_mode": "real", "requested_state": {}},
+    )
+    verification = VerificationResult(
+        ok=True,
+        message="Presentation status query completed.",
+        process_ok=None,
+        window_ok=None,
+        checked_at=datetime.now(UTC),
+        raw={"verification_type": "powerpoint_state"},
+    )
+    status = ToolResult(
+        tool_name="presentation_get_status",
+        ok=True,
+        message="Presentation status inspected.",
+        data={
+            "presentation_open": True,
+            "slideshow_active": True,
+            "current_slide": 4,
+            "total_slides": 12,
+            "target_monitor_device": r"\\.\DISPLAY2",
+            "slideshow_monitor_device": None,
+            "monitor_placement_enforced": False,
+        },
+    )
+    return tool, verification, status
+
+
 def main() -> None:
     client = TestClient(app)
 
@@ -134,6 +171,41 @@ def main() -> None:
     assert employee["presentation_status"]["monitor_placement_enforced"] is True
     assert "第 5 页" in employee["spoken_text"]
 
+    # A read-only status query must answer the current slide even when the
+    # independent monitor probe cannot verify DISPLAY2 at that instant.
+    baseline_verification = VerificationResult(
+        ok=True,
+        message="Presentation status query completed.",
+        checked_at=datetime.now(UTC),
+        raw={},
+    )
+    merged = _merge_monitor_verification(
+        "presentation_get_status",
+        baseline_verification,
+        {
+            "target_monitor_device": r"\\.\DISPLAY2",
+            "monitor_placement_enforced": False,
+        },
+        slideshow_active=True,
+    )
+    assert merged.ok is True
+
+    turn_api.execute_presentation_tool_call = _fake_status_with_unverified_monitor
+    try:
+        status_answer = _post_tool_call(
+            client,
+            actor="employee",
+            text="What slide are we on?",
+            name="presentation_get_status",
+            language="en",
+        )
+    finally:
+        turn_api.execute_presentation_tool_call = original
+
+    assert status_answer["verification_result"]["ok"] is True
+    assert "slide 4 of 12" in status_answer["spoken_text"]
+    assert not any("\u3400" <= character <= "\u9fff" for character in status_answer["spoken_text"])
+
     invalid = _post_tool_call(
         client,
         actor="employee",
@@ -158,7 +230,10 @@ def main() -> None:
     reception.raise_for_status()
     assert reception.json()["route"] == "reception_knowledge"
 
-    print("PASS: Gate 2A GPT Realtime tool handoff, permission gate, verified execution response, and Phase 2 fallback are available.")
+    print(
+        "PASS: Gate 2A Realtime tool handoff, permission, current-slide status, "
+        "language, verified execution response, and Phase 2 fallback are available."
+    )
 
 
 if __name__ == "__main__":
