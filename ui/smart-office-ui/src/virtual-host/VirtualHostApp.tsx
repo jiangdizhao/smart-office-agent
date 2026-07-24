@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
-import type { VoiceOutputProvider } from '../voice/voiceOutputManager'
-import {
-  useOfficeVoiceController,
-  type OfficeActor,
-  type OfficeAsrProvider,
-} from '../voice/useOfficeVoiceController'
+import { useOfficeVoiceController } from '../voice/useOfficeVoiceController'
+import ApprovalOverlay from './ApprovalOverlay'
 import LiveCaption from './LiveCaption'
+import OperatorDrawer from './OperatorDrawer'
 import VirtualHostAvatar, { type VirtualHostVisualState } from './VirtualHostAvatar'
 import './VirtualHost.css'
 import './VirtualHostPhase3.css'
+import './VirtualHostPhase4.css'
 
 const ACTIVE_TASK_STATUSES = ['created', 'planning', 'running']
 
@@ -86,6 +84,7 @@ export default function VirtualHostApp() {
   const isSendApproval = controller.pendingApprovalTool === 'outlook_send_approved_draft'
   const userCaption = controller.transcript.trim() || lastUserText
   const assistantCaption = controller.answer.trim() || lastAssistantText
+  const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
   const recipientName = useMemo(() => {
     const key = controller.pendingRecipientKey
     const entry = controller.office?.recipient_catalog?.find((item) => item.key === key)
@@ -279,173 +278,20 @@ export default function VirtualHostApp() {
       ) : null}
 
       {isWaitingApproval ? (
-        <div className="approval-backdrop" role="presentation">
-          <section className="approval-card" role="dialog" aria-modal="true">
-            <span className="approval-kicker">
-              {controller.language === 'zh' ? '需要确认' : 'Confirmation required'}
-            </span>
-            <h2>
-              {isSendApproval
-                ? controller.language === 'zh'
-                  ? '是否现在发送 Outlook 邮件？'
-                  : 'Send the Outlook email now?'
-                : controller.language === 'zh'
-                  ? '是否创建 Outlook 邮件草稿？'
-                  : 'Create the Outlook email draft?'}
-            </h2>
-            <p>
-              {controller.language === 'zh' ? '收件人' : 'Recipient'}：
-              <strong>{recipientName}</strong>
-            </p>
-            <div className="approval-actions">
-              <button
-                type="button"
-                className="approval-primary"
-                onClick={() => void controller.approve('approve')}
-              >
-                {isSendApproval
-                  ? controller.language === 'zh'
-                    ? '确认发送'
-                    : 'Send now'
-                  : controller.language === 'zh'
-                    ? '创建草稿'
-                    : 'Create draft'}
-              </button>
-              <button type="button" onClick={() => void controller.approve('skip')}>
-                {controller.language === 'zh' ? '暂不执行' : 'Not now'}
-              </button>
-            </div>
-          </section>
-        </div>
+        <ApprovalOverlay
+          language={controller.language}
+          recipientName={recipientName}
+          isSendApproval={isSendApproval}
+          voiceActive={voiceActive}
+          onApprove={() => controller.approve('approve')}
+          onSkip={() => controller.approve('skip')}
+          onCancelTask={() => controller.approve('cancel')}
+          onStopVoice={controller.stopSpeaking}
+        />
       ) : null}
 
       {drawerOpen ? (
-        <div className="operator-drawer-layer">
-          <button
-            type="button"
-            className="drawer-backdrop"
-            aria-label="关闭控制设置"
-            onClick={() => setDrawerOpen(false)}
-          />
-          <aside className="operator-drawer" aria-label="控制设置">
-            <div className="drawer-heading">
-              <div>
-                <span>{controller.language === 'zh' ? '操作员设置' : 'Operator settings'}</span>
-                <strong>
-                  {controller.language === 'zh' ? '控制与诊断入口' : 'Controls and diagnostics'}
-                </strong>
-              </div>
-              <button type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭">
-                ×
-              </button>
-            </div>
-
-            <div className="drawer-settings">
-              <label>
-                <span>{controller.language === 'zh' ? '界面语言' : 'Language'}</span>
-                <select
-                  value={controller.language}
-                  onChange={(event) => controller.setLanguage(event.target.value as VoiceLanguage)}
-                >
-                  <option value="zh">中文</option>
-                  <option value="en">English</option>
-                </select>
-              </label>
-              <label>
-                <span>{controller.language === 'zh' ? '用户身份' : 'Actor'}</span>
-                <select
-                  value={controller.actor}
-                  onChange={(event) => controller.setActor(event.target.value as OfficeActor)}
-                >
-                  <option value="visitor">Visitor</option>
-                  <option value="employee">Employee</option>
-                  <option value="operator">Operator</option>
-                </select>
-              </label>
-              <label>
-                <span>{controller.language === 'zh' ? '语音识别' : 'Speech recognition'}</span>
-                <select
-                  value={controller.asr}
-                  onChange={(event) =>
-                    controller.setAsr(event.target.value as OfficeAsrProvider)
-                  }
-                >
-                  <option value="realtime">GPT Realtime</option>
-                  <option value="browser" disabled={!controller.browserAsrAvailable}>
-                    Browser ASR
-                  </option>
-                </select>
-              </label>
-              <label>
-                <span>{controller.language === 'zh' ? '语音输出' : 'Voice output'}</span>
-                <select
-                  value={controller.voice}
-                  onChange={(event) =>
-                    void controller.setVoice(event.target.value as VoiceOutputProvider)
-                  }
-                >
-                  <option value="realtime">GPT Realtime</option>
-                  <option value="none">
-                    {controller.language === 'zh' ? '仅文字' : 'Text only'}
-                  </option>
-                </select>
-              </label>
-            </div>
-
-            <div className="drawer-status-card">
-              <div>
-                <span>WebRTC</span>
-                <strong>{controller.runtime.connectionState}</strong>
-              </div>
-              <div>
-                <span>{controller.language === 'zh' ? '麦克风' : 'Microphone'}</span>
-                <strong>
-                  {controller.runtime.microphoneAttached
-                    ? controller.language === 'zh'
-                      ? '正在使用'
-                      : 'Attached'
-                    : controller.language === 'zh'
-                      ? '已释放'
-                      : 'Released'}
-                </strong>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="drawer-primary-action"
-              disabled={controller.runtime.connected || controller.busy || controller.listening}
-              onClick={() => void controller.connect()}
-            >
-              {controller.runtime.connected
-                ? controller.language === 'zh'
-                  ? '语音已连接'
-                  : 'Voice connected'
-                : controller.language === 'zh'
-                  ? '连接语音服务'
-                  : 'Connect voice service'}
-            </button>
-
-            {controller.active ? (
-              <button
-                type="button"
-                className="drawer-danger-action"
-                onClick={() => void controller.approve('cancel')}
-              >
-                {controller.language === 'zh' ? '取消当前任务' : 'Cancel current task'}
-              </button>
-            ) : null}
-
-            <button
-              type="button"
-              className="drawer-debug-link"
-              onClick={() => window.location.assign('/debug')}
-            >
-              {controller.language === 'zh' ? '打开完整调试控制台' : 'Open full debug console'}
-              <span aria-hidden="true">↗</span>
-            </button>
-          </aside>
-        </div>
+        <OperatorDrawer controller={controller} onClose={() => setDrawerOpen(false)} />
       ) : null}
     </main>
   )
