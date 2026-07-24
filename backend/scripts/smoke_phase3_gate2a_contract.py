@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.main import app  # noqa: E402
+from app.models import ToolResult, VerificationResult  # noqa: E402
+from app.presentation_actions import _merge_monitor_verification  # noqa: E402
+import app.turn_api as turn_api  # noqa: E402
+
+
+def _post_plan(
+    client: TestClient,
+    *,
+    actor: str,
+    text: str,
+    steps: list[dict],
+    language: str = "zh",
+) -> dict:
+    response = client.post(
+        "/agent/turn",
+        json={
+            "conversation_id": f"gate2a-{actor}-{language}-{len(steps)}",
+            "text": text,
+            "language": language,
+            "input_source": "voice",
+            "actor_context": {"type": actor, "source": "contract"},
+            "realtime_tool_call": {
+                "name": "presentation_plan",
+                "arguments": {"steps": steps},
+                "call_id": "call-contract",
+                "source": "gpt_realtime",
+            },
+        },
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _fake_execution(name: str, arguments: dict):
+    slide = int(arguments.get("slide_number", 2))
+    tool = ToolResult(
+        tool_name=name,
+        ok=True,
+        message="Fake PowerPoint action accepted.",
+        expected_process_names=["POWERPNT.EXE"],
+        expected_window_keywords=["PowerPoint"],
+        data={"execution_mode": "real", "requested_state": {}},
+    )
+    verification = VerificationResult(
+        ok=True,
+        message="Fake observed PowerPoint state verified on DISPLAY2.",
+        process_ok=True,
+        window_ok=True,
+        expected_process_names=["POWERPNT.EXE"],
+        found_process_names=["POWERPNT.EXE"],
+        expected_window_keywords=["PowerPoint"],
+        found_window_titles=["Loss.pptx - PowerPoint"],
+        require_window_match=True,
+        checked_at=datetime.now(UTC),
+        raw={"monitor_ok": True},
+    )
+    status = ToolResult(
+        tool_name="presentation_get_status",
+        ok=True,
+        message="Fake status.",
+        data={
+            "presentation_open": True,
+            "slideshow_active": True,
+            "current_slide": slide,
+            "total_slides": 12,
+            "target_monitor_device": r"\\.\DISPLAY2",
+            "slideshow_monitor_device": r"\\.\DISPLAY2",
+            "monitor_placement_enforced": True,
+        },
+    )
+    return tool, verification, status
+
+
+def _fake_status_with_unverified_monitor(name: str, arguments: dict):
+    assert name == "presentation_get_status"
+    tool = ToolResult(
+        tool_name=name,
+        ok=True,
+        message="Presentation status inspected.",
+        data={"execution_mode": "real", "requested_state": {}},
+    )
+    verification = VerificationResult(
+        ok=True,
+        message="Presentation status query completed.",
+        checked_at=datetime.now(UTC),
+        raw={"verification_type": "powerpoint_state"},
+    )
+    status = ToolResult(
+        tool_name="presentation_get_status",
+        ok=True,
+        message="Presentation status inspected.",
+        data={
+            "presentation_open": True,
+            "slideshow_active": True,
+            "current_slide": 4,
+            "total_slides": 12,
+            "target_monitor_device": r"\\.\DISPLAY2",
+            "slideshow_monitor_device": None,
+            "monitor_placement_enforced": False,
+        },
+    )
+    return tool, verification, status
+
+
+def main() -> None:
+    client = TestClient(app)
+
+    health = client.get("/")
+    health.raise_for_status()
+    health_payload = health.json()
+    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_3_5"
+    assert health_payload["capabilities"]["presentation_execution_via_turn"] is True
+    assert health_payload["capabilities"]["general_office_execution_via_turn"] is False
+
+    turn_status = client.get("/agent/turn/status").json()
+    assert turn_status["unified_presentation_plan_enabled"] is True
+
+    visitor = _post_plan(
+        client,
+        actor="visitor",
+        text="下一页",
+        steps=[{"name": "presentation_next_slide"}],
+    )
+    assert visitor["route"] == "office_direct"
+    assert visitor["permission_decision"] == "denied"
+    assert visitor["intent_source"] == "gpt_realtime_presentation_plan"
+    assert visitor["tool_result"] is None
+
+    original = turn_api.execute_presentation_tool_call
+    turn_api.execute_presentation_tool_call = _fake_execution
+    try:
+        employee = _post_plan(
+            client,
+            actor="employee",
+            text="请翻到第五页",
+            steps=[{"name": "presentation_go_to_slide", "slide_number": 5}],
+        )
+    finally:
+        turn_api.execute_presentation_tool_call = original
+
+    assert employee["route"] == "office_direct"
+    assert employee["permission_decision"] == "allowed"
+    assert employee["intent_source"] == "gpt_realtime_presentation_plan"
+    assert employee["realtime_tool_call"]["name"] == "presentation_plan"
+    assert employee["tool_result"]["tool_name"] == "presentation_go_to_slide"
+    assert employee["tool_result"]["ok"] is True
+    assert employee["verification_result"]["ok"] is True
+    assert employee["presentation_status"]["current_slide"] == 5
+    assert "第 5 页" in employee["spoken_text"]
+
+    baseline_verification = VerificationResult(
+        ok=True,
+        message="Presentation status query completed.",
+        checked_at=datetime.now(UTC),
+        raw={},
+    )
+    merged = _merge_monitor_verification(
+        "presentation_get_status",
+        baseline_verification,
+        {
+            "target_monitor_device": r"\\.\DISPLAY2",
+            "monitor_placement_enforced": False,
+        },
+        slideshow_active=True,
+    )
+    assert merged.ok is True
+
+    turn_api.execute_presentation_tool_call = _fake_status_with_unverified_monitor
+    try:
+        status_answer = _post_plan(
+            client,
+            actor="employee",
+            text="What slide are we on?",
+            steps=[{"name": "presentation_get_status"}],
+            language="en",
+        )
+    finally:
+        turn_api.execute_presentation_tool_call = original
+
+    assert status_answer["route"] == "office_direct"
+    assert status_answer["verification_result"]["ok"] is True
+    assert "slide 4 of 12" in status_answer["spoken_text"]
+    assert not any("\u3400" <= character <= "\u9fff" for character in status_answer["spoken_text"])
+
+    invalid = _post_plan(
+        client,
+        actor="employee",
+        text="执行未知操作",
+        steps=[],
+    )
+    assert invalid["tool_result"]["ok"] is False
+    assert invalid["verification_result"]["ok"] is False
+
+    reception = client.post(
+        "/agent/turn",
+        json={
+            "conversation_id": "gate2a-reception",
+            "text": "请介绍一下你们的解决方案",
+            "language": "zh",
+            "input_source": "voice",
+            "actor_context": {"type": "visitor"},
+            "realtime_tool_call": None,
+        },
+    )
+    reception.raise_for_status()
+    assert reception.json()["route"] == "reception_knowledge"
+
+    print(
+        "PASS: one-step GPT Realtime presentation plans execute directly with permission, "
+        "language, status, and verification guarantees under Phase 3 Gate 3-5."
+    )
+
+
+if __name__ == "__main__":
+    main()

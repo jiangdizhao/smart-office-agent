@@ -3,6 +3,16 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any
 
 from app.models import ToolResult
+from app.tools.presentation_controller import (
+    close_configured_presentation,
+    end_configured_slideshow,
+    get_presentation_status,
+    go_to_presentation_slide,
+    next_presentation_slide,
+    open_configured_presentation,
+    previous_presentation_slide,
+    start_configured_slideshow,
+)
 from app.tools.windows_controller import (
     open_edge,
     open_zoom,
@@ -57,6 +67,16 @@ def run_tool(
         "open_powerpoint": lambda: open_powerpoint(),
         "open_onenote": lambda: open_onenote(),
         "open_sample_document": lambda: open_sample_document(),
+        "presentation_get_status": lambda: get_presentation_status(),
+        "presentation_open_configured": lambda: open_configured_presentation(),
+        "presentation_start_slideshow": lambda: start_configured_slideshow(),
+        "presentation_next_slide": lambda: next_presentation_slide(),
+        "presentation_previous_slide": lambda: previous_presentation_slide(),
+        "presentation_go_to_slide": lambda: go_to_presentation_slide(
+            int(args["slide_number"])
+        ),
+        "presentation_end_slideshow": lambda: end_configured_slideshow(),
+        "presentation_close": lambda: close_configured_presentation(),
     }
 
     if tool_name not in registry:

@@ -1,4 +1,4 @@
-name: Virtual Host Phase 1 Check
+name: Virtual Host Integration Check
 
 on:
   push:
@@ -7,12 +7,17 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "config/**"
+      - "data/company_knowledge/**"
       - "ui/smart-office-ui/**"
+      - "PHASE4_5_EXHIBITION_ACCEPTANCE.md"
       - ".github/workflows/virtual-host-phase1-check.yml"
 
 jobs:
   backend-contract:
     runs-on: ubuntu-latest
+    env:
+      SMART_OFFICE_EMAIL_RECIPIENTS_FILE: config/email_recipients.example.json
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,9 +28,40 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "fastapi[standard]" httpx sse-starlette
       - name: Compile backend
-        run: python -m compileall backend/app backend/scripts/smoke_phase1_voice_contract.py
-      - name: Run Phase 1 contract smoke test
+        run: |
+          python -m compileall backend/app \
+            backend/scripts/smoke_phase1_voice_contract.py \
+            backend/scripts/smoke_phase2_router_contract.py \
+            backend/scripts/smoke_phase3_gate1_contract.py \
+            backend/scripts/smoke_phase3_gate2a_contract.py \
+            backend/scripts/smoke_phase3_gate2b_contract.py \
+            backend/scripts/smoke_phase3_unified_plan_contract.py \
+            backend/scripts/smoke_phase3_display2_race_contract.py \
+            backend/scripts/smoke_phase3_gate3_5_contract.py \
+            backend/scripts/smoke_phase3_brightness_wmi_contract.py \
+            backend/scripts/smoke_phase3_outlook_recipient_allowlist_contract.py \
+            backend/scripts/smoke_phase4_5_virtual_host_contract.py \
+            backend/scripts/setup_gmail_oauth.py
+      - name: Run Phase 1 regression contract
         run: python backend/scripts/smoke_phase1_voice_contract.py
+      - name: Run Phase 2 router contract
+        run: python backend/scripts/smoke_phase2_router_contract.py
+      - name: Run Phase 3 Gate 1 presentation contract
+        run: python backend/scripts/smoke_phase3_gate1_contract.py
+      - name: Run Phase 3 Gate 2A Realtime presentation contract
+        run: python backend/scripts/smoke_phase3_gate2a_contract.py
+      - name: Run Phase 3 unified presentation-plan contract
+        run: python backend/scripts/smoke_phase3_unified_plan_contract.py
+      - name: Run Phase 3 DISPLAY2 race regression contract
+        run: python backend/scripts/smoke_phase3_display2_race_contract.py
+      - name: Run Phase 3 Gate 3-5 office workflow contract
+        run: python backend/scripts/smoke_phase3_gate3_5_contract.py
+      - name: Run Phase 3 WMI brightness invocation contract
+        run: python backend/scripts/smoke_phase3_brightness_wmi_contract.py
+      - name: Run Outlook recipient file contract
+        run: python backend/scripts/smoke_phase3_outlook_recipient_allowlist_contract.py
+      - name: Run Phase 4-5 exhibition contract
+        run: python backend/scripts/smoke_phase4_5_virtual_host_contract.py
 
   frontend-build:
     runs-on: ubuntu-latest

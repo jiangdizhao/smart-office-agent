@@ -15,15 +15,18 @@ from app.models import (
     TaskCreateRequest,
     TaskSession,
 )
+from app.office_api import router as office_router
 from app.planner import plan_task
+from app.presentation_api import router as presentation_router
 from app.realtime_api import router as realtime_router
+from app.reception_api import router as reception_router
 from app.state_store import state_store
 from app.task_graph import build_task_graph, task_graph_event_data
 from app.task_logger import log_task_record
 from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.2.0")
+app = FastAPI(title="Smart Office Agent Backend", version="0.7.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,7 +40,10 @@ app.add_middleware(
 )
 
 app.include_router(realtime_router)
+app.include_router(reception_router)
 app.include_router(turn_router)
+app.include_router(presentation_router)
+app.include_router(office_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -53,12 +59,39 @@ def health_check():
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.2.0",
-        "phase": "m3a_fusion_phase_1",
+        "version": "0.7.0",
+        "phase": "m3a_fusion_phase_3_gate_3_5",
         "capabilities": {
             "task_runtime": True,
             "realtime_voice_api": True,
+            "realtime_presentation_function_calling": True,
+            "unified_presentation_plan": True,
+            "unified_office_plan": True,
             "agent_turn_api": True,
+            "unified_turn_router": True,
+            "reception_knowledge": True,
+            "permission_gate": True,
+            "presentation_controller": True,
+            "presentation_state_verifier": True,
+            "presentation_control_api": True,
+            "presentation_execution_via_turn": True,
+            "presentation_secondary_display": True,
+            "compound_presentation_execution": True,
+            "compound_task_cancellation": True,
+            "system_volume_control": True,
+            "system_brightness_control": True,
+            "presentation_summary_artifacts": True,
+            "classic_outlook_draft_creation": True,
+            "outlook_draft_approval_gate": True,
+            "outlook_send_second_approval_gate": True,
+            "fixed_outlook_sender_account": True,
+            "fixed_email_recipient": False,
+            "approved_email_recipient_allowlist": True,
+            "arbitrary_email_recipient": False,
+            "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
+            "general_office_execution_via_turn": False,
         },
     }
 
@@ -72,7 +105,6 @@ def run_agent(req: AgentRequest):
         for step in steps:
             if step.tool_name is None:
                 continue
-
             result = run_tool(step.tool_name, step.args)
             results.append(result)
 
@@ -161,6 +193,8 @@ def cancel_agent_task(task_id: str):
     task = state_store.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    if task.status in {"completed", "failed", "cancelled"}:
+        return task
 
     state_store.update_pending_steps(
         task_id,
@@ -192,43 +226,28 @@ async def stream_agent_task_events(
         30.0,
         ge=0.1,
         le=300.0,
-        description="Maximum time to wait for new events before closing the stream.",
+        description="Maximum time to keep the SSE stream open without new events.",
     ),
 ):
     task = state_store.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
-    async def event_generator():
-        sent_count = 0
-        terminal_events = {"completed", "cancelled", "error"}
-
-        while True:
-            events = event_bus.get_events(task_id)
-            while sent_count < len(events):
-                event = events[sent_count]
-                sent_count += 1
+    async def event_stream():
+        if demo:
+            demo_events = [
+                StepEvent(type="planning", task_id=task_id, message="Planning demo event."),
+                StepEvent(type="step_started", task_id=task_id, step_id="demo-step", message="Step started."),
+                StepEvent(type="step_progress", task_id=task_id, step_id="demo-step", message="Step progress."),
+                StepEvent(type="step_completed", task_id=task_id, step_id="demo-step", message="Step completed."),
+                StepEvent(type="task_completed", task_id=task_id, message="Task completed."),
+            ]
+            for event in demo_events:
                 yield _sse_payload(event)
-                if event.type in terminal_events:
-                    return
+                await asyncio.sleep(0.05)
+            return
 
-            if demo:
-                for event in event_bus.build_demo_events(task):
-                    await asyncio.sleep(0.2)
-                    yield _sse_payload(event)
-                return
+        async for event in event_bus.subscribe(task_id, timeout_seconds=timeout_seconds):
+            yield _sse_payload(event)
 
-            break
-
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
-        while asyncio.get_running_loop().time() < deadline:
-            events = event_bus.get_events(task_id)
-            while sent_count < len(events):
-                event = events[sent_count]
-                sent_count += 1
-                yield _sse_payload(event)
-                if event.type in terminal_events:
-                    return
-            await asyncio.sleep(0.2)
-
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(event_stream())

@@ -50,8 +50,6 @@ function Resolve-CondaEnvironmentPython {
 
     $candidates = New-Object System.Collections.Generic.List[string]
 
-    # First ask Conda for every registered environment. This works even when the
-    # caller is in base, in another environment, or in a child PowerShell.
     try {
         $envListJson = & conda env list --json 2>$null
         if ($LASTEXITCODE -eq 0 -and $envListJson) {
@@ -64,10 +62,8 @@ function Resolve-CondaEnvironmentPython {
         }
     }
     catch {
-        # Continue with deterministic filesystem candidates.
     }
 
-    # Resolve the conventional named environment beneath the active Conda base.
     try {
         $condaBase = (& conda info --base 2>$null | Select-Object -Last 1).Trim()
         if ($condaBase) {
@@ -75,24 +71,19 @@ function Resolve-CondaEnvironmentPython {
         }
     }
     catch {
-        # Continue with the remaining candidates.
     }
 
-    # The active interpreter is accepted only when it is actually the requested
-    # named environment. A base Python can never pass Test-ProjectPython.
     try {
         $activePython = (Get-Command python -ErrorAction Stop).Source
         Add-Candidate -Candidates $candidates -Candidate $activePython
     }
     catch {
-        # Python does not need to be on PATH when Conda discovery succeeds.
     }
 
     if ($env:CONDA_PREFIX -and (Split-Path -Leaf $env:CONDA_PREFIX) -ieq $EnvironmentName) {
         Add-Candidate -Candidates $candidates -Candidate (Join-Path $env:CONDA_PREFIX "python.exe")
     }
 
-    # Known Windows Conda layouts are last-resort automatic candidates.
     Add-Candidate -Candidates $candidates -Candidate "D:\anaconda3\envs\$EnvironmentName\python.exe"
     Add-Candidate -Candidates $candidates -Candidate "C:\Users\$env:USERNAME\anaconda3\envs\$EnvironmentName\python.exe"
     Add-Candidate -Candidates $candidates -Candidate "C:\Users\$env:USERNAME\miniconda3\envs\$EnvironmentName\python.exe"
@@ -109,9 +100,59 @@ function Resolve-CondaEnvironmentPython {
 
 $resolvedPython = Resolve-CondaEnvironmentPython -EnvironmentName $CondaEnvName
 
-$dependencyProbe = & $resolvedPython -c "import fastapi, sse_starlette, uvicorn; print('ok')" 2>&1
+$dependencyProbe = & $resolvedPython -c "import fastapi, sse_starlette, uvicorn, pythoncom, win32com.client; print('ok')" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    throw "The automatically selected '$CondaEnvName' Python is missing backend dependencies.`nRun once:`n  conda run -n $CondaEnvName python -m pip install -r requirements-smartoffice.txt`nDetails: $dependencyProbe"
+    throw "The automatically selected '$CondaEnvName' Python is missing backend or Office COM dependencies.`nRun once from the repository root:`n  conda run -n $CondaEnvName python -m pip install -r backend/requirements-smartoffice.txt`nDetails: $dependencyProbe"
+}
+
+$backendDirectory = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent $backendDirectory
+
+if (-not $env:SMART_OFFICE_DEMO_PPT) {
+    $env:SMART_OFFICE_DEMO_PPT = Join-Path $repoRoot "demo_files\Loss.pptx"
+}
+if (-not $env:SMART_OFFICE_OUTPUT_DIR) {
+    $env:SMART_OFFICE_OUTPUT_DIR = Join-Path $repoRoot "demo_files\LOG"
+}
+if (-not $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE) {
+    $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE = "\\.\DISPLAY2"
+}
+if (-not $env:SMART_OFFICE_PRESENTATION_MONITOR_NUMBER) {
+    $env:SMART_OFFICE_PRESENTATION_MONITOR_NUMBER = "2"
+}
+if (-not $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL) {
+    $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL = "jiangdizhao1@outlook.com"
+}
+
+$usingDefaultRecipientFile = -not $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+if ($usingDefaultRecipientFile) {
+    $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = Join-Path $repoRoot "config\email_recipients.json"
+    $recipientTemplate = Join-Path $repoRoot "config\email_recipients.example.json"
+    if (-not (Test-Path -LiteralPath $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE)) {
+        if (-not (Test-Path -LiteralPath $recipientTemplate)) {
+            throw "Recipient template was not found: $recipientTemplate"
+        }
+        Copy-Item -LiteralPath $recipientTemplate -Destination $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+        Write-Host "Created local recipient file from template: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE" -ForegroundColor Yellow
+    }
+}
+
+Push-Location $backendDirectory
+try {
+    $recipientProbe = & $resolvedPython -c "import json; from app.presentation_config import presentation_config as c; d=c.recipient_directory(); print(json.dumps({'config_path': str(d.config_path), 'default_key': d.default_recipient_key, 'recipients': d.public_catalog()}, ensure_ascii=False))" 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not $recipientProbe) {
+        throw "Smart Office recipient file is missing or invalid.`nFile: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE`nDetails: $recipientProbe"
+    }
+    $recipientInfo = ($recipientProbe | Select-Object -Last 1) | ConvertFrom-Json
+}
+finally {
+    Pop-Location
+}
+
+foreach ($recipient in $recipientInfo.recipients) {
+    if ($env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL -ieq [string]$recipient.email) {
+        throw "Outlook sender and configured recipient '$($recipient.key)' must be different addresses."
+    }
 }
 
 $secureKey = Read-Host "OpenAI API key" -AsSecureString
@@ -136,14 +177,33 @@ $env:OPENAI_REALTIME_ENABLED = "true"
 $env:OPENAI_REALTIME_MODEL = $Model
 $env:OPENAI_REALTIME_CONNECT_TIMEOUT_SECONDS = "30"
 
-Write-Host "Starting Smart Office Backend with Realtime voice..." -ForegroundColor Cyan
+Write-Host "Starting Smart Office Backend with Realtime voice and Office COM..." -ForegroundColor Cyan
 Write-Host "Conda environment: $CondaEnvName"
 Write-Host "Python: $resolvedPython"
 Write-Host "Model: $Model"
 Write-Host "OPENAI_API_KEY: configured (value hidden)"
+Write-Host "Configured PPT: $env:SMART_OFFICE_DEMO_PPT"
+Write-Host "Output directory: $env:SMART_OFFICE_OUTPUT_DIR"
+Write-Host "Presentation monitor: $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE"
+Write-Host "Outlook sender: $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL"
+Write-Host "Recipient file: $($recipientInfo.config_path)"
+Write-Host "Default recipient key: $($recipientInfo.default_key)"
+Write-Host "Configured Outlook recipients:"
+foreach ($recipient in $recipientInfo.recipients) {
+    Write-Host "  - $($recipient.name) [$($recipient.key)] <$($recipient.email)>"
+}
+Write-Host "Recipient file reload: enabled before status, draft, and send actions"
 Write-Host "Backend: http://${HostAddress}:$Port"
 Write-Host "Realtime status: http://${HostAddress}:$Port/api/realtime/status"
+Write-Host "Presentation status: http://${HostAddress}:$Port/api/presentation/status"
+Write-Host "Uvicorn reload: disabled for stable Office COM activation"
 
-# Calling the selected interpreter directly guarantees that Uvicorn and its
-# reload child process use the same Conda environment.
-& $resolvedPython -m uvicorn app.main:app --reload --host $HostAddress --port $Port
+Push-Location $backendDirectory
+try {
+    # Office desktop COM servers are unreliable when started from Uvicorn's
+    # Windows reload/spawn child. Run a single interactive backend process.
+    & $resolvedPython -m uvicorn app.main:app --host $HostAddress --port $Port
+}
+finally {
+    Pop-Location
+}

@@ -2,13 +2,26 @@ doc/
 docs/
 data/
 logs/
+secrets/
 
+demo_files/*.ppt
+demo_files/*.pptx
+demo_files/*.pptm
+demo_files/*.ppsx
+demo_files/*.ppsm
+demo_files/LOG/
+
+config/email_recipients.json
+
+test.py
 critical.txt
 download_cli.ps1
 .env
 .env.*
 *.key
 *.pem
+*gmail_credentials*.json
+*gmail_token*.json
 
 __pycache__/
 *.pyc
