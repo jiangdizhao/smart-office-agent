@@ -35,7 +35,7 @@ def main() -> None:
         "/agent/turn",
         json={
             "conversation_id": "phase4-5-exhibition-contract",
-            "text": "介绍一下自己",
+            "text": "请介绍一下你自己",
             "language": "zh",
             "input_source": "text",
             "actor_context": {"type": "employee"},
@@ -47,6 +47,9 @@ def main() -> None:
     assert intro_payload["source_ids"] == ["company_profile:assistant_identity"]
     assert "PowerPoint" in intro_payload["spoken_text"]
     assert "Outlook" in intro_payload["spoken_text"]
+    assert "您想先" in intro_payload["spoken_text"]
+    assert "我已理解您的话" not in intro_payload["spoken_text"]
+    assert "当前请求不需要创建办公任务" not in intro_payload["spoken_text"]
     assert "Phase 2" not in intro_payload["spoken_text"]
 
     company = client.post(
@@ -65,9 +68,10 @@ def main() -> None:
     assert company_payload["source_ids"] == ["company_profile:solution_overview"]
     assert "主屏" in company_payload["spoken_text"]
     assert "副屏" in company_payload["spoken_text"]
+    assert "您更想了解" in company_payload["spoken_text"]
 
     profile = json.loads(read("data/company_knowledge/company_profile.json"))
-    assert profile["content_version"].startswith("phase4-5-exhibition")
+    assert profile["content_version"].startswith("phase4-5-exhibition-guide")
 
     app_source = read("ui/smart-office-ui/src/virtual-host/VirtualHostApp.tsx")
     overlay_source = read("ui/smart-office-ui/src/virtual-host/ApprovalOverlay.tsx")
@@ -152,7 +156,7 @@ def main() -> None:
     ):
         assert scenario in acceptance
 
-    print("PASS: Phase 4 approval/settings and Phase 5 exhibition contracts are present.")
+    print("PASS: Phase 4 approval/settings, guide-style reception, and Phase 5 exhibition contracts are present.")
     print("NOTE: Windows Office, Outlook, dual-display, microphone, and five-round audio remain local acceptance tests.")
 
 
