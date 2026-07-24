@@ -107,6 +107,8 @@ def main() -> None:
     assert_contains(
         drawer_source,
         "界面语言",
+        "演示身份",
+        "办公控制请使用 Employee",
         "语音识别",
         "GPT Realtime",
         "停止朗读",
