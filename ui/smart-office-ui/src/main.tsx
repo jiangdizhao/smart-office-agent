@@ -5,6 +5,7 @@ import './voice/safeRealtimeAgentRuntime'
 import './voice/VoiceDebugPanelPhase2.css'
 import { installRealtimeMetadataCompatibility } from './voice/realtimeMetadataCompatibility'
 import DebugApp from './debug/DebugApp.tsx'
+import VirtualHostApp from './virtual-host/VirtualHostApp.tsx'
 
 installRealtimeMetadataCompatibility()
 
@@ -12,11 +13,11 @@ const appRoot = document.getElementById('root')
 if (!appRoot) throw new Error('Application root element was not found.')
 
 const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
-document.documentElement.dataset.smartOfficeRoute =
-  normalizedPath === '/debug' || normalizedPath.startsWith('/debug/') ? 'debug' : 'legacy'
+const debugRoute = normalizedPath === '/debug' || normalizedPath.startsWith('/debug/')
+document.documentElement.dataset.smartOfficeRoute = debugRoute ? 'debug' : 'virtual-host'
 
 createRoot(appRoot).render(
   <StrictMode>
-    <DebugApp />
+    {debugRoute ? <DebugApp /> : <VirtualHostApp />}
   </StrictMode>,
 )
