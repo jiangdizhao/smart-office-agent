@@ -6,8 +6,10 @@ import {
   type OfficeActor,
   type OfficeAsrProvider,
 } from '../voice/useOfficeVoiceController'
+import LiveCaption from './LiveCaption'
 import VirtualHostAvatar, { type VirtualHostVisualState } from './VirtualHostAvatar'
 import './VirtualHost.css'
+import './VirtualHostPhase3.css'
 
 const ACTIVE_TASK_STATUSES = ['created', 'planning', 'running']
 
@@ -39,7 +41,9 @@ function visualStateFromController(
   if (panel === 'listening') return 'listening'
   if (panel === 'processing') return 'processing'
   if (panel === 'speaking') return 'speaking'
-  if (active || (taskStatus !== null && ACTIVE_TASK_STATUSES.includes(taskStatus))) return 'executing'
+  if (active || (taskStatus !== null && ACTIVE_TASK_STATUSES.includes(taskStatus))) {
+    return 'executing'
+  }
   return 'idle'
 }
 
@@ -70,6 +74,8 @@ export default function VirtualHostApp() {
   const controller = useOfficeVoiceController()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [textComposerOpen, setTextComposerOpen] = useState(false)
+  const [lastUserText, setLastUserText] = useState('')
+  const [lastAssistantText, setLastAssistantText] = useState('')
 
   const visualState = visualStateFromController(
     controller.panel,
@@ -78,17 +84,23 @@ export default function VirtualHostApp() {
   )
   const isWaitingApproval = controller.taskStatus === 'waiting_approval'
   const isSendApproval = controller.pendingApprovalTool === 'outlook_send_approved_draft'
-  const caption = controller.listening
-    ? controller.transcript ||
-      (controller.language === 'zh'
-        ? '请继续说，完成后再次点击按钮。'
-        : 'Keep speaking, then select the button again when finished.')
-    : controller.answer || welcomeText(controller.language)
+  const userCaption = controller.transcript.trim() || lastUserText
+  const assistantCaption = controller.answer.trim() || lastAssistantText
   const recipientName = useMemo(() => {
     const key = controller.pendingRecipientKey
     const entry = controller.office?.recipient_catalog?.find((item) => item.key === key)
     return entry?.name ?? controller.office?.recipient_name ?? key ?? 'Rico'
   }, [controller.office, controller.pendingRecipientKey])
+
+  useEffect(() => {
+    const transcript = controller.transcript.trim()
+    if (transcript) setLastUserText(transcript)
+  }, [controller.transcript])
+
+  useEffect(() => {
+    const answer = controller.answer.trim()
+    if (answer) setLastAssistantText(answer)
+  }, [controller.answer])
 
   useEffect(() => {
     if (!drawerOpen) return
@@ -112,15 +124,17 @@ export default function VirtualHostApp() {
       await controller.stopSpeaking()
       return
     }
-    if (visualState === 'error') {
-      controller.clearError()
-    }
+    if (visualState === 'error') controller.clearError()
+    setLastUserText('')
+    setLastAssistantText('')
     await controller.beginListening()
   }
 
   async function handleTextSubmit(): Promise<void> {
     const text = controller.input.trim()
     if (!text) return
+    setLastUserText(text)
+    setLastAssistantText('')
     await controller.submit(text)
     controller.setInput('')
     setTextComposerOpen(false)
@@ -204,10 +218,13 @@ export default function VirtualHostApp() {
 
         <VirtualHostAvatar state={visualState} />
 
-        <div className={`live-caption caption-${visualState}`} aria-live="polite">
-          {controller.listening && <span className="caption-speaker">您说</span>}
-          <p>{caption}</p>
-        </div>
+        <LiveCaption
+          state={visualState}
+          language={controller.language}
+          userText={userCaption}
+          assistantText={assistantCaption}
+          welcomeText={welcomeText(controller.language)}
+        />
 
         <div className="voice-dock">
           <button
@@ -314,7 +331,9 @@ export default function VirtualHostApp() {
             <div className="drawer-heading">
               <div>
                 <span>{controller.language === 'zh' ? '操作员设置' : 'Operator settings'}</span>
-                <strong>{controller.language === 'zh' ? '控制与诊断入口' : 'Controls and diagnostics'}</strong>
+                <strong>
+                  {controller.language === 'zh' ? '控制与诊断入口' : 'Controls and diagnostics'}
+                </strong>
               </div>
               <button type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭">
                 ×
@@ -366,7 +385,9 @@ export default function VirtualHostApp() {
                   }
                 >
                   <option value="realtime">GPT Realtime</option>
-                  <option value="none">{controller.language === 'zh' ? '仅文字' : 'Text only'}</option>
+                  <option value="none">
+                    {controller.language === 'zh' ? '仅文字' : 'Text only'}
+                  </option>
                 </select>
               </label>
             </div>
