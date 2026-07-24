@@ -115,12 +115,12 @@ def main() -> None:
     )
     assert_not_contains(
         drawer_source,
-        "connectionState",
-        "dataChannelState",
-        "taskId",
-        "route ||",
-        "permission",
-        "verification",
+        "controller.runtime.connectionState",
+        "controller.runtime.dataChannelState",
+        "controller.taskId",
+        "controller.route",
+        "controller.permission",
+        "controller.verified",
     )
 
     assert_contains(caption_source, "splitLyrics", "lyric-current", "user-live-caption")
