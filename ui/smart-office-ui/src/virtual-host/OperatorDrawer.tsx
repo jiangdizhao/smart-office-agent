@@ -1,5 +1,6 @@
 import type { VoiceOutputProvider } from '../voice/voiceOutputManager'
 import type {
+  OfficeActor,
   OfficeAsrProvider,
   OfficeVoiceController,
 } from '../voice/useOfficeVoiceController'
@@ -57,6 +58,25 @@ export default function OperatorDrawer({ controller, onClose }: OperatorDrawerPr
               English
             </button>
           </div>
+        </section>
+
+        <section className="drawer-section" aria-labelledby="actor-setting-title">
+          <div className="drawer-section-heading">
+            <strong id="actor-setting-title">{zh ? '演示身份' : 'Demonstration role'}</strong>
+            <span>{zh ? '办公控制请使用 Employee' : 'Use Employee for Office control'}</span>
+          </div>
+          <label className="drawer-field">
+            <span>{zh ? '当前身份' : 'Current role'}</span>
+            <select
+              value={controller.actor}
+              disabled={settingsDisabled}
+              onChange={(event) => controller.setActor(event.target.value as OfficeActor)}
+            >
+              <option value="visitor">Visitor</option>
+              <option value="employee">Employee</option>
+              <option value="operator">Operator</option>
+            </select>
+          </label>
         </section>
 
         <section className="drawer-section" aria-labelledby="asr-setting-title">
