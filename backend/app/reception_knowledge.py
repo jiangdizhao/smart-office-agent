@@ -1,12 +1,75 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Literal
 
 Language = Literal["zh", "en"]
+
+_MATCH_SEPARATOR_PATTERN = re.compile(r"[\s，。！？、；：,.!?;:'\"“”‘’（）()\-]+")
+_SELF_INTRO_MARKERS = (
+    "介绍一下你自己",
+    "介绍下你自己",
+    "介绍你自己",
+    "介绍一下自己",
+    "介绍下自己",
+    "介绍一下您自己",
+    "介绍您自己",
+    "你是谁",
+    "您是谁",
+    "你能做什么",
+    "您能做什么",
+    "你可以做什么",
+    "您可以做什么",
+    "你会做什么",
+    "introduceyourself",
+    "tellmeaboutyourself",
+    "whoareyou",
+    "whatcanyoudo",
+)
+_SOLUTION_MARKERS = (
+    "介绍一下smartoffice",
+    "介绍smartoffice",
+    "smartoffice方案",
+    "smartoffice解决方案",
+    "介绍一下你们公司",
+    "介绍一下公司",
+    "你们公司做什么",
+    "你们是做什么的",
+    "tellmeaboutsmartoffice",
+    "introducethesmartofficesolution",
+    "whatdoesyourcompanydo",
+)
+_CAPABILITY_MARKERS = (
+    "核心能力",
+    "主要功能",
+    "有哪些功能",
+    "能做哪些事情",
+    "功能介绍",
+    "corecapabilities",
+    "mainfeatures",
+    "whatfeatures",
+)
+_DEPLOYMENT_MARKERS = (
+    "适合什么场景",
+    "应用场景",
+    "部署场景",
+    "可以用在哪里",
+    "usescenarios",
+    "deploymentscenarios",
+    "wherecanitbeused",
+)
+
+
+def _compact(value: str) -> str:
+    return _MATCH_SEPARATOR_PATTERN.sub("", value.casefold())
+
+
+def _contains_marker(compact_query: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in compact_query for marker in markers)
 
 
 @dataclass(frozen=True)
@@ -93,17 +156,48 @@ class ReceptionKnowledgeService:
         self._load()
         return self._disclaimer.get(language, self._disclaimer.get("en", ""))
 
+    def _intent_boost(self, entry: KnowledgeEntry, compact_query: str) -> int:
+        if entry.entry_id == "assistant_identity" and _contains_marker(
+            compact_query, _SELF_INTRO_MARKERS
+        ):
+            return 50
+        if entry.entry_id == "solution_overview" and _contains_marker(
+            compact_query, _SOLUTION_MARKERS
+        ):
+            return 45
+        if entry.entry_id == "core_capabilities" and _contains_marker(
+            compact_query, _CAPABILITY_MARKERS
+        ):
+            return 40
+        if entry.entry_id == "deployment_scenarios" and _contains_marker(
+            compact_query, _DEPLOYMENT_MARKERS
+        ):
+            return 40
+        return 0
+
     def search(self, query: str, language: Language) -> KnowledgeMatch:
         self._load()
         lowered = query.casefold()
+        compact_query = _compact(query)
         candidates = [entry for entry in self._entries if entry.public]
 
         def score(entry: KnowledgeEntry) -> tuple[int, int]:
             keywords = entry.keywords.get(language, []) + entry.keywords.get("en", [])
-            keyword_score = sum(3 if keyword.casefold() in lowered else 0 for keyword in keywords)
+            keyword_score = 0
+            for keyword in keywords:
+                lowered_keyword = keyword.casefold()
+                compact_keyword = _compact(keyword)
+                if lowered_keyword and lowered_keyword in lowered:
+                    keyword_score += 3
+                elif compact_keyword and compact_keyword in compact_query:
+                    keyword_score += 2
             title = entry.title.get(language, entry.title.get("en", "")).casefold()
-            title_score = 2 if title and title in lowered else 0
-            return keyword_score + title_score, -len(entry.entry_id)
+            compact_title = _compact(title)
+            title_score = 2 if title and title in lowered else 1 if compact_title in compact_query else 0
+            return (
+                self._intent_boost(entry, compact_query) + keyword_score + title_score,
+                -len(entry.entry_id),
+            )
 
         best = max(candidates, key=score, default=None)
         if best is None:
