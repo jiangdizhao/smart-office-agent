@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -140,9 +141,44 @@ _COMPLEX_OFFICE_TERMS = (
     "after that",
 )
 
+_INTENT_SEPARATOR_PATTERN = re.compile(r"[\s，。！？、；：,.!?;:'\"“”‘’（）()\-]+")
+_SELF_INTRO_MARKERS = (
+    "介绍一下你自己",
+    "介绍下你自己",
+    "介绍你自己",
+    "介绍一下自己",
+    "介绍下自己",
+    "介绍一下您自己",
+    "介绍您自己",
+    "你是谁",
+    "您是谁",
+    "你能做什么",
+    "您能做什么",
+    "你可以做什么",
+    "您可以做什么",
+    "你会做什么",
+    "introduceyourself",
+    "tellmeaboutyourself",
+    "whoareyou",
+    "whatcanyoudo",
+)
+
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
+
+
+def _compact_intent_text(text: str) -> str:
+    return _INTENT_SEPARATOR_PATTERN.sub("", text.casefold())
+
+
+def _is_self_introduction(text: str) -> bool:
+    compact = _compact_intent_text(text)
+    return any(marker in compact for marker in _SELF_INTRO_MARKERS)
+
+
+def _is_reception_intent(text: str) -> bool:
+    return _is_self_introduction(text) or _contains_any(text, _RECEPTION_TERMS)
 
 
 def _approval_action(text: str) -> ApprovalAction | None:
@@ -171,7 +207,7 @@ def classify_turn(text: str, actor_type: ActorType) -> RouteDecision:
     if lowered in _GREETING_TERMS or lowered in _STOP_TERMS or lowered in _REPEAT_TERMS:
         return RouteDecision("realtime_direct", "reception", reason="direct_control_or_greeting")
 
-    reception_match = _contains_any(lowered, _RECEPTION_TERMS)
+    reception_match = _is_reception_intent(lowered)
     office_match = _contains_any(lowered, _OFFICE_ENTITY_TERMS)
 
     # Reception content remains a reception request even when the user asks to
