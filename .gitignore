@@ -3,13 +3,14 @@ docs/
 data/
 logs/
 secrets/
+config/
 demo_files/*.ppt
 demo_files/*.pptx
 demo_files/*.pptm
 demo_files/*.ppsx
 demo_files/*.ppsm
 demo_files/LOG/
-config/*.json
+
 
 test.py
 critical.txt
