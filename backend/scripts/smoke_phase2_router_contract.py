@@ -46,6 +46,19 @@ def main() -> None:
     reception_status.raise_for_status()
     assert reception_status.json()["entry_count"] >= 5
 
+    self_intro = post_turn(
+        client,
+        conversation_id="phase2-self-introduction",
+        text="请介绍一下你自己",
+        actor="visitor",
+    )
+    assert self_intro["route"] == "reception_knowledge"
+    assert self_intro["source_ids"] == ["company_profile:assistant_identity"]
+    assert "Smart Office Virtual Host" in self_intro["spoken_text"]
+    assert "您想先" in self_intro["spoken_text"]
+    assert "我已理解您的话" not in self_intro["spoken_text"]
+    assert "当前请求不需要创建办公任务" not in self_intro["spoken_text"]
+
     visitor_reception = post_turn(
         client,
         conversation_id="phase2-visitor",
@@ -125,7 +138,7 @@ def main() -> None:
     conversation.raise_for_status()
     assert conversation.json()["conversation"]["actor_type"] == "visitor"
 
-    print("PASS: Phase 2 routing, grounded reception, and permission gates remain healthy under Gate 2B.")
+    print("PASS: Phase 2 routing, guide-style reception, and permission gates remain healthy under Gate 2B.")
 
 
 if __name__ == "__main__":
