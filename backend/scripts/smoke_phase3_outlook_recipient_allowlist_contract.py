@@ -193,6 +193,13 @@ def main() -> None:
     send_source = (BACKEND_DIR / "app" / "outlook_send.py").read_text(encoding="utf-8")
     assert "selected allowlisted recipient" in send_source
     assert "no additional To, CC, or BCC recipients" in send_source
+    assert "SMART_OFFICE_SEND_TOKEN_DASL" in send_source
+    assert "_ensure_visible_outlook_explorer" in send_source
+    assert "matching_item_in_sender_sent_items" in send_source
+    assert "Sent Items before the verification timeout" in send_source
+    assert "moved_out_of_original_drafts_folder" not in send_source
+    assert "original_entry_id_unavailable" not in send_source
+    assert "gc.collect()" in send_source
 
     startup_source = (BACKEND_DIR / "scripts" / "start_backend_realtime.ps1").read_text(
         encoding="utf-8"
@@ -208,8 +215,9 @@ def main() -> None:
 
     print(
         "PASS: Outlook recipients are loaded from a local editable JSON file created "
-        "from a tracked template, hot-reloaded without Backend restart, reported safely "
-        "in status, rejected strictly during actions, and remain second-approval gated."
+        "from a tracked template, hot-reloaded without Backend restart, reported safely, "
+        "rejected strictly during actions, and sending remains second-approval gated while "
+        "Outlook stays open until a correlated item is observed in Sent Items."
     )
 
 
