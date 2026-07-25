@@ -1,13 +1,49 @@
 from __future__ import annotations
 
 from html import escape
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
+from app.conversation_store import ActorType, Language, conversation_store
 from app.reception_knowledge import reception_knowledge
 
 router = APIRouter(tags=["reception"])
+
+
+class ConversationTurnStartRequest(BaseModel):
+    language: Language = "zh"
+    actor_type: ActorType = "visitor"
+    text: str = Field(..., max_length=8_000)
+    source: str = Field("unknown", max_length=80)
+
+
+class ConversationTurnCompleteRequest(BaseModel):
+    text: str = Field(..., max_length=12_000)
+    route: str | None = Field(default=None, max_length=120)
+    task_id: str | None = Field(default=None, max_length=240)
+    expect_reply: bool = True
+    source: str = Field("agent", max_length=80)
+
+
+class ConversationTaskStateRequest(BaseModel):
+    task_id: str | None = Field(default=None, max_length=240)
+    active: bool
+    final_text: str = Field("", max_length=12_000)
+
+
+class ProximityDetectionRequest(BaseModel):
+    language: Language = "zh"
+    actor_type: ActorType = "visitor"
+    face_area_ratio: float = Field(..., ge=0.0, le=1.0)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    frontal_score: float = Field(..., ge=0.0, le=1.0)
+    center_x: float = Field(..., ge=0.0, le=1.0)
+    center_y: float = Field(..., ge=0.0, le=1.0)
+    stable_frames: int = Field(..., ge=1, le=120)
+    detector: str = Field("unknown", max_length=80)
 
 
 @router.get("/api/reception/status")
@@ -49,6 +85,97 @@ def get_reception_content(entry_id: str) -> dict:
         "answer": entry.answer,
         "content_version": status["content_version"],
         "updated_at": status["updated_at"],
+    }
+
+
+@router.get("/api/conversations/{conversation_id}")
+def conversation_state(
+    conversation_id: str,
+    language: Language = "zh",
+    actor_type: ActorType = "visitor",
+) -> dict:
+    return {
+        "ok": True,
+        "state": conversation_store.context_snapshot(
+            conversation_id,
+            language=language,
+            actor_type=actor_type,
+        ),
+    }
+
+
+@router.post("/api/conversations/{conversation_id}/turn-start")
+def conversation_turn_start(
+    conversation_id: str,
+    request: ConversationTurnStartRequest,
+) -> dict:
+    state = conversation_store.begin_user_turn(
+        conversation_id,
+        language=request.language,
+        actor_type=request.actor_type,
+        text=request.text,
+        source=request.source,
+    )
+    return {"ok": True, "conversation_phase": state.conversation_phase}
+
+
+@router.post("/api/conversations/{conversation_id}/turn-complete")
+def conversation_turn_complete(
+    conversation_id: str,
+    request: ConversationTurnCompleteRequest,
+) -> dict:
+    state = conversation_store.complete_assistant_turn(
+        conversation_id,
+        text=request.text,
+        route=request.route,
+        task_id=request.task_id,
+        expect_reply=request.expect_reply,
+        source=request.source,
+    )
+    return {"ok": True, "conversation_phase": state.conversation_phase}
+
+
+@router.post("/api/conversations/{conversation_id}/task-state")
+def conversation_task_state(
+    conversation_id: str,
+    request: ConversationTaskStateRequest,
+) -> dict:
+    state = conversation_store.set_task_state(
+        conversation_id,
+        task_id=request.task_id,
+        active=request.active,
+        final_text=request.final_text,
+    )
+    return {"ok": True, "conversation_phase": state.conversation_phase}
+
+
+@router.post("/api/conversations/{conversation_id}/standby")
+def conversation_standby(conversation_id: str) -> dict:
+    state = conversation_store.mark_standby(conversation_id)
+    return {"ok": True, "conversation_phase": state.conversation_phase}
+
+
+@router.post("/api/conversations/{conversation_id}/proximity-greeting")
+def proximity_greeting(
+    conversation_id: str,
+    request: ProximityDetectionRequest,
+) -> dict:
+    detection: dict[str, Any] = request.model_dump(
+        exclude={"language", "actor_type"},
+        mode="json",
+    )
+    triggered, greeting, reason, state = conversation_store.proximity_greeting(
+        conversation_id,
+        language=request.language,
+        actor_type=request.actor_type,
+        detection=detection,
+    )
+    return {
+        "ok": True,
+        "triggered": triggered,
+        "greeting": greeting,
+        "reason": reason,
+        "conversation_phase": state.conversation_phase,
     }
 
 
