@@ -12,11 +12,6 @@ from app.models import ToolResult, VerificationResult  # noqa: E402
 import app.presentation_actions as presentation_actions  # noqa: E402
 
 
-class FakeBootstrap:
-    def to_dict(self) -> dict:
-        return {"ok": True, "already_running": True}
-
-
 def main() -> None:
     stale_monitor = {
         "target_monitor_device": r"\\.\DISPLAY2",
@@ -88,14 +83,12 @@ def main() -> None:
         )
 
     originals = {
-        "bootstrap": presentation_actions.ensure_powerpoint_desktop_running,
         "start": presentation_actions.start_configured_slideshow,
         "place": presentation_actions.place_slideshow_on_target_monitor,
         "inspect": presentation_actions.inspect_slideshow_monitor,
         "verify": presentation_actions.verify_presentation_tool_result,
         "status": presentation_actions.get_presentation_status,
     }
-    presentation_actions.ensure_powerpoint_desktop_running = lambda: FakeBootstrap()
     presentation_actions.start_configured_slideshow = fake_start
     presentation_actions.place_slideshow_on_target_monitor = fake_place
     presentation_actions.inspect_slideshow_monitor = fake_inspect
@@ -108,7 +101,6 @@ def main() -> None:
             {},
         )
     finally:
-        presentation_actions.ensure_powerpoint_desktop_running = originals["bootstrap"]
         presentation_actions.start_configured_slideshow = originals["start"]
         presentation_actions.place_slideshow_on_target_monitor = originals["place"]
         presentation_actions.inspect_slideshow_monitor = originals["inspect"]
