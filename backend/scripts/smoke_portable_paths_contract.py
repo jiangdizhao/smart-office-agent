@@ -18,8 +18,15 @@ def forbid(text: str, needle: str, message: str) -> None:
         raise AssertionError(message)
 
 
+def powershell_code_without_comments(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def main() -> None:
     start_text = START_SCRIPT.read_text(encoding="utf-8")
+    start_code = powershell_code_without_comments(start_text)
     config_text = CONFIG_MODULE.read_text(encoding="utf-8")
 
     for old_root in (
@@ -28,7 +35,7 @@ def main() -> None:
         r"D:\smart-office-agent",
     ):
         forbid(
-            start_text,
+            start_code,
             old_root,
             f"Backend startup must not hard-code repository root {old_root}.",
         )
