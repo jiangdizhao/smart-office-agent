@@ -136,13 +136,30 @@ def main() -> None:
         assert verification.ok is True
         assert result.data["summary_prerequisite_generated"] is True
         assert status.data["recipient_key"] == "rico"
+
+        interpreter = (
+            BACKEND_DIR.parent
+            / "ui"
+            / "smart-office-ui"
+            / "src"
+            / "voice"
+            / "realtimeOfficeInterpreter.ts"
+        ).read_text(encoding="utf-8")
+        assert "function resolveRecipientKey" in interpreter
+        assert "function applyResolvedRecipient" in interpreter
+        assert "resolvedRecipientKey" in interpreter
+        assert "GPT Realtime performs semantic action planning only" in interpreter
+        assert "Application code has deterministically resolved" in interpreter
+        assert "recipient_key: recipientKey" in interpreter
+        assert "map the person's name to the exact catalog key" not in interpreter
     finally:
         for name, value in saved.items():
             setattr(office_actions, name, value)
 
     print(
-        "PASS: recipient catalog stays inside the bounded planner context and a missing "
-        "presentation summary is generated before the Outlook draft is created."
+        "PASS: recipient resolution is deterministic outside GPT Realtime, the resolved "
+        "key is injected into Outlook steps, and a missing summary is generated before "
+        "the Outlook draft is created."
     )
 
 
