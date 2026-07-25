@@ -170,6 +170,15 @@ def proximity_greeting(
         actor_type=request.actor_type,
         detection=detection,
     )
+
+    # A proximity greeting is a visual attention cycle, not a user turn. Once the
+    # greeting has been accepted, return the conversation to standby immediately.
+    # The frontend monitor owns the rearm delay and requires a fresh unqualified
+    # interval before another greeting can be requested.
+    if triggered:
+        state.last_proximity_greeting_at = None
+        state = conversation_store.mark_standby(conversation_id)
+
     return {
         "ok": True,
         "triggered": triggered,
