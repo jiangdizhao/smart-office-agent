@@ -59,15 +59,44 @@ type DetectorAdapter = {
 const DEFAULT_BODY_AREA_RATIO = 0.16
 const DEFAULT_BODY_CONFIDENCE = 0.55
 const DEFAULT_FACE_CONFIDENCE = 0.6
+const DEFAULT_REARM_UNQUALIFIED_SECONDS = 5
 const DETECTION_INTERVAL_MS = 220
 const REQUIRED_STABLE_FRAMES = 4
-const REARM_ABSENCE_MS = 5_000
 const ATTEMPT_COOLDOWN_MS = 2_000
 const DEBUG_LOG_INTERVAL_MS = 1_000
 
 function numericEnv(name: string, fallback: number): number {
-  const value = Number(import.meta.env[name])
+  let raw: unknown
+  switch (name) {
+    case 'VITE_PROXIMITY_BODY_AREA_RATIO':
+      raw = import.meta.env.VITE_PROXIMITY_BODY_AREA_RATIO
+      break
+    case 'VITE_PROXIMITY_MIN_BODY_CONFIDENCE':
+      raw = import.meta.env.VITE_PROXIMITY_MIN_BODY_CONFIDENCE
+      break
+    case 'VITE_PROXIMITY_MIN_FACE_CONFIDENCE':
+      raw = import.meta.env.VITE_PROXIMITY_MIN_FACE_CONFIDENCE
+      break
+    case 'VITE_PROXIMITY_REARM_ABSENCE_SECONDS':
+      raw = import.meta.env.VITE_PROXIMITY_REARM_ABSENCE_SECONDS
+      break
+    default:
+      raw = undefined
+  }
+  const value = Number(raw)
   return Number.isFinite(value) ? value : fallback
+}
+
+function rearmUnqualifiedMs(): number {
+  return (
+    Math.max(
+      0,
+      numericEnv(
+        'VITE_PROXIMITY_REARM_ABSENCE_SECONDS',
+        DEFAULT_REARM_UNQUALIFIED_SECONDS,
+      ),
+    ) * 1_000
+  )
 }
 
 function debugEnabled(): boolean {
@@ -135,17 +164,12 @@ async function createMediaPipeAdapter(
   debug: (event: string, data?: Record<string, unknown>) => void,
 ): Promise<DetectorAdapter> {
   const moduleUrl =
-    import.meta.env.VITE_MEDIAPIPE_VISION_MODULE_URL ??
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm'
-  const wasmRoot =
-    import.meta.env.VITE_MEDIAPIPE_VISION_WASM_ROOT ??
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'
+    import.meta.env.VITE_MEDIAPIPE_VISION_MODULE_URL ?? '/__mediapipe/tasks-vision.js'
+  const wasmRoot = import.meta.env.VITE_MEDIAPIPE_VISION_WASM_ROOT ?? '/__mediapipe/wasm'
   const faceModelUrl =
-    import.meta.env.VITE_MEDIAPIPE_FACE_MODEL_URL ??
-    'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite'
+    import.meta.env.VITE_MEDIAPIPE_FACE_MODEL_URL ?? '/__mediapipe/models/face.tflite'
   const objectModelUrl =
-    import.meta.env.VITE_MEDIAPIPE_OBJECT_MODEL_URL ??
-    'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/latest/efficientdet_lite0.tflite'
+    import.meta.env.VITE_MEDIAPIPE_OBJECT_MODEL_URL ?? '/__mediapipe/models/object.tflite'
 
   debug('model-load-start', { moduleUrl, wasmRoot, faceModelUrl, objectModelUrl })
   const vision = (await import(/* @vite-ignore */ moduleUrl)) as MediaPipeVisionModule
@@ -176,7 +200,11 @@ async function createMediaPipeAdapter(
       maxResults: 4,
     }),
   ])
-  debug('detectors-ready', { bodyThreshold, faceThreshold })
+  debug('detectors-ready', {
+    bodyThreshold,
+    faceThreshold,
+    rearmUnqualifiedMs: rearmUnqualifiedMs(),
+  })
 
   return {
     async detect(video, timestamp) {
@@ -204,7 +232,7 @@ export class ProximityFaceMonitor {
   private timer: number | null = null
   private stableFrames = 0
   private armed = true
-  private unqualifiedSince = performance.now()
+  private unqualifiedSince: number | null = null
   private lastAttemptAt = 0
   private lastDebugAt = 0
   private readonly debugMode = debugEnabled()
@@ -312,8 +340,12 @@ export class ProximityFaceMonitor {
   suppressUntilAbsent(): void {
     this.armed = false
     this.stableFrames = 0
-    this.unqualifiedSince = performance.now()
-    this.debug('suppressed-until-absent', undefined, true)
+    this.unqualifiedSince = null
+    this.debug(
+      'suppressed-until-unqualified',
+      { requiredUnqualifiedMs: rearmUnqualifiedMs() },
+      true,
+    )
   }
 
   private schedule(delay = DETECTION_INTERVAL_MS): void {
@@ -336,7 +368,7 @@ export class ProximityFaceMonitor {
         .sort((left, right) => area(right) - area(left))[0]
 
       if (!person) {
-        this.handleUnqualified()
+        this.handleUnqualified('no-person')
         this.onObservation?.(null)
         this.onStatus(
           'watching',
@@ -428,11 +460,11 @@ export class ProximityFaceMonitor {
       })
 
       if (!qualified) {
-        this.handleUnqualified()
+        this.handleUnqualified(reason)
         return
       }
 
-      this.unqualifiedSince = performance.now()
+      this.unqualifiedSince = null
       if (!eligible) {
         this.stableFrames = 0
         return
@@ -452,8 +484,11 @@ export class ProximityFaceMonitor {
         this.stableFrames = 0
         if (triggered) {
           this.armed = false
-          this.unqualifiedSince = now
-          this.onStatus('watching', 'greeting-triggered; waiting for person to leave before rearming')
+          this.unqualifiedSince = null
+          this.onStatus(
+            'watching',
+            'greeting-triggered; waiting for continuously unqualified frames before rearming',
+          )
         } else {
           this.onStatus('watching', 'visual gate passed, but greeting callback/backend returned false')
         }
@@ -467,12 +502,38 @@ export class ProximityFaceMonitor {
     }
   }
 
-  private handleUnqualified(): void {
+  private handleUnqualified(reason: string): void {
     this.stableFrames = 0
+    if (this.armed) {
+      this.unqualifiedSince = null
+      return
+    }
+
     const now = performance.now()
-    if (now - this.unqualifiedSince >= REARM_ABSENCE_MS) {
-      if (!this.armed) this.debug('detector-rearmed', undefined, true)
+    if (this.unqualifiedSince === null) this.unqualifiedSince = now
+
+    const requiredUnqualifiedMs = rearmUnqualifiedMs()
+    const unqualifiedForMs = now - this.unqualifiedSince
+    const remainingMs = Math.max(0, requiredUnqualifiedMs - unqualifiedForMs)
+    this.debug('rearm-waiting-unqualified', {
+      reason,
+      unqualifiedForMs: Math.round(unqualifiedForMs),
+      requiredUnqualifiedMs: Math.round(requiredUnqualifiedMs),
+      remainingMs: Math.round(remainingMs),
+    })
+
+    if (unqualifiedForMs >= requiredUnqualifiedMs) {
       this.armed = true
+      this.unqualifiedSince = null
+      this.debug(
+        'detector-rearmed',
+        {
+          reason,
+          unqualifiedForMs: Math.round(unqualifiedForMs),
+          requiredUnqualifiedMs: Math.round(requiredUnqualifiedMs),
+        },
+        true,
+      )
     }
   }
 }
