@@ -28,14 +28,22 @@ export function useProximityGreeting(
   const [detail, setDetail] = useState('')
   const [lastDetection, setLastDetection] = useState<ProximityDetection | null>(null)
   const controllerRef = useRef(controller)
+  const previousConversationPhaseRef = useRef(controller.conversationPhase)
   const monitorRef = useRef<ProximityFaceMonitor | null>(null)
 
   useEffect(() => {
     controllerRef.current = controller
-    if (controller.conversationPhase !== 'standby') {
+  }, [controller])
+
+  useEffect(() => {
+    const previousPhase = previousConversationPhaseRef.current
+    const nextPhase = controller.conversationPhase
+    previousConversationPhaseRef.current = nextPhase
+
+    if (previousPhase === 'standby' && nextPhase !== 'standby') {
       monitorRef.current?.suppressUntilAbsent()
     }
-  }, [controller])
+  }, [controller.conversationPhase])
 
   useEffect(() => {
     if (!enabled) {
