@@ -22,10 +22,13 @@ from app.realtime_api import router as realtime_router
 from app.reception_api import router as reception_router
 from app.recipient_api import router as recipient_router
 from app.state_store import state_store
+from app.system_status_policy import install_lightweight_system_status_policy
 from app.task_graph import build_task_graph, task_graph_event_data
 from app.task_logger import log_task_record
 from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
+
+install_lightweight_system_status_policy()
 
 app = FastAPI(title="Smart Office Agent Backend", version="0.7.0")
 
@@ -81,7 +84,8 @@ def health_check():
             "compound_presentation_execution": True,
             "compound_task_cancellation": True,
             "system_volume_control": True,
-            "system_brightness_control": True,
+            "system_brightness_control": "deferred_explicit_only",
+            "incidental_brightness_probe": False,
             "presentation_summary_artifacts": True,
             "classic_outlook_draft_creation": True,
             "outlook_draft_approval_gate": True,
