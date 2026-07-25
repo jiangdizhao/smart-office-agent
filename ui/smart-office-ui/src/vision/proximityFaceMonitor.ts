@@ -4,6 +4,8 @@ export type ProximityDetection = {
   face_area_ratio: number
   face_confidence: number
   face_inside_body: boolean
+  confidence: number
+  frontal_score: number
   center_x: number
   center_y: number
   stable_frames: number
@@ -18,32 +20,12 @@ export type ProximityDetectorStatus =
   | 'error'
   | 'stopped'
 
-type BoundingBox = {
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-type Observation = BoundingBox & {
-  confidence: number
-  category: string
-}
-
+type Box = { x: number; y: number; width: number; height: number }
+type Observation = Box & { confidence: number; category: string }
 type MediaPipeDetection = {
-  boundingBox?: {
-    originX?: number
-    originY?: number
-    width?: number
-    height?: number
-  }
-  categories?: Array<{
-    score?: number
-    categoryName?: string
-    displayName?: string
-  }>
+  boundingBox?: { originX?: number; originY?: number; width?: number; height?: number }
+  categories?: Array<{ score?: number; categoryName?: string; displayName?: string }>
 }
-
 type MediaPipeDetector = {
   detectForVideo: (
     video: HTMLVideoElement,
@@ -51,11 +33,8 @@ type MediaPipeDetector = {
   ) => { detections?: MediaPipeDetection[] }
   close?: () => void
 }
-
 type MediaPipeVisionModule = {
-  FilesetResolver: {
-    forVisionTasks: (root: string) => Promise<unknown>
-  }
+  FilesetResolver: { forVisionTasks: (root: string) => Promise<unknown> }
   FaceDetector: {
     createFromOptions: (
       fileset: unknown,
@@ -69,7 +48,6 @@ type MediaPipeVisionModule = {
     ) => Promise<MediaPipeDetector>
   }
 }
-
 type DetectorAdapter = {
   detect: (
     video: HTMLVideoElement,
@@ -95,7 +73,11 @@ function clamp(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
 
-function toObservation(detection: MediaPipeDetection, fallbackCategory: string): Observation {
+function area(box: Box): number {
+  return Math.max(0, box.width) * Math.max(0, box.height)
+}
+
+function toObservation(detection: MediaPipeDetection, fallback: string): Observation {
   const box = detection.boundingBox ?? {}
   const category = detection.categories?.[0]
   return {
@@ -104,43 +86,39 @@ function toObservation(detection: MediaPipeDetection, fallbackCategory: string):
     width: box.width ?? 0,
     height: box.height ?? 0,
     confidence: clamp(category?.score ?? 0),
-    category: category?.categoryName ?? category?.displayName ?? fallbackCategory,
+    category: category?.categoryName ?? category?.displayName ?? fallback,
   }
 }
 
-function isPersonCategory(value: string): boolean {
+function isPerson(value: string): boolean {
   const normalized = value.trim().toLocaleLowerCase()
   return normalized === 'person' || normalized === 'people'
 }
 
-function boxArea(box: BoundingBox): number {
-  return Math.max(0, box.width) * Math.max(0, box.height)
+function faceInsidePerson(face: Box, person: Box): boolean {
+  const centerX = face.x + face.width / 2
+  const centerY = face.y + face.height / 2
+  if (
+    centerX < person.x ||
+    centerX > person.x + person.width ||
+    centerY < person.y ||
+    centerY > person.y + person.height
+  ) {
+    return false
+  }
+  const left = Math.max(face.x, person.x)
+  const top = Math.max(face.y, person.y)
+  const right = Math.min(face.x + face.width, person.x + person.width)
+  const bottom = Math.min(face.y + face.height, person.y + person.height)
+  const overlap = Math.max(0, right - left) * Math.max(0, bottom - top)
+  return overlap / Math.max(1, area(face)) >= 0.7
 }
 
-function pointInsideBox(x: number, y: number, box: BoundingBox): boolean {
-  return x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height
-}
-
-function faceInsidePerson(face: BoundingBox, person: BoundingBox): boolean {
-  const faceCenterX = face.x + face.width / 2
-  const faceCenterY = face.y + face.height / 2
-  if (!pointInsideBox(faceCenterX, faceCenterY, person)) return false
-
-  const intersectionLeft = Math.max(face.x, person.x)
-  const intersectionTop = Math.max(face.y, person.y)
-  const intersectionRight = Math.min(face.x + face.width, person.x + person.width)
-  const intersectionBottom = Math.min(face.y + face.height, person.y + person.height)
-  const intersectionArea =
-    Math.max(0, intersectionRight - intersectionLeft) *
-    Math.max(0, intersectionBottom - intersectionTop)
-  return intersectionArea / Math.max(1, boxArea(face)) >= 0.7
-}
-
-function containedFace(person: Observation, faces: Observation[]): Observation | null {
+function bestContainedFace(person: Observation, faces: Observation[]): Observation | null {
   return (
     faces
       .filter((face) => face.width > 0 && face.height > 0 && faceInsidePerson(face, person))
-      .sort((left, right) => right.confidence - left.confidence || boxArea(right) - boxArea(left))[0] ??
+      .sort((left, right) => right.confidence - left.confidence || area(right) - area(left))[0] ??
     null
   )
 }
@@ -185,13 +163,13 @@ async function createMediaPipeAdapter(): Promise<DetectorAdapter> {
 
   return {
     async detect(video, timestamp) {
-      const objectResult = objectDetector.detectForVideo(video, timestamp)
-      const faceResult = faceDetector.detectForVideo(video, timestamp + 0.001)
+      const objects = objectDetector.detectForVideo(video, timestamp)
+      const faces = faceDetector.detectForVideo(video, timestamp + 0.001)
       return {
-        people: (objectResult.detections ?? [])
+        people: (objects.detections ?? [])
           .map((item) => toObservation(item, 'person'))
-          .filter((item) => isPersonCategory(item.category)),
-        faces: (faceResult.detections ?? []).map((item) => toObservation(item, 'face')),
+          .filter((item) => isPerson(item.category)),
+        faces: (faces.detections ?? []).map((item) => toObservation(item, 'face')),
       }
     },
     close() {
@@ -211,35 +189,24 @@ export class ProximityFaceMonitor {
   private armed = true
   private unqualifiedSince = performance.now()
   private lastAttemptAt = 0
-  private readonly eligible: () => boolean
-  private readonly onQualifiedFace: (detection: ProximityDetection) => Promise<boolean>
-  private readonly onStatus: (status: ProximityDetectorStatus, detail?: string) => void
-  private readonly onObservation?: (detection: ProximityDetection | null) => void
 
   constructor(
-    eligible: () => boolean,
-    onQualifiedFace: (detection: ProximityDetection) => Promise<boolean>,
-    onStatus: (status: ProximityDetectorStatus, detail?: string) => void,
-    onObservation?: (detection: ProximityDetection | null) => void,
-  ) {
-    this.eligible = eligible
-    this.onQualifiedFace = onQualifiedFace
-    this.onStatus = onStatus
-    this.onObservation = onObservation
-  }
+    private readonly eligible: () => boolean,
+    private readonly onQualifiedFace: (detection: ProximityDetection) => Promise<boolean>,
+    private readonly onStatus: (status: ProximityDetectorStatus, detail?: string) => void,
+    private readonly onObservation?: (detection: ProximityDetection | null) => void,
+  ) {}
 
   async start(): Promise<void> {
     if (this.running) return
     this.running = true
     this.onStatus('starting')
-
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         this.onStatus('unsupported', 'getUserMedia is unavailable')
         this.running = false
         return
       }
-
       this.stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'user',
@@ -255,17 +222,15 @@ export class ProximityFaceMonitor {
       this.video.autoplay = true
       this.video.srcObject = this.stream
       await this.video.play()
-
       this.adapter = await createMediaPipeAdapter()
       this.onStatus('watching', 'person-and-face')
       this.schedule(0)
     } catch (error) {
       const name = error instanceof DOMException ? error.name : ''
-      if (name === 'NotAllowedError' || name === 'SecurityError') {
-        this.onStatus('blocked', error instanceof Error ? error.message : String(error))
-      } else {
-        this.onStatus('error', error instanceof Error ? error.message : String(error))
-      }
+      this.onStatus(
+        name === 'NotAllowedError' || name === 'SecurityError' ? 'blocked' : 'error',
+        error instanceof Error ? error.message : String(error),
+      )
       this.stop(false)
     }
   }
@@ -290,66 +255,51 @@ export class ProximityFaceMonitor {
   }
 
   private schedule(delay = DETECTION_INTERVAL_MS): void {
-    if (!this.running) return
-    this.timer = window.setTimeout(() => void this.tick(), delay)
+    if (this.running) this.timer = window.setTimeout(() => void this.tick(), delay)
   }
 
   private async tick(): Promise<void> {
     if (!this.running || !this.video || !this.adapter) return
     try {
       if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
-
       const frameWidth = Math.max(1, this.video.videoWidth)
       const frameHeight = Math.max(1, this.video.videoHeight)
-      const { people, faces } = await this.adapter.detect(this.video, performance.now())
-      const person = people
+      const observations = await this.adapter.detect(this.video, performance.now())
+      const person = observations.people
         .filter((item) => item.width > 0 && item.height > 0)
-        .sort((left, right) => boxArea(right) - boxArea(left))[0]
-
+        .sort((left, right) => area(right) - area(left))[0]
       if (!person) {
         this.handleUnqualified()
         this.onObservation?.(null)
         return
       }
 
-      const face = containedFace(person, faces)
-      const bodyAreaRatio = clamp(boxArea(person) / (frameWidth * frameHeight))
-      const faceAreaRatio = face
-        ? clamp(boxArea(face) / (frameWidth * frameHeight))
-        : 0
-      const centerX = clamp((person.x + person.width / 2) / frameWidth)
-      const centerY = clamp((person.y + person.height / 2) / frameHeight)
+      const face = bestContainedFace(person, observations.faces)
+      const bodyAreaRatio = clamp(area(person) / (frameWidth * frameHeight))
+      const faceAreaRatio = face ? clamp(area(face) / (frameWidth * frameHeight)) : 0
       const detection: ProximityDetection = {
         body_area_ratio: bodyAreaRatio,
         body_confidence: person.confidence,
         face_area_ratio: faceAreaRatio,
         face_confidence: face?.confidence ?? 0,
         face_inside_body: face !== null,
-        center_x: centerX,
-        center_y: centerY,
+        confidence: person.confidence,
+        frontal_score: face !== null ? 1 : 0,
+        center_x: clamp((person.x + person.width / 2) / frameWidth),
+        center_y: clamp((person.y + person.height / 2) / frameHeight),
         stable_frames: this.stableFrames,
         detector: 'mediapipe-person+face',
       }
       this.onObservation?.(detection)
 
-      const bodyAreaThreshold = numericEnv(
-        'VITE_PROXIMITY_BODY_AREA_RATIO',
-        DEFAULT_BODY_AREA_RATIO,
-      )
-      const bodyConfidenceThreshold = numericEnv(
-        'VITE_PROXIMITY_MIN_BODY_CONFIDENCE',
-        DEFAULT_BODY_CONFIDENCE,
-      )
-      const faceConfidenceThreshold = numericEnv(
-        'VITE_PROXIMITY_MIN_FACE_CONFIDENCE',
-        DEFAULT_FACE_CONFIDENCE,
-      )
       const qualified =
-        bodyAreaRatio >= bodyAreaThreshold &&
-        person.confidence >= bodyConfidenceThreshold &&
+        bodyAreaRatio >=
+          numericEnv('VITE_PROXIMITY_BODY_AREA_RATIO', DEFAULT_BODY_AREA_RATIO) &&
+        person.confidence >=
+          numericEnv('VITE_PROXIMITY_MIN_BODY_CONFIDENCE', DEFAULT_BODY_CONFIDENCE) &&
         face !== null &&
-        face.confidence >= faceConfidenceThreshold
-
+        face.confidence >=
+          numericEnv('VITE_PROXIMITY_MIN_FACE_CONFIDENCE', DEFAULT_FACE_CONFIDENCE)
       if (!qualified) {
         this.handleUnqualified()
         return
@@ -360,7 +310,6 @@ export class ProximityFaceMonitor {
         this.stableFrames = 0
         return
       }
-
       this.stableFrames += 1
       detection.stable_frames = this.stableFrames
       const now = performance.now()
@@ -387,8 +336,6 @@ export class ProximityFaceMonitor {
   private handleUnqualified(): void {
     this.stableFrames = 0
     const now = performance.now()
-    if (now - this.unqualifiedSince >= REARM_ABSENCE_MS) {
-      this.armed = true
-    }
+    if (now - this.unqualifiedSince >= REARM_ABSENCE_MS) this.armed = true
   }
 }
