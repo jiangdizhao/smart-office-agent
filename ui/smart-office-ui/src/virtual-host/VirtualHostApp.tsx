@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
-import { useOfficeVoiceController } from '../voice/useOfficeVoiceController'
+import {
+  useOfficeVoiceController,
+  type ConversationPhase,
+} from '../voice/useOfficeVoiceController'
+import { useProximityGreeting } from '../vision/useProximityGreeting'
 import ApprovalOverlay from './ApprovalOverlay'
 import LiveCaption from './LiveCaption'
 import OperatorDrawer from './OperatorDrawer'
@@ -13,8 +17,20 @@ const ACTIVE_TASK_STATUSES = ['created', 'planning', 'running']
 
 function stateText(
   visualState: VirtualHostVisualState,
+  conversationPhase: ConversationPhase,
   language: VoiceLanguage,
 ): string {
+  if (visualState === 'idle') {
+    const idleLabels: Record<ConversationPhase, { zh: string; en: string }> = {
+      standby: { zh: '随时为您服务', en: 'Ready to help' },
+      engaged: { zh: '对话进行中', en: 'Conversation in progress' },
+      awaiting_user: { zh: '等待您继续', en: 'Waiting for you' },
+      task_active: { zh: '正在处理本次对话中的任务', en: 'Working on this conversation' },
+      closing: { zh: '本次服务即将结束', en: 'Closing this conversation' },
+    }
+    return idleLabels[conversationPhase][language]
+  }
+
   const labels: Record<VirtualHostVisualState, { zh: string; en: string }> = {
     idle: { zh: '随时为您服务', en: 'Ready to help' },
     connecting: { zh: '正在连接语音服务', en: 'Connecting voice service' },
@@ -70,6 +86,7 @@ function micButtonText(
 
 export default function VirtualHostApp() {
   const controller = useOfficeVoiceController()
+  const proximity = useProximityGreeting(controller)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [textComposerOpen, setTextComposerOpen] = useState(false)
   const [lastUserText, setLastUserText] = useState('')
@@ -154,7 +171,9 @@ export default function VirtualHostApp() {
     visualState === 'waiting-approval'
 
   return (
-    <main className={`virtual-host-shell state-${visualState}`}>
+    <main
+      className={`virtual-host-shell state-${visualState} conversation-${controller.conversationPhase}`}
+    >
       <div className="virtual-host-background" aria-hidden="true">
         <span className="background-glow glow-one" />
         <span className="background-glow glow-two" />
@@ -212,7 +231,9 @@ export default function VirtualHostApp() {
       <section className="virtual-host-stage">
         <div className="virtual-host-status" aria-live="polite">
           <span className={`status-dot status-${visualState}`} />
-          <span>{stateText(visualState, controller.language)}</span>
+          <span>
+            {stateText(visualState, controller.conversationPhase, controller.language)}
+          </span>
         </div>
 
         <VirtualHostAvatar state={visualState} />
@@ -291,7 +312,11 @@ export default function VirtualHostApp() {
       ) : null}
 
       {drawerOpen ? (
-        <OperatorDrawer controller={controller} onClose={() => setDrawerOpen(false)} />
+        <OperatorDrawer
+          controller={controller}
+          proximity={proximity}
+          onClose={() => setDrawerOpen(false)}
+        />
       ) : null}
     </main>
   )
