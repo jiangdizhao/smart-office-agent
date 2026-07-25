@@ -17,9 +17,7 @@ async function proxyAsset(
   try {
     console.log(`[ProximityDebug] proxy-fetch-start ${url}`)
     const upstream = await fetch(url)
-    if (!upstream.ok) {
-      throw new Error(`HTTP ${upstream.status} ${upstream.statusText}`)
-    }
+    if (!upstream.ok) throw new Error(`HTTP ${upstream.status} ${upstream.statusText}`)
     const body = Buffer.from(await upstream.arrayBuffer())
     res.statusCode = 200
     res.setHeader(
@@ -61,7 +59,6 @@ function proximityTerminalLogger(): Plugin {
           next()
           return
         }
-
         let body = ''
         req.setEncoding('utf8')
         req.on('data', (chunk: string) => {
@@ -96,5 +93,17 @@ function proximityTerminalLogger(): Plugin {
 }
 
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_MEDIAPIPE_VISION_MODULE_URL': JSON.stringify(
+      '/__mediapipe/tasks-vision.js',
+    ),
+    'import.meta.env.VITE_MEDIAPIPE_VISION_WASM_ROOT': JSON.stringify('/__mediapipe/wasm'),
+    'import.meta.env.VITE_MEDIAPIPE_FACE_MODEL_URL': JSON.stringify(
+      '/__mediapipe/models/face.tflite',
+    ),
+    'import.meta.env.VITE_MEDIAPIPE_OBJECT_MODEL_URL': JSON.stringify(
+      '/__mediapipe/models/object.tflite',
+    ),
+  },
   plugins: [react(), proximityTerminalLogger()],
 })
