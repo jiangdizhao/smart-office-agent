@@ -111,7 +111,12 @@ function frontalScore(
     return clamp(aspectScore * 0.58 + centerScore * 0.42)
   }
 
-  const [eyeA, eyeB, nose] = observation.keypoints
+  const eyeA = observation.keypoints[0]
+  const eyeB = observation.keypoints[1]
+  const nose = observation.keypoints[2]
+  if (!eyeA || !eyeB || !nose) {
+    return clamp(aspectScore * 0.58 + centerScore * 0.42)
+  }
   const eyeDistance = Math.hypot(eyeA.x - eyeB.x, eyeA.y - eyeB.y)
   const eyeLevelScore = clamp(
     1 - Math.abs(eyeA.y - eyeB.y) / Math.max(0.001, eyeDistance * 0.45),
@@ -224,13 +229,22 @@ export class ProximityFaceMonitor {
   private armed = true
   private unqualifiedSince = performance.now()
   private lastAttemptAt = 0
+  private readonly eligible: () => boolean
+  private readonly onQualifiedFace: (detection: ProximityDetection) => Promise<boolean>
+  private readonly onStatus: (status: ProximityDetectorStatus, detail?: string) => void
+  private readonly onObservation?: (detection: ProximityDetection | null) => void
 
   constructor(
-    private readonly eligible: () => boolean,
-    private readonly onQualifiedFace: (detection: ProximityDetection) => Promise<boolean>,
-    private readonly onStatus: (status: ProximityDetectorStatus, detail?: string) => void,
-    private readonly onObservation?: (detection: ProximityDetection | null) => void,
-  ) {}
+    eligible: () => boolean,
+    onQualifiedFace: (detection: ProximityDetection) => Promise<boolean>,
+    onStatus: (status: ProximityDetectorStatus, detail?: string) => void,
+    onObservation?: (detection: ProximityDetection | null) => void,
+  ) {
+    this.eligible = eligible
+    this.onQualifiedFace = onQualifiedFace
+    this.onStatus = onStatus
+    this.onObservation = onObservation
+  }
 
   async start(): Promise<void> {
     if (this.running) return
