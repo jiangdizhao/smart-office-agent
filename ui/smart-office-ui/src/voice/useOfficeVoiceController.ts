@@ -8,6 +8,7 @@ export const OFFICE_API_BASE =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 
 const TASK_TIMEOUT = 180_000
+const CONVERSATION_POLL_MS = 3_000
 const CJK = /[\u3400-\u9fff]/
 
 export type OfficeActor = 'visitor' | 'employee' | 'operator'
@@ -28,8 +29,24 @@ export type OfficeTaskStatus =
   | 'failed'
   | 'cancelled'
 export type ApprovalAction = 'approve' | 'skip' | 'cancel'
+export type ConversationPhase =
+  | 'standby'
+  | 'engaged'
+  | 'awaiting_user'
+  | 'task_active'
+  | 'closing'
 
 export type RecipientEntry = { key: string; name: string; email: string }
+
+export type ProximityDetection = {
+  face_area_ratio: number
+  confidence: number
+  frontal_score: number
+  center_x: number
+  center_y: number
+  stable_frames: number
+  detector: string
+}
 
 export type OfficeStatus = {
   presentation_open?: boolean
@@ -118,7 +135,26 @@ type Turn = {
   presentation_status?: OfficeStatus | null
 }
 
+type ConversationEnvelope = {
+  ok?: boolean
+  state?: {
+    conversation_phase?: ConversationPhase
+    active_task_id?: string | null
+    last_visible_answer?: string
+  }
+}
+
+type ProximityGreetingEnvelope = {
+  ok?: boolean
+  triggered?: boolean
+  greeting?: string
+  reason?: string
+  conversation_phase?: ConversationPhase
+}
+
 export type OfficeVoiceController = {
+  conversationId: string
+  conversationPhase: ConversationPhase
   language: VoiceLanguage
   actor: OfficeActor
   asr: OfficeAsrProvider
@@ -155,10 +191,11 @@ export type OfficeVoiceController = {
   submit: (text: string, source?: 'text' | 'voice') => Promise<void>
   approve: (action: ApprovalAction) => Promise<void>
   stopSpeaking: () => Promise<void>
+  triggerProximityGreeting: (detection: ProximityDetection) => Promise<boolean>
   openArtifact: () => void
 }
 
-function conversationId(): string {
+function getConversationId(): string {
   const key = 'smartoffice_voice_conversation_id'
   const existing = sessionStorage.getItem(key)
   if (existing) return existing
@@ -276,10 +313,26 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+async function postJson<T>(url: string, body: unknown): Promise<T | null> {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) return null
+    return (await response.json()) as T
+  } catch {
+    return null
+  }
+}
+
 export function useOfficeVoiceController(): OfficeVoiceController {
   const browser = useRef(new BrowserSpeechCapture())
   const generation = useRef(0)
   const approvalPrompted = useRef<string | null>(null)
+  const conversationIdRef = useRef(getConversationId())
+  const [conversationPhase, setConversationPhase] = useState<ConversationPhase>('standby')
   const [language, setLanguageState] = useState<VoiceLanguage>('zh')
   const [actor, setActorState] = useState<OfficeActor>(
     (localStorage.getItem('smartoffice_actor_type') as OfficeActor) || 'visitor',
@@ -322,9 +375,86 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const query = new URLSearchParams({ language, actor_type: actor })
+        const response = await fetch(
+          `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}?${query}`,
+          { headers: { Accept: 'application/json' } },
+        )
+        if (!response.ok) return
+        const payload = (await response.json()) as ConversationEnvelope
+        const next = payload.state?.conversation_phase
+        if (!cancelled && next) setConversationPhase(next)
+      } catch {
+        // Conversation memory must never block the core Office workflow.
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), CONVERSATION_POLL_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [actor, language])
+
   function fail(errorValue: unknown): void {
     setError(errorText(errorValue))
     setPanel('error')
+  }
+
+  async function beginConversationTurn(
+    text: string,
+    selectedLanguage: VoiceLanguage,
+    source: 'text' | 'voice',
+  ): Promise<void> {
+    setConversationPhase('engaged')
+    await postJson(
+      `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}/turn-start`,
+      {
+        language: selectedLanguage,
+        actor_type: actor,
+        text,
+        source,
+      },
+    )
+  }
+
+  async function completeConversationTurn(
+    text: string,
+    turnRoute: string,
+    activeTaskId: string | null = null,
+  ): Promise<void> {
+    const nextPhase: ConversationPhase = activeTaskId ? 'task_active' : 'awaiting_user'
+    setConversationPhase(nextPhase)
+    await postJson(
+      `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}/turn-complete`,
+      {
+        text,
+        route: turnRoute,
+        task_id: activeTaskId,
+        expect_reply: activeTaskId === null,
+        source: 'virtual_host',
+      },
+    )
+  }
+
+  async function setConversationTaskState(
+    id: string | null,
+    isActive: boolean,
+    finalText = '',
+  ): Promise<void> {
+    setConversationPhase(isActive ? 'task_active' : 'awaiting_user')
+    await postJson(
+      `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}/task-state`,
+      {
+        task_id: id,
+        active: isActive,
+        final_text: finalText,
+      },
+    )
   }
 
   async function speak(text: string, selectedLanguage: VoiceLanguage): Promise<void> {
@@ -361,6 +491,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     setError('')
     setTranscript('')
     setAnswer('')
+    setConversationPhase('engaged')
     try {
       await voiceOutputManager.stop()
       if (asr === 'realtime') await realtimeAgent.beginCapture(language)
@@ -408,6 +539,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
 
       const waiting = waitingStep(task)
       if (task.status === 'waiting_approval' && waiting) {
+        setConversationPhase('task_active')
         const recipientKey = waiting.args?.recipient_key ?? null
         const approvalKey = `${id}:${waiting.index}:${waiting.tool_name ?? 'unknown'}:${recipientKey ?? 'latest'}`
         setPendingApprovalTool(waiting.tool_name ?? null)
@@ -436,6 +568,8 @@ export function useOfficeVoiceController(): OfficeVoiceController {
         setPendingRecipientKey(null)
         const text = finalTaskText(task, selectedLanguage)
         setAnswer(text)
+        await setConversationTaskState(id, false, text)
+        await completeConversationTurn(text, 'office_task_complete')
         if (!realtimeAgent.status().microphoneAttached && task.status !== 'cancelled') {
           await speak(text, selectedLanguage)
         }
@@ -455,6 +589,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     setPanel('processing')
     setError('')
     const selectedLanguage = utteranceLanguage(clean, language)
+    await beginConversationTurn(clean, selectedLanguage, source)
     const decision = await realtimeOfficeInterpreter.interpret(clean, selectedLanguage)
 
     if (decision.kind === 'clarify') {
@@ -464,6 +599,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
           ? '请明确办公操作或选择已配置的邮件联系人。'
           : 'Please clarify the office action or choose a configured email recipient.')
       setAnswer(clarification)
+      await completeConversationTurn(clarification, 'clarification')
       await speak(clarification, selectedLanguage)
       return
     }
@@ -474,6 +610,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
           ? '当前已有办公任务正在执行。请先等待、批准、跳过或取消。'
           : 'An office task is already active. Wait, approve, skip, or cancel it first.'
       setAnswer(activeMessage)
+      await completeConversationTurn(activeMessage, 'active_task_guard', taskId)
       await speak(activeMessage, selectedLanguage)
       return
     }
@@ -484,7 +621,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
-        conversation_id: conversationId(),
+        conversation_id: conversationIdRef.current,
         text: clean,
         language: selectedLanguage,
         input_source: source,
@@ -515,10 +652,13 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     if (payload.route === 'office_planned_task' && payload.task_id && payload.tool_result?.ok) {
       const token = generation.current + 1
       generation.current = token
+      await completeConversationTurn(safe, payload.route, payload.task_id)
+      await setConversationTaskState(payload.task_id, true)
       await speak(safe, selectedLanguage)
       void monitor(payload.task_id, selectedLanguage, token).catch(fail)
       return
     }
+    await completeConversationTurn(safe, payload.route)
     await speak(safe, selectedLanguage)
   }
 
@@ -580,6 +720,41 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     }
   }
 
+  async function triggerProximityGreeting(detection: ProximityDetection): Promise<boolean> {
+    if (
+      conversationPhase !== 'standby' ||
+      panel !== 'idle' ||
+      active ||
+      listening ||
+      runtime.outputActive ||
+      runtime.microphoneAttached
+    ) {
+      return false
+    }
+
+    const payload = await postJson<ProximityGreetingEnvelope>(
+      `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}/proximity-greeting`,
+      {
+        language,
+        actor_type: actor,
+        ...detection,
+      },
+    )
+    if (!payload?.triggered || !payload.greeting) return false
+
+    setConversationPhase(payload.conversation_phase ?? 'awaiting_user')
+    setTranscript('')
+    setAnswer(payload.greeting)
+    setRoute('proximity_greeting')
+    try {
+      await speak(payload.greeting, language)
+      return true
+    } catch (errorValue) {
+      fail(errorValue)
+      return false
+    }
+  }
+
   function setActor(value: OfficeActor): void {
     setActorState(value)
     localStorage.setItem('smartoffice_actor_type', value)
@@ -605,6 +780,8 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   }
 
   return {
+    conversationId: conversationIdRef.current,
+    conversationPhase,
     language,
     actor,
     asr,
@@ -641,6 +818,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     submit,
     approve,
     stopSpeaking,
+    triggerProximityGreeting,
     openArtifact,
   }
 }
