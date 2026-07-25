@@ -43,6 +43,7 @@ jobs:
             backend/scripts/smoke_phase3_outlook_recipient_allowlist_contract.py \
             backend/scripts/smoke_phase3_outlook_summary_dependency_contract.py \
             backend/scripts/smoke_phase4_5_virtual_host_contract.py \
+            backend/scripts/smoke_conversation_proximity_contract.py \
             backend/scripts/smoke_portable_paths_contract.py \
             backend/scripts/setup_gmail_oauth.py
       - name: Run portable path contract
@@ -71,6 +72,8 @@ jobs:
         run: python backend/scripts/smoke_phase3_outlook_summary_dependency_contract.py
       - name: Run Phase 4-5 exhibition contract
         run: python backend/scripts/smoke_phase4_5_virtual_host_contract.py
+      - name: Run conversation and proximity contract
+        run: python backend/scripts/smoke_conversation_proximity_contract.py
 
   frontend-build:
     runs-on: ubuntu-latest
