@@ -22,6 +22,7 @@ pywinauto
 pywin32
 comtypes
 pycaw
+screen-brightness-control==0.27.2
 pyautogui
 pynput
 pyperclip
