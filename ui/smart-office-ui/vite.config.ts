@@ -1,4 +1,4 @@
-import { defineConfig, loadEnv, type Plugin } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const MEDIAPIPE_MODULE_URL =
@@ -92,25 +92,18 @@ function proximityTerminalLogger(): Plugin {
   }
 }
 
-export default defineConfig(({ mode }) => {
-  const loaded = loadEnv(mode, process.cwd(), 'VITE_')
-  const browserEnv = {
-    ...loaded,
-    MODE: mode,
-    DEV: mode !== 'production',
-    PROD: mode === 'production',
-    SSR: false,
-    BASE_URL: '/',
-    VITE_MEDIAPIPE_VISION_MODULE_URL: '/__mediapipe/tasks-vision.js',
-    VITE_MEDIAPIPE_VISION_WASM_ROOT: '/__mediapipe/wasm',
-    VITE_MEDIAPIPE_FACE_MODEL_URL: '/__mediapipe/models/face.tflite',
-    VITE_MEDIAPIPE_OBJECT_MODEL_URL: '/__mediapipe/models/object.tflite',
-  }
-
-  return {
-    define: {
-      'import.meta.env': JSON.stringify(browserEnv),
-    },
-    plugins: [react(), proximityTerminalLogger()],
-  }
+export default defineConfig({
+  define: {
+    'import.meta.env.VITE_MEDIAPIPE_VISION_MODULE_URL': JSON.stringify(
+      '/__mediapipe/tasks-vision.js',
+    ),
+    'import.meta.env.VITE_MEDIAPIPE_VISION_WASM_ROOT': JSON.stringify('/__mediapipe/wasm'),
+    'import.meta.env.VITE_MEDIAPIPE_FACE_MODEL_URL': JSON.stringify(
+      '/__mediapipe/models/face.tflite',
+    ),
+    'import.meta.env.VITE_MEDIAPIPE_OBJECT_MODEL_URL': JSON.stringify(
+      '/__mediapipe/models/object.tflite',
+    ),
+  },
+  plugins: [react(), proximityTerminalLogger()],
 })
