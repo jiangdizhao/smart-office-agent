@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
 from app.models import ToolResult
@@ -22,6 +24,17 @@ DRAFT_ONLY_NOTICE_ZH = "该邮件目前仅保存为 Outlook 草稿，尚未发�
 DRAFT_ONLY_NOTICE_EN = (
     "This message has only been saved as an Outlook draft and has not been sent."
 )
+
+OUTLOOK_OUTBOX_FOLDER = 4
+OUTLOOK_SENT_MAIL_FOLDER = 5
+OUTLOOK_INBOX_FOLDER = 6
+SMART_OFFICE_SEND_TOKEN_DASL = (
+    "http://schemas.microsoft.com/mapi/string/"
+    "{00020329-0000-0000-C000-000000000046}/SmartOfficeSendToken"
+)
+DEFAULT_SENT_ITEMS_WAIT_SECONDS = 45.0
+SENT_ITEMS_POLL_SECONDS = 0.5
+SENT_ITEMS_SCAN_LIMIT = 60
 
 
 def _latest_unsent_verified_draft(
@@ -82,6 +95,10 @@ def _failure(
     recipient: EmailRecipient | None = None,
     requested_recipient_key: str | None = None,
     exc: Exception | None = None,
+    draft_notice_removed: bool = False,
+    send_invoked: bool = False,
+    outbox_observed: bool = False,
+    outlook_window_ensured: bool = False,
 ) -> ToolResult:
     sender = presentation_config.outlook_sender_email.strip()
     details: dict[str, Any] = {
@@ -107,20 +124,24 @@ def _failure(
         ),
         "approval_gated_email_send_enabled": True,
         "unrestricted_email_send_enabled": False,
-        "draft_notice_removed": False,
-        "send_invoked": False,
+        "draft_notice_removed": draft_notice_removed,
+        "send_invoked": send_invoked,
+        "outbox_observed": outbox_observed,
+        "outlook_window_ensured": outlook_window_ensured,
         "sent": False,
     }
     if exc is not None:
         details.update(_exception_details(exc))
 
     LOGGER.error(
-        "OUTLOOK_SEND_FAILURE stage=%s sender=%s recipient_key=%s recipient=%s entry_id=%s error_type=%s error=%s hresult=%s args=%s",
+        "OUTLOOK_SEND_FAILURE stage=%s sender=%s recipient_key=%s recipient=%s entry_id=%s send_invoked=%s outbox_observed=%s error_type=%s error=%s hresult=%s args=%s",
         stage,
         sender,
         details.get("recipient_key"),
         details.get("recipient_email"),
         details.get("source_outlook_draft_entry_id") or "none",
+        send_invoked,
+        outbox_observed,
         details.get("error_type", "none"),
         details.get("error", message),
         details.get("hresult"),
@@ -137,9 +158,141 @@ def _failure(
             "recipient_key": details.get("recipient_key"),
             "approval_gated_email_send_enabled": True,
             "unrestricted_email_send_enabled": False,
+            "draft_notice_removed": draft_notice_removed,
+            "send_invoked": send_invoked,
+            "outbox_observed": outbox_observed,
             "sent": False,
         },
     )
+
+
+def _account_default_folder(namespace: Any, account: Any, folder_kind: int) -> Any:
+    try:
+        delivery_store = account.DeliveryStore
+        if delivery_store is not None:
+            return delivery_store.GetDefaultFolder(folder_kind)
+    except Exception:
+        pass
+    return namespace.GetDefaultFolder(folder_kind)
+
+
+def _ensure_visible_outlook_explorer(outlook: Any, namespace: Any, account: Any) -> tuple[Any | None, bool]:
+    """Keep a user-visible Outlook Explorer open after the draft Inspector closes.
+
+    A draft can be the only visible Outlook window. MailItem.Send() closes that
+    Inspector. If Outlook was started only for COM automation, releasing the last
+    automation reference can then end OUTLOOK.EXE before transport finishes.
+    """
+
+    try:
+        if int(outlook.Explorers.Count) > 0:
+            return None, False
+    except Exception:
+        pass
+
+    inbox = _account_default_folder(namespace, account, OUTLOOK_INBOX_FOLDER)
+    explorer = inbox.GetExplorer()
+    explorer.Display()
+    time.sleep(0.6)
+    return explorer, True
+
+
+def _set_send_token(mail: Any, send_token: str) -> None:
+    mail.PropertyAccessor.SetProperty(SMART_OFFICE_SEND_TOKEN_DASL, send_token)
+    observed = str(
+        mail.PropertyAccessor.GetProperty(SMART_OFFICE_SEND_TOKEN_DASL) or ""
+    )
+    if observed != send_token:
+        raise RuntimeError("Outlook did not persist the Smart Office send correlation token.")
+
+
+def _item_send_token(item: Any) -> str:
+    try:
+        return str(
+            item.PropertyAccessor.GetProperty(SMART_OFFICE_SEND_TOKEN_DASL) or ""
+        )
+    except Exception:
+        return ""
+
+
+def _item_matches_send(
+    item: Any,
+    *,
+    send_token: str,
+    subject: str,
+    recipient_email: str,
+) -> bool:
+    token = _item_send_token(item)
+    if token:
+        if token != send_token:
+            return False
+    else:
+        try:
+            if str(getattr(item, "Subject", "") or "") != subject:
+                return False
+        except Exception:
+            return False
+
+    try:
+        recipients = [address.casefold() for address in _recipient_smtp_addresses(item)]
+    except Exception:
+        return False
+    return recipients == [recipient_email.casefold()]
+
+
+def _find_matching_item(
+    folder: Any,
+    *,
+    send_token: str,
+    subject: str,
+    recipient_email: str,
+) -> dict[str, Any] | None:
+    try:
+        items = folder.Items
+        try:
+            items.Sort("[SentOn]", True)
+        except Exception:
+            try:
+                items.Sort("[CreationTime]", True)
+            except Exception:
+                pass
+        count = min(int(items.Count), SENT_ITEMS_SCAN_LIMIT)
+    except Exception:
+        return None
+
+    for index in range(1, count + 1):
+        item = None
+        try:
+            item = items.Item(index)
+            if not _item_matches_send(
+                item,
+                send_token=send_token,
+                subject=subject,
+                recipient_email=recipient_email,
+            ):
+                continue
+            return {
+                "entry_id": str(getattr(item, "EntryID", "") or ""),
+                "subject": str(getattr(item, "Subject", "") or ""),
+                "sent": bool(getattr(item, "Sent", False)),
+                "send_token": _item_send_token(item),
+            }
+        except Exception:
+            continue
+        finally:
+            item = None
+    return None
+
+
+def _sent_items_wait_seconds() -> float:
+    raw = os.getenv(
+        "SMART_OFFICE_OUTLOOK_SENT_ITEMS_WAIT_SECONDS",
+        str(DEFAULT_SENT_ITEMS_WAIT_SECONDS),
+    )
+    try:
+        return max(10.0, min(120.0, float(raw)))
+    except ValueError:
+        return DEFAULT_SENT_ITEMS_WAIT_SECONDS
 
 
 def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
@@ -237,6 +390,19 @@ def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
             exc=exc,
         )
 
+    outlook = None
+    namespace = None
+    sender_account = None
+    mail = None
+    verified_mail = None
+    sent_folder = None
+    outbox_folder = None
+    outlook_explorer = None
+    send_invoked = False
+    draft_notice_removed = False
+    outbox_observed = False
+    outlook_window_ensured = False
+
     pythoncom.CoInitialize()
     try:
         stage = "outlook_connection"
@@ -245,6 +411,16 @@ def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
 
         stage = "sender_account_lookup"
         sender_account, detected_accounts = _find_sender_account(namespace, sender_email)
+        sent_folder = _account_default_folder(
+            namespace,
+            sender_account,
+            OUTLOOK_SENT_MAIL_FOLDER,
+        )
+        outbox_folder = _account_default_folder(
+            namespace,
+            sender_account,
+            OUTLOOK_OUTBOX_FOLDER,
+        )
 
         stage = "draft_reopen"
         entry_id = draft["entry_id"]
@@ -257,8 +433,6 @@ def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
         if bool(getattr(mail, "Sent", False)):
             raise RuntimeError("The selected Outlook item has already been sent.")
 
-        draft_parent = getattr(mail, "Parent", None)
-        draft_parent_entry_id = str(getattr(draft_parent, "EntryID", "") or "")
         observed_subject = str(getattr(mail, "Subject", "") or "")
         observed_recipients = _recipient_smtp_addresses(mail)
         normalized_recipients = [address.casefold() for address in observed_recipients]
@@ -297,73 +471,89 @@ def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
         verified_recipients = _recipient_smtp_addresses(verified_mail)
         if [address.casefold() for address in verified_recipients] != normalized_recipients:
             raise RuntimeError("The recipient list changed while preparing the approved send.")
+        draft_notice_removed = True
+
+        stage = "send_correlation"
+        send_token = uuid.uuid4().hex
+        _set_send_token(verified_mail, send_token)
+        try:
+            verified_mail.SaveSentMessageFolder = sent_folder
+        except Exception:
+            LOGGER.warning(
+                "Outlook did not accept an explicit SaveSentMessageFolder; the account default will be used.",
+                exc_info=True,
+            )
+        verified_mail.Save()
+
+        stage = "outlook_window_persistence"
+        outlook_explorer, outlook_window_ensured = _ensure_visible_outlook_explorer(
+            outlook,
+            namespace,
+            sender_account,
+        )
 
         stage = "send_invocation"
         verified_mail.SendUsingAccount = sender_account
         verified_mail.Send()
+        send_invoked = True
 
-        stage = "send_acceptance_verification"
-        send_accepted = False
-        acceptance_evidence = ""
-        for _ in range(20):
-            try:
-                observed_item = (
-                    namespace.GetItemFromID(entry_id, store_id)
-                    if store_id
-                    else namespace.GetItemFromID(entry_id)
-                )
-            except Exception:
-                send_accepted = True
-                acceptance_evidence = "original_entry_id_unavailable"
+        stage = "sent_items_verification"
+        sent_match: dict[str, Any] | None = None
+        deadline = time.monotonic() + _sent_items_wait_seconds()
+        while time.monotonic() < deadline:
+            sent_match = _find_matching_item(
+                sent_folder,
+                send_token=send_token,
+                subject=observed_subject,
+                recipient_email=recipient_email,
+            )
+            if sent_match is not None:
                 break
 
-            try:
-                if bool(getattr(observed_item, "Sent", False)):
-                    send_accepted = True
-                    acceptance_evidence = "sent_property_true"
-                    break
-            except Exception:
-                pass
+            outbox_match = _find_matching_item(
+                outbox_folder,
+                send_token=send_token,
+                subject=observed_subject,
+                recipient_email=recipient_email,
+            )
+            if outbox_match is not None:
+                outbox_observed = True
+            time.sleep(SENT_ITEMS_POLL_SECONDS)
 
-            try:
-                observed_parent = getattr(observed_item, "Parent", None)
-                observed_parent_entry_id = str(
-                    getattr(observed_parent, "EntryID", "") or ""
+        if sent_match is None:
+            if outbox_observed:
+                raise RuntimeError(
+                    "Outlook queued the approved message in Outbox but did not move it to "
+                    "Sent Items before the verification timeout. Outlook has been kept open; "
+                    "check network connectivity and the Outlook Outbox before retrying."
                 )
-                if (
-                    draft_parent_entry_id
-                    and observed_parent_entry_id
-                    and observed_parent_entry_id != draft_parent_entry_id
-                ):
-                    send_accepted = True
-                    acceptance_evidence = "moved_out_of_original_drafts_folder"
-                    break
-            except Exception:
-                pass
-            time.sleep(0.25)
-
-        if not send_accepted:
             raise RuntimeError(
-                "Outlook Send() returned, but the item still appeared as an unsent item in "
-                "the original Drafts folder."
+                "Outlook Send() returned, but no matching message appeared in the sender "
+                "account's Sent Items before the verification timeout. Outlook has been kept "
+                "open; inspect Outbox and account connectivity before retrying."
             )
 
+        acceptance_evidence = "matching_item_in_sender_sent_items"
+        sent_item_entry_id = str(sent_match.get("entry_id") or "")
         LOGGER.info(
-            "OUTLOOK_SEND_SUCCESS sender=%s recipient_key=%s recipient=%s entry_id=%s connection_mode=%s detected_accounts=%s notice_removed=%s acceptance_evidence=%s",
+            "OUTLOOK_SEND_SUCCESS sender=%s recipient_key=%s recipient=%s source_entry_id=%s sent_entry_id=%s connection_mode=%s detected_accounts=%s notice_removed=%s acceptance_evidence=%s outbox_observed=%s outlook_window_ensured=%s",
             sender_email,
             recipient.key,
             recipient_email,
             entry_id,
+            sent_item_entry_id or "none",
             connection_mode,
             detected_accounts,
             True,
             acceptance_evidence,
+            outbox_observed,
+            outlook_window_ensured,
         )
         return ToolResult(
             tool_name="outlook_send_approved_draft",
             ok=True,
             message=(
-                f"Outlook accepted the approved email send from {sender_email} to "
+                f"Outlook confirmed the approved email in Sent Items from {sender_email} to "
                 f"{recipient.name} <{recipient_email}>."
             ),
             expected_process_names=["OUTLOOK.EXE"],
@@ -376,6 +566,7 @@ def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
                 },
                 "source_outlook_draft_entry_id": entry_id,
                 "source_outlook_draft_store_id": store_id,
+                "sent_item_entry_id": sent_item_entry_id or None,
                 "sender_account_email": sender_email,
                 "recipient_key": recipient.key,
                 "recipient_name": recipient.name,
@@ -389,17 +580,22 @@ def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
                 "draft_notice_removed": True,
                 "send_invoked": True,
                 "send_acceptance_evidence": acceptance_evidence,
+                "outbox_observed": outbox_observed,
+                "outlook_window_ensured": outlook_window_ensured,
                 "sent": True,
                 "delivery_confirmed": False,
             },
             raw={
                 "source_outlook_draft_entry_id": entry_id,
+                "sent_item_entry_id": sent_item_entry_id or None,
                 "recipient_key": recipient.key,
                 "approval_gated_email_send_enabled": True,
                 "unrestricted_email_send_enabled": False,
                 "draft_notice_removed": True,
                 "send_invoked": True,
                 "send_acceptance_evidence": acceptance_evidence,
+                "outbox_observed": outbox_observed,
+                "outlook_window_ensured": outlook_window_ensured,
                 "sent": True,
                 "delivery_confirmed": False,
             },
@@ -412,6 +608,21 @@ def send_latest_outlook_draft(recipient_key: str | None = None) -> ToolResult:
             recipient=recipient,
             requested_recipient_key=recipient.key,
             exc=exc,
+            draft_notice_removed=draft_notice_removed,
+            send_invoked=send_invoked,
+            outbox_observed=outbox_observed,
+            outlook_window_ensured=outlook_window_ensured,
         )
     finally:
+        # Release COM proxies before ending the apartment. The visible Explorer window,
+        # not a leaked Python reference, keeps Outlook running for transport completion.
+        verified_mail = None
+        mail = None
+        sender_account = None
+        sent_folder = None
+        outbox_folder = None
+        namespace = None
+        outlook_explorer = None
+        outlook = None
+        gc.collect()
         pythoncom.CoUninitialize()
