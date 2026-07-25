@@ -93,6 +93,7 @@ function proximityTerminalLogger(): Plugin {
 }
 
 export default defineConfig({
+  envPrefix: ['VITE_', 'enable_'],
   define: {
     'import.meta.env.VITE_MEDIAPIPE_VISION_MODULE_URL': JSON.stringify(
       '/__mediapipe/tasks-vision.js',
