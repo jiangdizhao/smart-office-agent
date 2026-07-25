@@ -187,7 +187,9 @@ def main() -> None:
     ).read_text(encoding="utf-8")
     assert "recipient_key" in interpreter
     assert "recipient_catalog" in interpreter
-    assert "Never put an email address in this field" in interpreter
+    assert "function resolveRecipientKey" in interpreter
+    assert "function applyResolvedRecipient" in interpreter
+    assert "Application code and the Backend resolve and validate recipients deterministically" in interpreter
     assert "do not pass the raw email" in interpreter
 
     send_source = (BACKEND_DIR / "app" / "outlook_send.py").read_text(encoding="utf-8")
@@ -215,9 +217,10 @@ def main() -> None:
 
     print(
         "PASS: Outlook recipients are loaded from a local editable JSON file created "
-        "from a tracked template, hot-reloaded without Backend restart, reported safely, "
-        "rejected strictly during actions, and sending remains second-approval gated while "
-        "Outlook stays open until a correlated item is observed in Sent Items."
+        "from a tracked template, hot-reloaded without Backend restart, resolved "
+        "deterministically outside GPT Realtime, rejected strictly during actions, and "
+        "sending remains second-approval gated while Outlook stays open until a correlated "
+        "item is observed in Sent Items."
     )
 
 
