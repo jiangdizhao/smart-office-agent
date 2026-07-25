@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from app.powerpoint_rot_connection import connect_powerpoint_application
 from app.presentation_config import presentation_config
 
 _SLIDESHOW_WINDOW_TIMEOUT_SECONDS = 6.0
@@ -110,18 +111,27 @@ def _enumerate_powerpoint_slideshow_hwnd(
 
 
 def _active_slideshow_hwnd() -> int | None:
+    presentation_name = presentation_config.presentation_path.name
+
+    # The slide-show window has strong class/title markers. Probe Windows first so
+    # monitor placement does not depend on PowerPoint registering in the COM ROT.
+    strict_hwnd = _enumerate_powerpoint_slideshow_hwnd(
+        process_id=None,
+        main_hwnd=None,
+        presentation_name=presentation_name,
+    )
+    if strict_hwnd is not None:
+        return strict_hwnd
+
     try:
-        import pythoncom
-        import win32com.client
         import win32process
     except ImportError:
         return None
 
-    pythoncom.CoInitialize()
-    try:
-        try:
-            application = win32com.client.GetActiveObject("PowerPoint.Application")
-        except Exception:
+    # If strict window enumeration is not yet possible, reconnect to the existing
+    # PowerPoint process. This path never launches PowerPoint for a monitor query.
+    with connect_powerpoint_application(create=False) as application:
+        if application is None:
             return None
         try:
             windows = application.SlideShowWindows
@@ -158,15 +168,11 @@ def _active_slideshow_hwnd() -> int | None:
 
         # Application.HWND is absent on some Office late-bound COM builds. Repeat
         # with strict slide-show class/title markers and no process-id dependency.
-        if process_id is not None:
-            return _enumerate_powerpoint_slideshow_hwnd(
-                process_id=None,
-                main_hwnd=main_hwnd,
-                presentation_name=presentation_name,
-            )
-        return None
-    finally:
-        pythoncom.CoUninitialize()
+        return _enumerate_powerpoint_slideshow_hwnd(
+            process_id=None,
+            main_hwnd=main_hwnd,
+            presentation_name=presentation_name,
+        )
 
 
 def _wait_for_slideshow_hwnd(timeout_seconds: float) -> tuple[int | None, int]:
