@@ -65,7 +65,7 @@ def health_check():
         "status": "ok",
         "service": "smart-office-agent-backend",
         "version": "0.8.0",
-        "phase": "m3a_fusion_conversation_memory_proximity_greeting",
+        "phase": "m3a_fusion_phase_3_gate_3_5",
         "capabilities": {
             "task_runtime": True,
             "realtime_voice_api": True,
