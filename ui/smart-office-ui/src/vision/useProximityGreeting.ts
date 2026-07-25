@@ -66,20 +66,25 @@ export function useProximityGreeting(
           outputActive: current.runtime.outputActive,
           microphoneAttached: current.runtime.microphoneAttached,
         }
+        const phaseAllowsGreeting =
+          eligibility.conversationPhase === 'standby' ||
+          eligibility.conversationPhase === 'awaiting_user'
         const eligible =
-          eligibility.conversationPhase === 'standby' &&
+          phaseAllowsGreeting &&
           eligibility.panel === 'idle' &&
           !eligibility.active &&
           !eligibility.listening &&
           !eligibility.outputActive
 
-        const signature = JSON.stringify({ ...eligibility, eligible })
+        const signature = JSON.stringify({ ...eligibility, phaseAllowsGreeting, eligible })
         if (signature !== lastEligibilitySignatureRef.current) {
           lastEligibilitySignatureRef.current = signature
           console.info('[ProximityDebug] frontend-eligibility', {
             ...eligibility,
+            phaseAllowsGreeting,
             eligible,
-            note: 'microphoneAttached is diagnostic only and no longer blocks proximity greeting',
+            note:
+              'standby and awaiting_user are allowed; microphoneAttached is diagnostic only',
           })
         }
         return eligible
