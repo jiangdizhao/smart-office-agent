@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,8 @@ from app.tools.system_controller import (
     set_system_volume,
 )
 
+logger = logging.getLogger(__name__)
+
 OFFICE_TOOL_NAMES: set[str] = {
     *PRESENTATION_TOOL_NAMES,
     "system_get_status",
@@ -33,6 +37,50 @@ OFFICE_TOOL_NAMES: set[str] = {
     "outlook_create_summary_draft",
     "outlook_send_approved_draft",
 }
+
+
+def _log_office_failure(
+    *,
+    name: str,
+    arguments: dict[str, Any],
+    internal_task_id: Any,
+    result: ToolResult,
+    verification: VerificationResult,
+    status: ToolResult,
+) -> None:
+    """Print complete failed-action diagnostics to the Backend terminal.
+
+    Office/device providers often return useful nested failure details instead of
+    raising an exception. Logging the structured result here ensures that failures
+    such as unsupported DDC/CI, missing WMI instances, provider import errors, and
+    observed-state mismatches are visible in the Uvicorn terminal.
+    """
+
+    if result.ok and verification.ok:
+        return
+
+    payload = {
+        "event": "office_action_failed",
+        "tool": name,
+        "task_id": str(internal_task_id) if internal_task_id else None,
+        "arguments": arguments,
+        "tool_result": {
+            "ok": result.ok,
+            "message": result.message,
+            "data": result.data,
+            "raw": result.raw,
+        },
+        "verification_result": {
+            "ok": verification.ok,
+            "message": verification.message,
+            "raw": verification.raw,
+        },
+        "observed_status": status.data,
+    }
+    logger.error(
+        "OFFICE ACTION FAILURE\n%s",
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+    )
 
 
 def _verification(
@@ -255,7 +303,16 @@ def execute_office_tool_call(
     internal_task_id = clean.pop("_task_id", None)
 
     if name in PRESENTATION_TOOL_NAMES:
-        return execute_presentation_tool_call(name, clean)
+        result, verification, status = execute_presentation_tool_call(name, clean)
+        _log_office_failure(
+            name=name,
+            arguments=clean,
+            internal_task_id=internal_task_id,
+            result=result,
+            verification=verification,
+            status=status,
+        )
+        return result, verification, status
 
     if name not in OFFICE_TOOL_NAMES:
         result = ToolResult(
@@ -270,7 +327,16 @@ def execute_office_tool_call(
             raw={"validation_error": f"Unregistered office capability: {name}"},
         )
         status = get_office_status()
-        return result, _verify_non_presentation(result, status), status
+        verification = _verify_non_presentation(result, status)
+        _log_office_failure(
+            name=name,
+            arguments=clean,
+            internal_task_id=internal_task_id,
+            result=result,
+            verification=verification,
+            status=status,
+        )
+        return result, verification, status
 
     if name == "system_get_status":
         result = get_system_control_status()
@@ -348,4 +414,12 @@ def execute_office_tool_call(
     )
     status = status.model_copy(update={"data": status_data})
     verification = _verify_non_presentation(result, status)
+    _log_office_failure(
+        name=name,
+        arguments=clean,
+        internal_task_id=internal_task_id,
+        result=result,
+        verification=verification,
+        status=status,
+    )
     return result, verification, status
