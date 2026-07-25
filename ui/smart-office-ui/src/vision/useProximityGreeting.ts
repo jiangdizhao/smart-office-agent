@@ -8,6 +8,13 @@ import {
 
 const ENABLED_KEY = 'smartoffice_proximity_greeting_enabled'
 
+function greetFeatureEnabled(): boolean {
+  const configured = String(import.meta.env.enable_greet ?? 'true').trim().toLowerCase()
+  return !['false', '0', 'off', 'no'].includes(configured)
+}
+
+const GREET_FEATURE_ENABLED = greetFeatureEnabled()
+
 export type ProximityGreetingController = {
   enabled: boolean
   status: ProximityDetectorStatus | 'disabled'
@@ -20,12 +27,14 @@ export function useProximityGreeting(
   controller: OfficeVoiceController,
 ): ProximityGreetingController {
   const [enabled, setEnabledState] = useState(
-    () => localStorage.getItem(ENABLED_KEY) !== 'false',
+    () => GREET_FEATURE_ENABLED && localStorage.getItem(ENABLED_KEY) !== 'false',
   )
   const [status, setStatus] = useState<ProximityDetectorStatus | 'disabled'>(
     enabled ? 'starting' : 'disabled',
   )
-  const [detail, setDetail] = useState('')
+  const [detail, setDetail] = useState(
+    GREET_FEATURE_ENABLED ? '' : 'disabled by enable_greet=false',
+  )
   const [lastDetection, setLastDetection] = useState<ProximityDetection | null>(null)
   const controllerRef = useRef(controller)
   const previousConversationPhaseRef = useRef(controller.conversationPhase)
@@ -37,6 +46,8 @@ export function useProximityGreeting(
   }, [controller])
 
   useEffect(() => {
+    if (!GREET_FEATURE_ENABLED) return
+
     const previousPhase = previousConversationPhaseRef.current
     const nextPhase = controller.conversationPhase
     previousConversationPhaseRef.current = nextPhase
@@ -47,9 +58,12 @@ export function useProximityGreeting(
   }, [controller.conversationPhase])
 
   useEffect(() => {
-    if (!enabled) {
+    if (!GREET_FEATURE_ENABLED || !enabled) {
       setStatus('disabled')
-      setDetail('')
+      setDetail(
+        GREET_FEATURE_ENABLED ? '' : 'disabled by enable_greet=false; camera and detectors not started',
+      )
+      setLastDetection(null)
       monitorRef.current?.stop()
       monitorRef.current = null
       return
@@ -106,12 +120,17 @@ export function useProximityGreeting(
   }, [enabled])
 
   function setEnabled(next: boolean): void {
+    if (!GREET_FEATURE_ENABLED) {
+      localStorage.setItem(ENABLED_KEY, 'false')
+      setEnabledState(false)
+      return
+    }
     localStorage.setItem(ENABLED_KEY, String(next))
     setEnabledState(next)
   }
 
   return {
-    enabled,
+    enabled: GREET_FEATURE_ENABLED && enabled,
     status,
     detail,
     lastDetection,
