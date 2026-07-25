@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from app.models import ToolResult, VerificationResult
-from app.office_artifacts import generate_presentation_summary, office_artifact_status
+from app.office_artifacts import (
+    generate_presentation_summary,
+    latest_summary_path,
+    office_artifact_status,
+)
 from app.outlook_drafts import create_outlook_summary_draft, outlook_draft_status
 from app.outlook_send import send_latest_outlook_draft
 from app.presentation_actions import (
@@ -118,14 +122,12 @@ def get_office_status() -> ToolResult:
     system = get_system_control_status()
     artifacts = office_artifact_status()
     outlook = outlook_draft_status()
+
+    # Put the small, authoritative recipient catalog first. The Realtime planner
+    # intentionally receives a bounded JSON prefix; verbose presentation/device
+    # diagnostics must never push allowlisted contacts such as Rico beyond that
+    # prefix and cause a false "recipient not found" clarification.
     data = {
-        **dict(presentation.data),
-        "presentation": dict(presentation.data),
-        "system": dict(system.data),
-        "artifacts": artifacts,
-        "outlook": outlook,
-        "volume_percent": system.data.get("volume_percent"),
-        "brightness_percent": system.data.get("brightness_percent"),
         "outlook_draft_configured": outlook.get("outlook_draft_configured"),
         "sender_account_email": outlook.get("sender_account_email"),
         "default_recipient_key": outlook.get("default_recipient_key"),
@@ -137,6 +139,13 @@ def get_office_status() -> ToolResult:
         "email_send_enabled": False,
         "approval_gated_email_send_enabled": True,
         "unrestricted_email_send_enabled": False,
+        **dict(presentation.data),
+        "volume_percent": system.data.get("volume_percent"),
+        "brightness_percent": system.data.get("brightness_percent"),
+        "presentation": dict(presentation.data),
+        "system": dict(system.data),
+        "artifacts": artifacts,
+        "outlook": outlook,
     }
     return ToolResult(
         tool_name="office_get_status",
@@ -295,6 +304,92 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
     )
 
 
+def _task_snapshot(internal_task_id: Any) -> dict[str, Any] | None:
+    if not internal_task_id:
+        return None
+    task = state_store.get_task(str(internal_task_id))
+    return task.model_dump(mode="json") if task is not None else None
+
+
+def _draft_with_summary_prerequisite(
+    *,
+    clean: dict[str, Any],
+    internal_task_id: Any,
+) -> ToolResult:
+    """Create a summary draft without allowing a missing artifact to break the flow.
+
+    GPT Realtime should normally emit an explicit summary step before the draft.
+    The Backend nevertheless owns the dependency invariant: on a clean installation
+    with no summary artifact yet, it generates the current presentation summary
+    before invoking Outlook. This prevents a one-step model plan from failing at
+    ``summary_lookup`` and keeps recipient lookup separate from artifact lookup.
+    """
+
+    language = "en" if clean.get("language") == "en" else "zh"
+    summary_result: ToolResult | None = None
+    current_summary = latest_summary_path()
+    if current_summary is None or not current_summary.is_file():
+        summary_result = generate_presentation_summary(
+            language=language,
+            task_snapshot=_task_snapshot(internal_task_id),
+        )
+        if not summary_result.ok:
+            return ToolResult(
+                tool_name="outlook_create_summary_draft",
+                ok=False,
+                message=(
+                    "Outlook draft prerequisite failed because the current presentation "
+                    f"summary could not be generated: {summary_result.message}"
+                ),
+                artifacts=list(summary_result.artifacts),
+                data={
+                    "execution_mode": "failed_prerequisite",
+                    "requested_state": {
+                        "outlook_draft_created": True,
+                        "recipient_key": clean.get("recipient_key"),
+                    },
+                    "failure_stage": "summary_generation_prerequisite",
+                    "summary_prerequisite_generated": False,
+                    "summary_prerequisite_result": summary_result.model_dump(mode="json"),
+                    "recipient_key": clean.get("recipient_key"),
+                    "email_send_enabled": False,
+                    "approval_gated_email_send_enabled": True,
+                    "unrestricted_email_send_enabled": False,
+                    "sent": False,
+                },
+                raw={
+                    "failure_stage": "summary_generation_prerequisite",
+                    "summary_prerequisite_generated": False,
+                },
+            )
+
+    result = create_outlook_summary_draft(
+        language=language,
+        subject=(str(clean.get("subject")) if clean.get("subject") else None),
+        recipient_key=(
+            str(clean.get("recipient_key")) if clean.get("recipient_key") else None
+        ),
+        display=True,
+    )
+    if summary_result is None:
+        return result
+
+    return result.model_copy(
+        update={
+            "artifacts": list(dict.fromkeys([*summary_result.artifacts, *result.artifacts])),
+            "data": {
+                **result.data,
+                "summary_prerequisite_generated": True,
+                "summary_prerequisite_result": summary_result.model_dump(mode="json"),
+            },
+            "raw": {
+                **result.raw,
+                "summary_prerequisite_generated": True,
+            },
+        }
+    )
+
+
 def execute_office_tool_call(
     name: str,
     arguments: dict[str, Any] | None = None,
@@ -349,23 +444,14 @@ def execute_office_tool_call(
     elif name == "system_adjust_brightness":
         result = adjust_system_brightness(int(clean["delta_percent"]))
     elif name == "office_generate_presentation_summary":
-        task_snapshot = None
-        if internal_task_id:
-            task = state_store.get_task(str(internal_task_id))
-            if task is not None:
-                task_snapshot = task.model_dump(mode="json")
         result = generate_presentation_summary(
             language="en" if clean.get("language") == "en" else "zh",
-            task_snapshot=task_snapshot,
+            task_snapshot=_task_snapshot(internal_task_id),
         )
     elif name == "outlook_create_summary_draft":
-        result = create_outlook_summary_draft(
-            language="en" if clean.get("language") == "en" else "zh",
-            subject=(str(clean.get("subject")) if clean.get("subject") else None),
-            recipient_key=(
-                str(clean.get("recipient_key")) if clean.get("recipient_key") else None
-            ),
-            display=True,
+        result = _draft_with_summary_prerequisite(
+            clean=clean,
+            internal_task_id=internal_task_id,
         )
     else:
         result = send_latest_outlook_draft(
@@ -409,6 +495,7 @@ def execute_office_tool_call(
                 "subject",
                 "email_send_enabled",
                 "sent",
+                "summary_prerequisite_generated",
             }
         }
     )
