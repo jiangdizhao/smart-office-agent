@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.models import ToolResult, VerificationResult
+from app.powerpoint_rot_connection import install_powerpoint_rot_fallback
+
+install_powerpoint_rot_fallback()
+
 from app.tools.presentation_controller import get_presentation_status
 
 
