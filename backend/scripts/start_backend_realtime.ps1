@@ -98,6 +98,61 @@ function Resolve-CondaEnvironmentPython {
     throw "Could not automatically locate Python 3.11+ in the '$EnvironmentName' Conda environment.`nChecked:`n  - $checked`nCreate it with: conda create -n $EnvironmentName python=3.11 -y"
 }
 
+function Resolve-PortableProjectPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvironmentVariable,
+        [Parameter(Mandatory = $true)][string]$DefaultRelativePath,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [switch]$CreateDirectory,
+        [switch]$RequireFile
+    )
+
+    $configured = [Environment]::GetEnvironmentVariable($EnvironmentVariable, "Process")
+    $usedDefault = [string]::IsNullOrWhiteSpace($configured)
+
+    if ($usedDefault) {
+        $candidate = Join-Path $RepositoryRoot $DefaultRelativePath
+    }
+    elseif ([System.IO.Path]::IsPathRooted($configured)) {
+        $candidate = $configured
+
+        # A persistent environment variable from another computer can still point to
+        # F:\smart-office-agent or another unavailable drive. In that case, fall back
+        # to this checkout instead of making every new machine recreate path variables.
+        $pathRoot = [System.IO.Path]::GetPathRoot($candidate)
+        if ($pathRoot -and -not (Test-Path -LiteralPath $pathRoot)) {
+            Write-Warning "$EnvironmentVariable points to unavailable root '$pathRoot'. Using this repository checkout instead."
+            $candidate = Join-Path $RepositoryRoot $DefaultRelativePath
+            $usedDefault = $true
+        }
+    }
+    else {
+        $candidate = Join-Path $RepositoryRoot $configured
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($candidate)
+
+    if ($CreateDirectory) {
+        New-Item -ItemType Directory -Path $fullPath -Force | Out-Null
+    }
+    if ($RequireFile -and -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        if (-not $usedDefault) {
+            $portableFallback = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot $DefaultRelativePath))
+            if (Test-Path -LiteralPath $portableFallback -PathType Leaf) {
+                Write-Warning "$EnvironmentVariable points to a missing file: $fullPath. Using repository file: $portableFallback"
+                return $portableFallback
+            }
+        }
+        throw "Required Smart Office file was not found: $fullPath"
+    }
+
+    return $fullPath
+}
+
+$backendDirectory = Split-Path -Parent $PSScriptRoot
+$repoRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $backendDirectory)).Path
+$env:SMART_OFFICE_PROJECT_ROOT = $repoRoot
+
 $resolvedPython = Resolve-CondaEnvironmentPython -EnvironmentName $CondaEnvName
 
 $dependencyProbe = & $resolvedPython -c "import fastapi, sse_starlette, uvicorn, pythoncom, win32com.client; print('ok')" 2>&1
@@ -105,15 +160,18 @@ if ($LASTEXITCODE -ne 0) {
     throw "The automatically selected '$CondaEnvName' Python is missing backend or Office COM dependencies.`nRun once from the repository root:`n  conda run -n $CondaEnvName python -m pip install -r backend/requirements-smartoffice.txt`nDetails: $dependencyProbe"
 }
 
-$backendDirectory = Split-Path -Parent $PSScriptRoot
-$repoRoot = Split-Path -Parent $backendDirectory
+$env:SMART_OFFICE_DEMO_PPT = Resolve-PortableProjectPath `
+    -EnvironmentVariable "SMART_OFFICE_DEMO_PPT" `
+    -DefaultRelativePath "demo_files\Loss.pptx" `
+    -RepositoryRoot $repoRoot `
+    -RequireFile
 
-if (-not $env:SMART_OFFICE_DEMO_PPT) {
-    $env:SMART_OFFICE_DEMO_PPT = Join-Path $repoRoot "demo_files\Loss.pptx"
-}
-if (-not $env:SMART_OFFICE_OUTPUT_DIR) {
-    $env:SMART_OFFICE_OUTPUT_DIR = Join-Path $repoRoot "demo_files\LOG"
-}
+$env:SMART_OFFICE_OUTPUT_DIR = Resolve-PortableProjectPath `
+    -EnvironmentVariable "SMART_OFFICE_OUTPUT_DIR" `
+    -DefaultRelativePath "demo_files\LOG" `
+    -RepositoryRoot $repoRoot `
+    -CreateDirectory
+
 if (-not $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE) {
     $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE = "\\.\DISPLAY2"
 }
@@ -125,16 +183,20 @@ if (-not $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL) {
 }
 
 $usingDefaultRecipientFile = -not $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
-if ($usingDefaultRecipientFile) {
-    $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = Join-Path $repoRoot "config\email_recipients.json"
-    $recipientTemplate = Join-Path $repoRoot "config\email_recipients.example.json"
-    if (-not (Test-Path -LiteralPath $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE)) {
-        if (-not (Test-Path -LiteralPath $recipientTemplate)) {
-            throw "Recipient template was not found: $recipientTemplate"
-        }
-        Copy-Item -LiteralPath $recipientTemplate -Destination $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
-        Write-Host "Created local recipient file from template: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE" -ForegroundColor Yellow
+$env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = Resolve-PortableProjectPath `
+    -EnvironmentVariable "SMART_OFFICE_EMAIL_RECIPIENTS_FILE" `
+    -DefaultRelativePath "config\email_recipients.json" `
+    -RepositoryRoot $repoRoot
+
+$recipientTemplate = Join-Path $repoRoot "config\email_recipients.example.json"
+if (-not (Test-Path -LiteralPath $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $recipientTemplate -PathType Leaf)) {
+        throw "Recipient template was not found: $recipientTemplate"
     }
+    $recipientParent = Split-Path -Parent $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+    New-Item -ItemType Directory -Path $recipientParent -Force | Out-Null
+    Copy-Item -LiteralPath $recipientTemplate -Destination $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+    Write-Host "Created local recipient file from template: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE" -ForegroundColor Yellow
 }
 
 Push-Location $backendDirectory
@@ -178,6 +240,7 @@ $env:OPENAI_REALTIME_MODEL = $Model
 $env:OPENAI_REALTIME_CONNECT_TIMEOUT_SECONDS = "30"
 
 Write-Host "Starting Smart Office Backend with Realtime voice and Office COM..." -ForegroundColor Cyan
+Write-Host "Repository root: $repoRoot"
 Write-Host "Conda environment: $CondaEnvName"
 Write-Host "Python: $resolvedPython"
 Write-Host "Model: $Model"
