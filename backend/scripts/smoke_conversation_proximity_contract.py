@@ -28,19 +28,24 @@ def main() -> None:
     initial.raise_for_status()
     assert initial.json()["state"]["conversation_phase"] == "standby"
 
+    detection = {
+        "language": "en",
+        "actor_type": "visitor",
+        "body_area_ratio": 0.31,
+        "body_confidence": 0.91,
+        "face_area_ratio": 0.04,
+        "face_confidence": 0.94,
+        "face_inside_body": True,
+        "confidence": 0.91,
+        "frontal_score": 1.0,
+        "center_x": 0.5,
+        "center_y": 0.5,
+        "stable_frames": 4,
+        "detector": "contract-person+face",
+    }
     greeting = client.post(
         f"/api/conversations/{conversation_id}/proximity-greeting",
-        json={
-            "language": "en",
-            "actor_type": "visitor",
-            "face_area_ratio": 0.31,
-            "confidence": 0.94,
-            "frontal_score": 0.88,
-            "center_x": 0.5,
-            "center_y": 0.44,
-            "stable_frames": 4,
-            "detector": "contract",
-        },
+        json=detection,
     )
     greeting.raise_for_status()
     greeting_payload = greeting.json()
@@ -50,17 +55,7 @@ def main() -> None:
 
     duplicate = client.post(
         f"/api/conversations/{conversation_id}/proximity-greeting",
-        json={
-            "language": "en",
-            "actor_type": "visitor",
-            "face_area_ratio": 0.32,
-            "confidence": 0.95,
-            "frontal_score": 0.9,
-            "center_x": 0.5,
-            "center_y": 0.44,
-            "stable_frames": 5,
-            "detector": "contract",
-        },
+        json={**detection, "stable_frames": 5},
     )
     duplicate.raise_for_status()
     assert duplicate.json()["triggered"] is False
@@ -126,19 +121,23 @@ def main() -> None:
         assert needle in host, f"Missing host state contract: {needle}"
 
     for needle in (
-        "face_area_ratio",
-        "frontal_score",
+        "body_area_ratio",
+        "face_inside_body",
+        "ObjectDetector",
+        "categoryAllowlist: ['person']",
+        "VITE_PROXIMITY_BODY_AREA_RATIO",
         "REQUIRED_STABLE_FRAMES",
         "suppressUntilAbsent",
-        "mediapipe-face-detector",
+        "mediapipe-person+face",
     ):
-        assert needle in detector, f"Missing proximity detector contract: {needle}"
+        assert needle in detector, f"Missing person-face proximity detector contract: {needle}"
 
     assert "空闲近距主动问候" in drawer
-    assert "仅在待机且正脸近距离稳定出现时触发" in drawer
+    assert "人体占画面达到阈值且人体框内检测到人脸" in drawer
+    assert "body_area_ratio" in drawer
 
-    print("PASS: conversation memory, lifecycle state, and idle close-face greeting contracts are present.")
-    print("NOTE: Real camera geometry and GPT Realtime speech output require local browser acceptance.")
+    print("PASS: conversation memory and person-size plus contained-face greeting contracts are present.")
+    print("NOTE: Real camera geometry, model download, and GPT Realtime speech output require local browser acceptance.")
 
 
 if __name__ == "__main__":
