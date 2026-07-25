@@ -118,7 +118,7 @@ def _brightness_service():
         raise
 
 
-def _read_brightness() -> dict[str, Any]:
+def _read_wmi_brightness() -> dict[str, Any]:
     try:
         pythoncom, service = _brightness_service()
         try:
@@ -135,9 +135,10 @@ def _read_brightness() -> dict[str, Any]:
                     "available": False,
                     "brightness_percent": None,
                     "instances": [],
+                    "provider": "wmi",
                     "error": (
-                        "No WMI brightness-capable display was found. External monitors may "
-                        "not expose Windows WMI brightness control."
+                        "No WMI brightness-capable display was found. WMI normally "
+                        "covers an integrated laptop panel, not a typical external monitor."
                     ),
                 }
             values = [_clamp_percent(row.CurrentBrightness) for row in selected]
@@ -145,6 +146,7 @@ def _read_brightness() -> dict[str, Any]:
                 "available": True,
                 "brightness_percent": int(round(sum(values) / len(values))),
                 "instances": [str(row.InstanceName) for row in selected],
+                "provider": "wmi",
                 "error": None,
             }
         finally:
@@ -154,19 +156,109 @@ def _read_brightness() -> dict[str, Any]:
             "available": False,
             "brightness_percent": None,
             "instances": [],
+            "provider": "wmi",
             "error": f"{type(exc).__name__}: {exc}",
         }
 
 
-def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
-    """Invoke WmiSetBrightness and leave final success to observed-state readback.
+def _normalise_brightness_values(value: Any) -> list[int]:
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        return [_clamp_percent(value)]
+    if isinstance(value, (list, tuple)):
+        return [
+            _clamp_percent(item)
+            for item in value
+            if isinstance(item, (int, float)) and not isinstance(item, bool)
+        ]
+    return []
 
-    Some pywin32/SWbem provider combinations return ``None`` even when the
-    provider accepts the call. The target machine demonstrates this behaviour:
-    PowerShell prints no return object but CurrentBrightness changes. Therefore
-    a missing output object is diagnostic information, not an execution failure.
-    A non-zero ReturnValue is still rejected when the provider supplies one.
-    """
+
+def _read_sbc_brightness() -> dict[str, Any]:
+    try:
+        import screen_brightness_control as sbc
+    except ImportError as exc:
+        return {
+            "available": False,
+            "brightness_percent": None,
+            "instances": [],
+            "provider": "screen_brightness_control",
+            "error": (
+                "screen-brightness-control is not installed. "
+                f"Backend Python: {sys.executable}. Import error: {exc}"
+            ),
+        }
+
+    try:
+        values = _normalise_brightness_values(sbc.get_brightness())
+        if not values:
+            raise RuntimeError("No brightness values were returned.")
+        monitor_info: list[dict[str, Any]] = []
+        try:
+            for item in sbc.list_monitors_info():
+                monitor_info.append(
+                    {
+                        "name": str(item.get("name") or item.get("model") or "display"),
+                        "serial": str(item.get("serial") or ""),
+                        "method": str(item.get("method") or ""),
+                    }
+                )
+        except Exception:
+            monitor_info = []
+        return {
+            "available": True,
+            "brightness_percent": int(round(sum(values) / len(values))),
+            "values": values,
+            "instances": monitor_info,
+            "provider": "screen_brightness_control",
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "brightness_percent": None,
+            "instances": [],
+            "provider": "screen_brightness_control",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _read_brightness() -> dict[str, Any]:
+    """Read brightness through DDC/CI-capable SBC first, then legacy WMI."""
+    sbc_state = _read_sbc_brightness()
+    if sbc_state["available"]:
+        sbc_state["fallback"] = None
+        return sbc_state
+
+    wmi_state = _read_wmi_brightness()
+    if wmi_state["available"]:
+        wmi_state["fallback"] = {
+            "provider": "screen_brightness_control",
+            "error": sbc_state.get("error"),
+        }
+        return wmi_state
+
+    return {
+        "available": False,
+        "brightness_percent": None,
+        "instances": [],
+        "provider": None,
+        "error": (
+            "No software-controllable display was detected. "
+            f"DDC/CI/VCP provider: {sbc_state.get('error')}; "
+            f"WMI provider: {wmi_state.get('error')}. "
+            "For an external monitor, enable DDC/CI in the monitor on-screen menu."
+        ),
+        "providers": {
+            "screen_brightness_control": sbc_state,
+            "wmi": wmi_state,
+        },
+    }
+
+
+def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
+    """Invoke WmiSetBrightness and leave final success to observed-state readback."""
     instances = list(
         service.ExecQuery(
             "SELECT Active, InstanceName FROM WmiMonitorBrightnessMethods"
@@ -179,7 +271,7 @@ def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
     if not selected:
         raise RuntimeError(
             "No WMI brightness-capable display was found. The selected external "
-            "monitor may not support Windows brightness control."
+            "monitor may require DDC/CI rather than Windows WMI."
         )
 
     class_definition = service.Get("WmiMonitorBrightnessMethods")
@@ -239,6 +331,18 @@ def _set_wmi_brightness(service: Any, target: int) -> list[dict[str, Any]]:
     return results
 
 
+def _set_sbc_brightness(target: int) -> dict[str, Any]:
+    import screen_brightness_control as sbc
+
+    before = _normalise_brightness_values(sbc.get_brightness())
+    sbc.set_brightness(target)
+    return {
+        "provider": "screen_brightness_control",
+        "before_values": before,
+        "requested": target,
+    }
+
+
 def get_system_control_status() -> ToolResult:
     volume = _read_volume()
     brightness = _read_brightness()
@@ -252,6 +356,7 @@ def get_system_control_status() -> ToolResult:
             "brightness": brightness,
             "volume_percent": volume.get("volume_percent"),
             "brightness_percent": brightness.get("brightness_percent"),
+            "brightness_provider": brightness.get("provider"),
             "requested_state": {},
         },
     )
@@ -340,29 +445,41 @@ def adjust_system_volume(delta_percent: int) -> ToolResult:
 
 def set_system_brightness(value_percent: int) -> ToolResult:
     target = _clamp_percent(value_percent)
-    try:
-        pythoncom, service = _brightness_service()
-        try:
-            method_results = _set_wmi_brightness(service, target)
-        finally:
-            pythoncom.CoUninitialize()
+    provider_errors: list[str] = []
+    method_results: Any = None
+    provider: str | None = None
 
-        time.sleep(0.35)
+    try:
+        try:
+            method_results = _set_sbc_brightness(target)
+            provider = "screen_brightness_control"
+        except Exception as exc:
+            provider_errors.append(
+                f"screen_brightness_control: {type(exc).__name__}: {exc}"
+            )
+            pythoncom, service = _brightness_service()
+            try:
+                method_results = _set_wmi_brightness(service, target)
+                provider = "wmi"
+            finally:
+                pythoncom.CoUninitialize()
+
+        time.sleep(0.45)
         observed = _read_brightness()
         observed_percent = observed.get("brightness_percent")
         verified = bool(
             observed.get("available")
             and observed_percent is not None
-            and abs(int(observed_percent) - target) <= 1
+            and abs(int(observed_percent) - target) <= 2
         )
         return ToolResult(
             tool_name="system_set_brightness",
             ok=verified,
             message=(
-                f"Display brightness set to {target}%."
+                f"Display brightness set to {target}% using {provider}."
                 if verified
                 else (
-                    f"WMI brightness command completed, but the observed value was "
+                    f"The {provider} brightness command ran, but the observed value was "
                     f"{observed_percent} instead of {target}%."
                 )
             ),
@@ -371,21 +488,27 @@ def set_system_brightness(value_percent: int) -> ToolResult:
                 "requested_state": {"brightness_percent": target},
                 "brightness": observed,
                 "brightness_percent": observed_percent,
-                "wmi_method_results": method_results,
+                "brightness_provider": provider,
+                "brightness_method_results": method_results,
+                "provider_errors": provider_errors,
             },
         )
     except Exception as exc:
+        provider_errors.append(f"wmi: {type(exc).__name__}: {exc}")
         return ToolResult(
             tool_name="system_set_brightness",
             ok=False,
             message=(
-                "Display brightness could not be changed: "
-                f"{type(exc).__name__}: {exc}"
+                "Display brightness could not be changed. No compatible WMI or "
+                "DDC/CI display controller was available. For an external monitor, "
+                "enable DDC/CI in its on-screen menu. "
+                + " | ".join(provider_errors)
             ),
             data={
-                "execution_mode": "failed",
+                "execution_mode": "unsupported",
                 "requested_state": {"brightness_percent": target},
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": " | ".join(provider_errors),
+                "brightness_provider": None,
             },
         )
 
@@ -398,7 +521,7 @@ def adjust_system_brightness(delta_percent: int) -> ToolResult:
             ok=False,
             message=f"Display brightness could not be read: {current.get('error')}",
             data={
-                "execution_mode": "failed",
+                "execution_mode": "unsupported",
                 "requested_state": {"brightness_delta_percent": int(delta_percent)},
                 "brightness": current,
             },
