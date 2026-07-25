@@ -30,7 +30,7 @@ from app.turn_api import router as turn_router
 
 install_lightweight_system_status_policy()
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.7.0")
+app = FastAPI(title="Smart Office Agent Backend", version="0.8.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,8 +64,8 @@ def health_check():
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.7.0",
-        "phase": "m3a_fusion_phase_3_gate_3_5",
+        "version": "0.8.0",
+        "phase": "m3a_fusion_conversation_memory_proximity_greeting",
         "capabilities": {
             "task_runtime": True,
             "realtime_voice_api": True,
@@ -76,6 +76,12 @@ def health_check():
             "unified_turn_router": True,
             "reception_knowledge": True,
             "permission_gate": True,
+            "conversation_memory": True,
+            "conversation_recent_message_limit": 16,
+            "conversation_lifecycle_state": True,
+            "idle_proximity_greeting": True,
+            "proximity_greeting_requires_standby": True,
+            "proximity_greeting_backend_gate": True,
             "presentation_controller": True,
             "presentation_state_verifier": True,
             "presentation_control_api": True,
