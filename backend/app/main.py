@@ -20,6 +20,7 @@ from app.planner import plan_task
 from app.presentation_api import router as presentation_router
 from app.realtime_api import router as realtime_router
 from app.reception_api import router as reception_router
+from app.recipient_api import router as recipient_router
 from app.state_store import state_store
 from app.task_graph import build_task_graph, task_graph_event_data
 from app.task_logger import log_task_record
@@ -44,6 +45,7 @@ app.include_router(reception_router)
 app.include_router(turn_router)
 app.include_router(presentation_router)
 app.include_router(office_router)
+app.include_router(recipient_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -87,6 +89,7 @@ def health_check():
             "fixed_outlook_sender_account": True,
             "fixed_email_recipient": False,
             "approved_email_recipient_allowlist": True,
+            "brightness_independent_recipient_directory": True,
             "arbitrary_email_recipient": False,
             "email_send_enabled": False,
             "approval_gated_email_send_enabled": True,
@@ -218,36 +221,13 @@ def cancel_agent_task(task_id: str):
 @app.get("/agent/tasks/{task_id}/events")
 async def stream_agent_task_events(
     task_id: str,
-    demo: bool = Query(
-        False,
-        description="Send a short fake event sequence for Step 3 SSE testing.",
-    ),
-    timeout_seconds: float = Query(
-        30.0,
-        ge=0.1,
-        le=300.0,
-        description="Maximum time to keep the SSE stream open without new events.",
-    ),
+    after: str | None = Query(default=None),
 ):
-    task = state_store.get_task(task_id)
-    if task is None:
+    if state_store.get_task(task_id) is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
-    async def event_stream():
-        if demo:
-            demo_events = [
-                StepEvent(type="planning", task_id=task_id, message="Planning demo event."),
-                StepEvent(type="step_started", task_id=task_id, step_id="demo-step", message="Step started."),
-                StepEvent(type="step_progress", task_id=task_id, step_id="demo-step", message="Step progress."),
-                StepEvent(type="step_completed", task_id=task_id, step_id="demo-step", message="Step completed."),
-                StepEvent(type="task_completed", task_id=task_id, message="Task completed."),
-            ]
-            for event in demo_events:
-                yield _sse_payload(event)
-                await asyncio.sleep(0.05)
-            return
-
-        async for event in event_bus.subscribe(task_id, timeout_seconds=timeout_seconds):
+    async def event_generator():
+        async for event in event_bus.subscribe(task_id, after_event_id=after):
             yield _sse_payload(event)
 
-    return EventSourceResponse(event_stream())
+    return EventSourceResponse(event_generator())
