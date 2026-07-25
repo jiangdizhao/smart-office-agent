@@ -18,11 +18,11 @@ function proximityLabel(
 ): string {
   const labels: Record<ProximityGreetingController['status'], { zh: string; en: string }> = {
     disabled: { zh: '已关闭', en: 'Disabled' },
-    starting: { zh: '正在启动摄像头', en: 'Starting camera' },
-    watching: { zh: '正在等待正脸靠近', en: 'Watching for a close frontal face' },
+    starting: { zh: '正在启动摄像头与人体检测模型', en: 'Starting camera and person detector' },
+    watching: { zh: '正在等待人体靠近且框内检测到人脸', en: 'Watching for a nearby person with a face inside the body box' },
     blocked: { zh: '摄像头权限被拒绝', en: 'Camera permission denied' },
     unsupported: { zh: '当前浏览器不支持', en: 'Unsupported by this browser' },
-    error: { zh: '近距感应出现错误', en: 'Proximity detection error' },
+    error: { zh: '人体近距感应出现错误', en: 'Person proximity detection error' },
     stopped: { zh: '已停止', en: 'Stopped' },
   }
   return labels[status][zh ? 'zh' : 'en']
@@ -108,8 +108,8 @@ export default function OperatorDrawer({
             </strong>
             <span>
               {zh
-                ? '仅在待机且正脸近距离稳定出现时触发'
-                : 'Only while on standby with a stable close frontal face'}
+                ? '仅在待机、人体占画面达到阈值且人体框内检测到人脸时触发'
+                : 'Only on standby when a person is large enough and a face is inside the person box'}
             </span>
           </div>
           <div className="drawer-segmented-control">
@@ -133,7 +133,7 @@ export default function OperatorDrawer({
           <p className="drawer-inline-note">
             {proximityLabel(proximity.status, zh)}
             {proximity.lastDetection
-              ? ` · ${(proximity.lastDetection.face_area_ratio * 100).toFixed(0)}%`
+              ? ` · ${zh ? '人体' : 'person'} ${(proximity.lastDetection.body_area_ratio * 100).toFixed(0)}% · ${proximity.lastDetection.face_inside_body ? (zh ? '有人脸' : 'face found') : (zh ? '未检测到人脸' : 'no face')}`
               : ''}
           </p>
           {proximity.detail ? <p className="drawer-inline-note">{proximity.detail}</p> : null}
