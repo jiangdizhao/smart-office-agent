@@ -52,7 +52,7 @@ const OFFICE_TOOLS = [
           minItems: 1,
           maxItems: 8,
           description:
-            'Exact ordered actions requested by the user. Outlook recipient_key values must come from the Backend recipient catalog. Draft creation and sending are separate approval steps. Raw email addresses and unrestricted sending are never accepted.',
+            'Exact ordered actions requested by the user. Recipient aliases are resolved deterministically by application code and injected after semantic planning. Draft creation and sending are separate approval steps. Raw email addresses and unrestricted sending are never accepted.',
           items: {
             type: 'object',
             properties: {
@@ -101,13 +101,13 @@ const OFFICE_TOOLS = [
                 type: 'string',
                 enum: ['latest_verified'],
                 description:
-                  'Use latest_verified only with outlook_send_approved_draft. The Backend resolves the newest verified unsent draft for the selected recipient alias.',
+                  'Use latest_verified only with outlook_send_approved_draft. The Backend resolves the newest verified unsent draft.',
               },
               recipient_key: {
                 type: 'string',
                 pattern: '^[a-z0-9][a-z0-9_-]{0,31}$',
                 description:
-                  'Optional Backend allowlist alias such as rico or tom. Use only a key present in the observed recipient_catalog/allowed_recipient_keys. Never put an email address in this field.',
+                  'Optional Backend allowlist alias. Application code overwrites this field with the deterministically resolved recipient key when the user names a configured recipient.',
               },
               subject: {
                 type: 'string',
@@ -146,9 +146,16 @@ type PendingDecision = {
   requestId: string
   text: string
   toolCall: RealtimeOfficeToolCall | null
+  resolvedRecipientKey: string | null
   timer: number
   resolve: (decision: RealtimeOfficeDecision) => void
   reject: (error: Error) => void
+}
+
+type RecipientEntry = {
+  key?: unknown
+  name?: unknown
+  email?: unknown
 }
 
 type AudioContextConstructor = new () => AudioContext
@@ -179,6 +186,80 @@ function safeArguments(value: string | undefined): Record<string, unknown> {
     return {}
   }
   return {}
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function recipientCatalog(runtimeContext: unknown): RecipientEntry[] {
+  const envelope = objectValue(runtimeContext)
+  const status = objectValue(envelope?.status)
+  const catalog = status?.recipient_catalog
+  return Array.isArray(catalog) ? (catalog as RecipientEntry[]) : []
+}
+
+function matchesRecipientToken(text: string, token: string): boolean {
+  const cleanToken = token.trim()
+  if (!cleanToken) return false
+  if (/[^\x00-\x7F]/.test(cleanToken) || cleanToken.includes('@')) {
+    return text.toLocaleLowerCase().includes(cleanToken.toLocaleLowerCase())
+  }
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(cleanToken.toLocaleLowerCase())}([^a-z0-9]|$)`, 'i').test(
+    text,
+  )
+}
+
+function resolveRecipientKey(text: string, runtimeContext: unknown): string | null {
+  const matches = recipientCatalog(runtimeContext)
+    .map((entry) => {
+      const key = typeof entry.key === 'string' ? entry.key.trim().toLocaleLowerCase() : ''
+      const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+      const email = typeof entry.email === 'string' ? entry.email.trim() : ''
+      if (!key) return null
+      const tokens = [email, name, key].filter(Boolean)
+      const score = Math.max(
+        0,
+        ...tokens.map((token) => (matchesRecipientToken(text, token) ? token.length : 0)),
+      )
+      return score > 0 ? { key, score } : null
+    })
+    .filter((value): value is { key: string; score: number } => value !== null)
+    .sort((left, right) => right.score - left.score)
+
+  if (!matches.length) return null
+  if (matches.length > 1 && matches[0].score === matches[1].score) return null
+  return matches[0].key
+}
+
+function applyResolvedRecipient(
+  toolCall: RealtimeOfficeToolCall,
+  recipientKey: string | null,
+): RealtimeOfficeToolCall {
+  if (!recipientKey) return toolCall
+  const steps = toolCall.arguments.steps
+  if (!Array.isArray(steps)) return toolCall
+  const normalizedSteps = steps.map((step) => {
+    const item = objectValue(step)
+    if (!item) return step
+    if (
+      item.name === 'outlook_create_summary_draft' ||
+      item.name === 'outlook_send_approved_draft'
+    ) {
+      return { ...item, recipient_key: recipientKey }
+    }
+    return item
+  })
+  return {
+    ...toolCall,
+    arguments: { ...toolCall.arguments, steps: normalizedSteps },
+  }
 }
 
 async function fetchJsonWithTimeout(url: string): Promise<unknown> {
@@ -220,6 +301,7 @@ class RealtimeOfficeInterpreter {
     if (this.pending) throw new Error('A GPT Realtime office decision is still active.')
 
     const runtimeContext = await fetchJsonWithTimeout(`${API_BASE_URL}/api/office/status`)
+    const resolvedRecipientKey = resolveRecipientKey(clean, runtimeContext)
     const historyBeforeCurrent = [...this.recentUtterances]
     this.recentUtterances = [...this.recentUtterances, clean].slice(-MAX_HISTORY_ITEMS)
 
@@ -235,6 +317,7 @@ class RealtimeOfficeInterpreter {
         requestId,
         text: '',
         toolCall: null,
+        resolvedRecipientKey,
         timer,
         resolve,
         reject,
@@ -245,6 +328,9 @@ class RealtimeOfficeInterpreter {
         ? historyBeforeCurrent.map((item, index) => `${index + 1}. ${item}`).join('\n')
         : '(none)'
       const contextText = JSON.stringify(runtimeContext).slice(0, 8000)
+      const recipientResolution = resolvedRecipientKey
+        ? `Application code has deterministically resolved the named recipient to recipient_key="${resolvedRecipientKey}". Do not inspect, confirm, reject, or clarify this mapping. Plan only the requested semantic actions; application code will inject this key into Outlook steps.`
+        : 'Application code did not resolve a configured recipient from the utterance. For draft creation without a named recipient, omit recipient_key so the Backend applies its configured default. Clarify only when the user explicitly names an unresolved person or email.'
 
       this.send({
         type: 'response.create',
@@ -262,6 +348,9 @@ Interpret one user utterance for Smart Office Phase 3.
 Language: ${languageLabel}.
 Current user utterance: ${clean}
 
+Deterministic recipient resolution performed by application code:
+${recipientResolution}
+
 Recent office utterances in this browser session:
 ${historyText}
 
@@ -273,6 +362,8 @@ Rules:
 - Put exactly one step in the plan for one requested action. Put two to eight ordered steps for a compound request.
 - Preserve the exact user-requested order. Do not silently add PowerPoint open/start prerequisites.
 - Supported actions are only the enum values in the schema. Never invent a file path, sender, recipient, raw email address, application, shell command, COM method, approval, EntryID, or success result.
+- GPT Realtime performs semantic action planning only. Recipient-file lookup, name matching, allowlist validation, and final recipient_key selection belong to application code and the Backend.
+- When application code supplies a resolved recipient key above, never question it and never return CLARIFY because of that recipient. You may omit recipient_key; application code injects the resolved key after planning.
 - PowerPoint direction is deterministic: presentation_next_slide increases the page number toward the end; presentation_previous_slide decreases it toward the beginning.
 - Chinese convention for this application: “向前翻/往前翻/翻回前面/上一页/前一页” means previous. “向后翻/往后翻/下一页/后一页/继续往下” means next. “前进两页” means next twice.
 - Repeat next or previous steps when multiple slides are requested. “向前翻两页” is previous twice; “向后翻两页” is next twice.
@@ -281,19 +372,17 @@ Rules:
 - For relative volume or brightness, use system_adjust_volume/system_adjust_brightness with signed delta_percent. When the user says only “一点/a little” without a number, use 10 percentage points in the requested direction.
 - Questions asking for current volume or brightness use system_get_status.
 - “生成演示摘要/summarize the presentation” uses office_generate_presentation_summary with the user's language. It writes only to the configured local LOG directory.
-- The observed Backend status contains recipient_catalog, allowed_recipient_keys, and default_recipient_key. Treat that catalog as authoritative.
-- When the user names a known recipient, map the person's name to the exact catalog key and pass only recipient_key. Example: a catalog entry {key:"rico",name:"Rico",...} means “发给 Rico” uses recipient_key="rico".
-- When the user does not name a recipient for draft creation, use the observed default_recipient_key or omit recipient_key so the Backend applies it.
-- When the user names a person or email that is not present in recipient_catalog, do not invent a key and do not pass the raw email. Return CLARIFY: followed by a concise request to choose or configure an available recipient.
-- When the user asks to prepare an Outlook draft from the current presentation and does not explicitly request the existing/latest summary, include office_generate_presentation_summary first, followed by outlook_create_summary_draft with summary_source="latest" and the selected recipient_key.
+- When the user does not name a recipient for draft creation, omit recipient_key so the Backend applies the configured default recipient.
+- When the user explicitly names a person or email that application code did not resolve, do not invent a key and do not pass the raw email. Return CLARIFY: followed by a concise request to configure or choose an available recipient.
+- When the user asks to prepare an Outlook draft from the current presentation and does not explicitly request the existing/latest summary, include office_generate_presentation_summary first, followed by outlook_create_summary_draft with summary_source="latest".
 - outlook_create_summary_draft uses the fixed signed-in Classic Outlook sender account and the Backend-resolved allowlisted recipient. The first Backend approval is mandatory before creating and displaying the draft.
-- When the user explicitly asks to send an already-created/verified draft, use exactly one outlook_send_approved_draft step with draft_source="latest_verified". Include recipient_key when a recipient is explicitly named; otherwise the Backend selects the latest verified unsent draft.
-- When the user explicitly asks to prepare and then send in one request, use the same recipient_key in outlook_create_summary_draft and outlook_send_approved_draft. The Backend will pause separately before the draft step and again before the send step.
+- When the user explicitly asks to send an already-created/verified draft, use exactly one outlook_send_approved_draft step with draft_source="latest_verified". Application code injects a resolved recipient key when one was named.
+- When the user explicitly asks to prepare and then send in one request, create separate outlook_create_summary_draft and outlook_send_approved_draft steps. The Backend will pause separately before the draft step and again before the send step.
 - outlook_send_approved_draft can only send a verified unsent draft whose recipient is still in the Backend allowlist. Before Send(), the Backend removes the sentence saying the message is only a draft and not yet sent, saves and re-verifies the sender and sole recipient, then invokes Outlook Send().
 - There is no send path without a second Backend approval. Never treat draft approval as send approval, and never send arbitrary recipients or arbitrary Outlook items.
 - Explicit approval/cancel/skip/takeover utterances for an already-running task are handled by the Backend router. Return exactly NO_OFFICE_ACTION for those utterances.
 - Do not call a function for reception questions, ordinary conversation, Teams, Zoom, Word, Excel, unsupported device controls, or document generation beyond the bounded presentation summary. Return exactly NO_OFFICE_ACTION.
-- Ask for clarification only when the intended action, value, or allowlisted recipient genuinely remains ambiguous after applying these rules and the supplied context.
+- Ask for clarification only when the intended action or value genuinely remains ambiguous, or when the user explicitly named an unresolved recipient.
 - Do not answer the user and do not claim an action succeeded.
 `.trim(),
         },
@@ -387,7 +476,7 @@ Rules:
         tool_choice: 'auto',
         tools: OFFICE_TOOLS,
         instructions:
-          'You are a bounded Smart Office planner. Use only Backend allowlisted recipient keys, never raw email addresses, never bypass Backend approvals, and never claim success.',
+          'You are a bounded Smart Office semantic planner. Application code and the Backend resolve and validate recipients deterministically. Never use raw email addresses, never bypass Backend approvals, and never claim success.',
         audio: { input: { turn_detection: null } },
       },
     })
@@ -422,12 +511,15 @@ Rules:
 
     if (event.type === 'response.function_call_arguments.done') {
       if (event.name === 'office_plan') {
-        pending.toolCall = {
-          name: 'office_plan',
-          arguments: safeArguments(event.arguments),
-          call_id: event.call_id ?? null,
-          source: 'gpt_realtime',
-        }
+        pending.toolCall = applyResolvedRecipient(
+          {
+            name: 'office_plan',
+            arguments: safeArguments(event.arguments),
+            call_id: event.call_id ?? null,
+            source: 'gpt_realtime',
+          },
+          pending.resolvedRecipientKey,
+        )
       }
       return
     }
