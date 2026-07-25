@@ -1,3 +1,4 @@
+import type { ProximityGreetingController } from '../vision/useProximityGreeting'
 import type { VoiceOutputProvider } from '../voice/voiceOutputManager'
 import type {
   OfficeActor,
@@ -7,10 +8,31 @@ import type {
 
 type OperatorDrawerProps = {
   controller: OfficeVoiceController
+  proximity: ProximityGreetingController
   onClose: () => void
 }
 
-export default function OperatorDrawer({ controller, onClose }: OperatorDrawerProps) {
+function proximityLabel(
+  status: ProximityGreetingController['status'],
+  zh: boolean,
+): string {
+  const labels: Record<ProximityGreetingController['status'], { zh: string; en: string }> = {
+    disabled: { zh: '已关闭', en: 'Disabled' },
+    starting: { zh: '正在启动摄像头', en: 'Starting camera' },
+    watching: { zh: '正在等待正脸靠近', en: 'Watching for a close frontal face' },
+    blocked: { zh: '摄像头权限被拒绝', en: 'Camera permission denied' },
+    unsupported: { zh: '当前浏览器不支持', en: 'Unsupported by this browser' },
+    error: { zh: '近距感应出现错误', en: 'Proximity detection error' },
+    stopped: { zh: '已停止', en: 'Stopped' },
+  }
+  return labels[status][zh ? 'zh' : 'en']
+}
+
+export default function OperatorDrawer({
+  controller,
+  proximity,
+  onClose,
+}: OperatorDrawerProps) {
   const zh = controller.language === 'zh'
   const settingsDisabled = controller.listening || controller.busy
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
@@ -28,7 +50,7 @@ export default function OperatorDrawer({ controller, onClose }: OperatorDrawerPr
         <div className="drawer-heading exhibition-drawer-heading">
           <div>
             <span>{zh ? '展会控制' : 'Exhibition controls'}</span>
-            <strong>{zh ? '语音与界面设置' : 'Voice and interface settings'}</strong>
+            <strong>{zh ? '语音、摄像头与界面设置' : 'Voice, camera and interface settings'}</strong>
           </div>
           <button type="button" onClick={onClose} aria-label={zh ? '关闭' : 'Close'}>
             ×
@@ -77,6 +99,44 @@ export default function OperatorDrawer({ controller, onClose }: OperatorDrawerPr
               <option value="operator">Operator</option>
             </select>
           </label>
+        </section>
+
+        <section className="drawer-section" aria-labelledby="proximity-setting-title">
+          <div className="drawer-section-heading">
+            <strong id="proximity-setting-title">
+              {zh ? '空闲近距主动问候' : 'Idle proximity greeting'}
+            </strong>
+            <span>
+              {zh
+                ? '仅在待机且正脸近距离稳定出现时触发'
+                : 'Only while on standby with a stable close frontal face'}
+            </span>
+          </div>
+          <div className="drawer-segmented-control">
+            <button
+              type="button"
+              className={proximity.enabled ? 'selected' : ''}
+              disabled={settingsDisabled}
+              onClick={() => proximity.setEnabled(true)}
+            >
+              {zh ? '开启' : 'On'}
+            </button>
+            <button
+              type="button"
+              className={!proximity.enabled ? 'selected' : ''}
+              disabled={settingsDisabled}
+              onClick={() => proximity.setEnabled(false)}
+            >
+              {zh ? '关闭' : 'Off'}
+            </button>
+          </div>
+          <p className="drawer-inline-note">
+            {proximityLabel(proximity.status, zh)}
+            {proximity.lastDetection
+              ? ` · ${(proximity.lastDetection.face_area_ratio * 100).toFixed(0)}%`
+              : ''}
+          </p>
+          {proximity.detail ? <p className="drawer-inline-note">{proximity.detail}</p> : null}
         </section>
 
         <section className="drawer-section" aria-labelledby="asr-setting-title">
