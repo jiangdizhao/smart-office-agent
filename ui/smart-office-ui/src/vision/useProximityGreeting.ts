@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { OfficeVoiceController, ProximityDetection } from '../voice/useOfficeVoiceController'
+import type { OfficeVoiceController } from '../voice/useOfficeVoiceController'
 import {
   ProximityFaceMonitor,
+  type ProximityDetection,
   type ProximityDetectorStatus,
 } from './proximityFaceMonitor'
 
