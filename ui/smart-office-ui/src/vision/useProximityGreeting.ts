@@ -29,6 +29,7 @@ export function useProximityGreeting(
   const [lastDetection, setLastDetection] = useState<ProximityDetection | null>(null)
   const controllerRef = useRef(controller)
   const previousConversationPhaseRef = useRef(controller.conversationPhase)
+  const lastEligibilitySignatureRef = useRef('')
   const monitorRef = useRef<ProximityFaceMonitor | null>(null)
 
   useEffect(() => {
@@ -57,14 +58,31 @@ export function useProximityGreeting(
     const monitor = new ProximityFaceMonitor(
       () => {
         const current = controllerRef.current
-        return (
-          current.conversationPhase === 'standby' &&
-          current.panel === 'idle' &&
-          !current.active &&
-          !current.listening &&
-          !current.runtime.outputActive &&
-          !current.runtime.microphoneAttached
-        )
+        const eligibility = {
+          conversationPhase: current.conversationPhase,
+          panel: current.panel,
+          active: current.active,
+          listening: current.listening,
+          outputActive: current.runtime.outputActive,
+          microphoneAttached: current.runtime.microphoneAttached,
+        }
+        const eligible =
+          eligibility.conversationPhase === 'standby' &&
+          eligibility.panel === 'idle' &&
+          !eligibility.active &&
+          !eligibility.listening &&
+          !eligibility.outputActive
+
+        const signature = JSON.stringify({ ...eligibility, eligible })
+        if (signature !== lastEligibilitySignatureRef.current) {
+          lastEligibilitySignatureRef.current = signature
+          console.info('[ProximityDebug] frontend-eligibility', {
+            ...eligibility,
+            eligible,
+            note: 'microphoneAttached is diagnostic only and no longer blocks proximity greeting',
+          })
+        }
+        return eligible
       },
       async (detection) => await controllerRef.current.triggerProximityGreeting(detection),
       (nextStatus, nextDetail = '') => {
