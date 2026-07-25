@@ -140,14 +140,14 @@ def _launch_powerpoint_desktop() -> tuple[bool, str, str | None, str | None]:
 
 def ensure_powerpoint_desktop_running(
     *,
-    timeout_seconds: float = 30.0,
+    timeout_seconds: float = 5.0,
     poll_interval_seconds: float = 0.25,
 ) -> PowerPointBootstrapResult:
-    """Ensure an interactive PowerPoint desktop process is registered in the ROT.
+    """Ensure PowerPoint COM is usable without launching a duplicate blank window.
 
-    A clean Windows/Office installation may not put ``POWERPNT.EXE`` on PATH.
-    The bootstrap checks Office App Paths registry entries and common Click-to-Run
-    locations before falling back to ``cmd start`` and direct COM activation.
+    The normal path mirrors the known-good local command: try the ROT, then call
+    ``Dispatch('PowerPoint.Application')`` immediately. Direct executable launching
+    is retained only as a last-resort fallback when COM activation itself fails.
     """
 
     started_at = time.monotonic()
@@ -168,27 +168,57 @@ def ensure_powerpoint_desktop_running(
             error=f"pywin32 is unavailable in the Backend Python: {exc}",
         )
 
+    process_was_running = _powerpoint_process_running()
     pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
     application = None
+    attempts = 0
     try:
+        attempts += 1
         application = _get_active_powerpoint(win32com.client)
         if application is not None:
             return PowerPointBootstrapResult(
                 ok=True,
                 already_running=True,
                 process_detected=True,
-                attempts=1,
+                attempts=attempts,
                 duration_ms=round((time.monotonic() - started_at) * 1000),
             )
 
+        dispatch_error: str | None = None
+        attempts += 1
+        try:
+            application = win32com.client.Dispatch("PowerPoint.Application")
+            application.Visible = -1
+            return PowerPointBootstrapResult(
+                ok=True,
+                already_running=process_was_running,
+                launched=not process_was_running,
+                launch_method=(
+                    "com_dispatch_existing" if process_was_running else "com_dispatch"
+                ),
+                process_detected=True,
+                attempts=attempts,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+            )
+        except Exception as exc:
+            dispatch_error = f"{type(exc).__name__}: {exc}"
+
         launched, launch_method, executable, launch_error = _launch_powerpoint_desktop()
-        deadline = time.monotonic() + timeout_seconds
-        attempts = 0
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
 
         while launched and time.monotonic() <= deadline:
             attempts += 1
             application = _get_active_powerpoint(win32com.client)
+            if application is None:
+                try:
+                    application = win32com.client.Dispatch("PowerPoint.Application")
+                except Exception:
+                    application = None
             if application is not None:
+                try:
+                    application.Visible = -1
+                except Exception:
+                    pass
                 return PowerPointBootstrapResult(
                     ok=True,
                     launched=True,
@@ -201,46 +231,19 @@ def ensure_powerpoint_desktop_running(
             time.sleep(poll_interval_seconds)
 
         process_detected = _powerpoint_process_running()
-
-        dispatch_error: str | None = None
-        try:
-            application = win32com.client.Dispatch("PowerPoint.Application")
-            application.Visible = True
-            return PowerPointBootstrapResult(
-                ok=True,
-                launched=True,
-                launch_method="com_dispatch",
-                executable=executable,
-                process_detected=True,
-                attempts=attempts + 1,
-                duration_ms=round((time.monotonic() - started_at) * 1000),
-            )
-        except Exception as exc:
-            dispatch_error = f"{type(exc).__name__}: {exc}"
-
-        if process_detected:
-            error = (
-                "POWERPNT.EXE started, but PowerPoint COM was not registered. "
-                "Open PowerPoint manually and complete Office activation, the first-run "
-                "privacy/licence screens, Protected View prompts, or any modal dialog; "
-                "then restart the Backend. "
-                f"Direct COM activation also failed: {dispatch_error}"
-            )
-        else:
-            error = (
-                "Microsoft PowerPoint Desktop could not be started. Confirm that the "
-                "desktop PowerPoint application is installed and can open manually. "
-                f"Launcher error: {launch_error or 'no executable became available'}; "
-                f"direct COM activation: {dispatch_error}"
-            )
-
+        error = (
+            "PowerPoint COM activation failed before the desktop fallback. "
+            f"Direct Dispatch: {dispatch_error}; "
+            f"launcher: {launch_error or launch_method}; "
+            f"process_detected={process_detected}."
+        )
         return PowerPointBootstrapResult(
             ok=False,
             launched=launched,
             launch_method=launch_method,
             executable=executable,
             process_detected=process_detected,
-            attempts=attempts + 1,
+            attempts=attempts,
             duration_ms=round((time.monotonic() - started_at) * 1000),
             error=error,
         )
