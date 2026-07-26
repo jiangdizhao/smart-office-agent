@@ -110,8 +110,7 @@ export default function VirtualHostApp() {
   const assistantCaption = controller.answer.trim() || lastAssistantText
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
   const humanSummaryAvailable = Boolean(
-    controller.route === 'human_recording_summary' &&
-      controller.contentUrl?.startsWith('/api/human-recordings/artifacts/'),
+    controller.contentUrl?.startsWith('/api/human-recordings/artifacts/'),
   )
   const recipientName = useMemo(() => {
     const key = controller.pendingRecipientKey
