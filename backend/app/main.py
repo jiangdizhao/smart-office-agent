@@ -7,6 +7,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.event_bus import event_bus
 from app.executor import run_task_plan_only, run_task_with_tools
+from app.general_chat_api import router as general_chat_router
+from app.human_recording_api import router as human_recording_router
 from app.models import (
     AgentRequest,
     AgentResponse,
@@ -30,7 +32,7 @@ from app.turn_api import router as turn_router
 
 install_lightweight_system_status_policy()
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.8.0")
+app = FastAPI(title="Smart Office Agent Backend", version="0.9.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,6 +51,8 @@ app.include_router(turn_router)
 app.include_router(presentation_router)
 app.include_router(office_router)
 app.include_router(recipient_router)
+app.include_router(general_chat_router)
+app.include_router(human_recording_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -64,7 +68,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.8.0",
+        "version": "0.9.0",
         "phase": "m3a_fusion_phase_3_gate_3_5",
         "capabilities": {
             "task_runtime": True,
@@ -75,6 +79,8 @@ def health_check():
             "agent_turn_api": True,
             "unified_turn_router": True,
             "reception_knowledge": True,
+            "general_backend_chat": True,
+            "general_chat_not_limited_to_company_topics": True,
             "permission_gate": True,
             "conversation_memory": True,
             "conversation_recent_message_limit": 16,
@@ -82,6 +88,10 @@ def health_check():
             "idle_proximity_greeting": True,
             "proximity_greeting_requires_standby": True,
             "proximity_greeting_backend_gate": True,
+            "human_conversation_recording_upload": True,
+            "human_conversation_diarized_transcription": True,
+            "human_conversation_docx_summary": True,
+            "human_conversation_docx_auto_open": True,
             "presentation_controller": True,
             "presentation_state_verifier": True,
             "presentation_control_api": True,
