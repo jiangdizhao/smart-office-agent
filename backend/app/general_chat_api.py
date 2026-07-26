@@ -69,25 +69,40 @@ Return only the final answer, without labels, JSON, or Markdown fences.
 """.strip()
 
 
-@router.post("/api/general-chat", response_model=GeneralChatResponse)
-async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
-    clean = " ".join(req.text.strip().split())
+async def generate_general_chat_answer(
+    *,
+    conversation_id: str,
+    text: str,
+    language: Language,
+    actor_type: ActorType,
+) -> tuple[str, str]:
+    clean = " ".join(text.strip().split())
     context = conversation_store.context_snapshot(
-        req.conversation_id,
-        language=req.language,
-        actor_type=req.actor_type,
+        conversation_id,
+        language=language,
+        actor_type=actor_type,
     )
     history = _history_text(context, clean)
     input_text = (
         f"Recent conversation:\n{history}\n\nCurrent user message:\n{clean}"
-        if req.language == "en"
+        if language == "en"
         else f"最近对话：\n{history}\n\n当前用户问题：\n{clean}"
     )
+    return await generate_response_text(
+        input_text=input_text,
+        instructions=_instructions(language),
+        max_output_tokens=1600,
+    )
+
+
+@router.post("/api/general-chat", response_model=GeneralChatResponse)
+async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
     try:
-        answer, model = await generate_response_text(
-            input_text=input_text,
-            instructions=_instructions(req.language),
-            max_output_tokens=1600,
+        answer, model = await generate_general_chat_answer(
+            conversation_id=req.conversation_id,
+            text=req.text,
+            language=req.language,
+            actor_type=req.actor_type,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
