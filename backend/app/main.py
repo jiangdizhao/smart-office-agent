@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
+from app.enhanced_turn_api import router as enhanced_turn_router
 from app.event_bus import event_bus
 from app.executor import run_task_plan_only, run_task_with_tools
 from app.general_chat_api import router as general_chat_router
@@ -47,6 +48,7 @@ app.add_middleware(
 
 app.include_router(realtime_router)
 app.include_router(reception_router)
+app.include_router(enhanced_turn_router)
 app.include_router(turn_router)
 app.include_router(presentation_router)
 app.include_router(office_router)
