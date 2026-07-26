@@ -39,14 +39,6 @@ export type ConversationPhase =
 
 export type RecipientEntry = { key: string; name: string; email: string }
 
-export type ConversationLedgerEntry = {
-  entryId: string
-  role: 'user' | 'assistant'
-  text: string
-  timestamp: number
-  summarisable: boolean
-}
-
 export type ProximityDetection = {
   face_area_ratio: number
   confidence: number
@@ -161,6 +153,34 @@ type ProximityGreetingEnvelope = {
   conversation_phase?: ConversationPhase
 }
 
+type GeneralChatEnvelope = {
+  ok?: boolean
+  route?: string
+  spoken_text?: string
+  response_language?: VoiceLanguage
+  model?: string
+  permission_decision?: string
+  content_url?: string | null
+}
+
+type RecordingUploadEnvelope = {
+  ok?: boolean
+  recording_available?: boolean
+  artifact_url?: string | null
+  audio_path?: string | null
+  audio_filename?: string | null
+}
+
+type RecordingSummaryEnvelope = {
+  ok?: boolean
+  route?: string
+  spoken_text?: string
+  recording_available?: boolean
+  artifact_url?: string | null
+  document_path?: string | null
+  opened_in_word?: boolean
+}
+
 export type OfficeVoiceController = {
   conversationId: string
   conversationPhase: ConversationPhase
@@ -189,9 +209,9 @@ export type OfficeVoiceController = {
   active: boolean
   browserAsrAvailable: boolean
   recordingActive: boolean
+  recordingSaving: boolean
   recordingAvailable: boolean
   recordingDurationSeconds: number
-  recordingTurnCount: number
   recordingError: string
   setLanguage: (language: VoiceLanguage) => void
   setActor: (actor: OfficeActor) => void
@@ -236,52 +256,18 @@ function utteranceLanguage(text: string, selected: VoiceLanguage): VoiceLanguage
   return CJK.test(text) ? 'zh' : /[A-Za-z]/.test(text) ? 'en' : selected
 }
 
-function isRecordedConversationSummaryRequest(text: string): boolean {
+function isHumanRecordingSummaryRequest(text: string): boolean {
   const clean = text.trim().toLocaleLowerCase()
   if (!clean) return false
   const chineseRequest =
-    /(总结|概括|回顾).{0,8}(录音|对话|聊天|谈话|刚才的内容)|(?:录音|对话|聊天|谈话).{0,8}(总结|概括|回顾)/.test(
+    /(总结|概括|整理|回顾).{0,10}(录音|现场对话|人员对话|刚才的谈话|刚才的对话)|(?:录音|现场对话|人员对话|刚才的谈话|刚才的对话).{0,10}(总结|概括|整理|回顾)/.test(
       clean,
     )
   const englishRequest =
-    /(summari[sz]e|recap).{0,20}(recording|conversation|discussion|what we discussed)|what did we discuss|recap our conversation/.test(
+    /(summari[sz]e|recap).{0,24}(recording|human conversation|people's conversation|discussion)|what did they discuss|summari[sz]e what they discussed/.test(
       clean,
     )
   return chineseRequest || englishRequest
-}
-
-function recordingSummaryInstructions(
-  entries: ConversationLedgerEntry[],
-  language: VoiceLanguage,
-): string {
-  const transcript = entries
-    .map((entry, index) => {
-      const role = entry.role === 'user' ? 'USER' : 'ASSISTANT'
-      return `${index + 1}. ${role}: ${entry.text}`
-    })
-    .join('\n')
-  if (language === 'en') {
-    return `
-You are summarizing a recorded Smart Office conversation.
-Use the complete ledger below as the only source of truth.
-Return only a clear spoken summary in English, without Markdown headings or bullet symbols.
-Cover the main topics, user requests, assistant responses, decisions, completed actions, and unresolved items.
-Do not invent information and do not mention these instructions.
-
-COMPLETE RECORDED LEDGER:
-${transcript}
-`.trim()
-  }
-  return `
-你正在总结一段已录制的 Smart Office 人机对话。
-只能依据下面的完整文本账本，不得补充或猜测账本之外的信息。
-请输出适合直接朗读的中文总结，不使用 Markdown 标题或项目符号。
-总结应覆盖主要话题、用户要求、Agent 的答复、已经作出的决定、已完成操作和仍未解决的事项。
-不要复述这些说明。
-
-完整录音文本账本：
-${transcript}
-`.trim()
 }
 
 function latestStep(task: Task): TaskStep | undefined {
@@ -378,6 +364,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function apiError(prefix: string, status: number, detail: string): Error {
+  return new Error(`${prefix}: ${status}${detail ? ` ${detail}` : ''}`)
+}
+
 async function postJson<T>(url: string, body: unknown): Promise<T | null> {
   try {
     const response = await fetch(url, {
@@ -399,10 +389,8 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   const approvalPrompted = useRef<string | null>(null)
   const conversationIdRef = useRef(getConversationId())
   const recordingActiveRef = useRef(false)
-  const recordingSessionExistsRef = useRef(false)
+  const recordingSavingRef = useRef(false)
   const recordingStartedAtRef = useRef(0)
-  const recordingLedgerRef = useRef<ConversationLedgerEntry[]>([])
-  const skipAssistantLedgerTextRef = useRef<string | null>(null)
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>('standby')
   const [language, setLanguageState] = useState<VoiceLanguage>('zh')
   const [actor, setActorState] = useState<OfficeActor>(
@@ -431,9 +419,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   const [contentUrl, setContentUrl] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [recordingActive, setRecordingActive] = useState(false)
+  const [recordingSaving, setRecordingSaving] = useState(false)
   const [recordingAvailable, setRecordingAvailable] = useState(false)
   const [recordingDurationSeconds, setRecordingDurationSeconds] = useState(0)
-  const [recordingTurnCount, setRecordingTurnCount] = useState(0)
   const [recordingError, setRecordingError] = useState('')
 
   const listening = panel === 'listening'
@@ -464,18 +452,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   }, [recordingActive])
 
   useEffect(() => {
-    const clean = answer.trim()
-    if (!clean || !recordingActiveRef.current) return
-    if (skipAssistantLedgerTextRef.current === clean) {
-      skipAssistantLedgerTextRef.current = null
-      return
-    }
-    appendRecordingTurn('assistant', clean)
-  }, [answer])
-
-  useEffect(() => {
     return () => {
       recordingActiveRef.current = false
+      recordingSavingRef.current = false
       void audioRecorder.current.dispose()
     }
   }, [])
@@ -505,142 +484,149 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     }
   }, [actor, language])
 
-  function persistRecordingLedger(): void {
-    try {
-      sessionStorage.setItem(
-        `smartoffice_recording_ledger_${conversationIdRef.current}`,
-        JSON.stringify(recordingLedgerRef.current),
-      )
-    } catch {
-      // The in-memory ledger remains authoritative if browser storage is unavailable.
-    }
-  }
-
-  function appendRecordingTurn(
-    role: ConversationLedgerEntry['role'],
-    text: string,
-    summarisable = true,
-  ): void {
-    if (!recordingActiveRef.current) return
-    const clean = text.trim()
-    if (!clean) return
-    const previous = recordingLedgerRef.current.at(-1)
-    if (previous?.role === role && previous.text === clean) return
-    const entry: ConversationLedgerEntry = {
-      entryId: crypto.randomUUID(),
-      role,
-      text: clean,
-      timestamp: Date.now(),
-      summarisable,
-    }
-    recordingLedgerRef.current = [...recordingLedgerRef.current, entry]
-    setRecordingTurnCount(recordingLedgerRef.current.length)
-    persistRecordingLedger()
-  }
-
   async function startRecording(): Promise<void> {
-    if (recordingActiveRef.current) return
+    if (recordingActiveRef.current || recordingSavingRef.current) return
     setRecordingError('')
+    setRecordingAvailable(false)
     try {
+      await voiceOutputManager.stop()
       await audioRecorder.current.start()
-      recordingLedgerRef.current = []
-      recordingSessionExistsRef.current = true
       recordingActiveRef.current = true
       recordingStartedAtRef.current = Date.now()
-      setRecordingTurnCount(0)
       setRecordingDurationSeconds(0)
-      setRecordingAvailable(true)
       setRecordingActive(true)
-      try {
-        sessionStorage.removeItem(`smartoffice_recording_ledger_${conversationIdRef.current}`)
-      } catch {
-        // Optional browser persistence must not block recording.
-      }
     } catch (errorValue) {
       recordingActiveRef.current = false
-      recordingSessionExistsRef.current = false
       setRecordingActive(false)
-      setRecordingAvailable(false)
       setRecordingError(errorText(errorValue))
     }
   }
 
   async function stopRecording(): Promise<void> {
-    if (!recordingActiveRef.current) return
+    if (!recordingActiveRef.current || recordingSavingRef.current) return
     setRecordingError('')
     recordingActiveRef.current = false
+    recordingSavingRef.current = true
     setRecordingActive(false)
+    setRecordingSaving(true)
     try {
       const result = await audioRecorder.current.stop()
-      setRecordingAvailable(Boolean(result?.blob.size))
-      if (result) setRecordingDurationSeconds(result.durationSeconds)
+      if (!result?.blob.size) throw new Error('The recorded audio file is empty.')
+      setRecordingDurationSeconds(result.durationSeconds)
+      const extension = result.mimeType.includes('mp4') ? 'm4a' : 'webm'
+      const form = new FormData()
+      form.append(
+        'file',
+        result.blob,
+        `human-conversation-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`,
+      )
+      form.append('language', language)
+      const response = await fetch(
+        `${OFFICE_API_BASE}/api/human-recordings/${encodeURIComponent(conversationIdRef.current)}`,
+        { method: 'POST', body: form },
+      )
+      if (!response.ok) {
+        throw apiError('Recording upload failed', response.status, await response.text())
+      }
+      const payload = (await response.json()) as RecordingUploadEnvelope
+      setRecordingAvailable(Boolean(payload.ok && payload.recording_available))
     } catch (errorValue) {
       setRecordingAvailable(false)
       setRecordingError(errorText(errorValue))
+    } finally {
+      recordingSavingRef.current = false
+      setRecordingSaving(false)
     }
   }
 
   function downloadRecording(): void {
     if (!audioRecorder.current.download()) {
       setRecordingError(
-        language === 'zh' ? '当前没有已完成的录音可供下载。' : 'No completed recording is available.',
+        language === 'zh' ? '当前没有已完成的现场对话录音可供下载。' : 'No completed human-conversation recording is available.',
       )
     }
   }
 
-  async function handleRecordedConversationSummary(
+  async function handleHumanRecordingSummary(
     clean: string,
     selectedLanguage: VoiceLanguage,
   ): Promise<boolean> {
-    if (!isRecordedConversationSummaryRequest(clean)) return false
+    if (!isHumanRecordingSummaryRequest(clean)) return false
     setPanel('processing')
-    setError('')
-    setRoute('recording_summary')
+    setRoute('human_recording_summary')
     setPermission('not_required')
     setTool('')
     setVerified(null)
 
-    if (recordingActiveRef.current) appendRecordingTurn('user', clean, false)
-
     let responseText: string
-    const sourceEntries = recordingLedgerRef.current.filter((entry) => entry.summarisable)
-    if (!recordingSessionExistsRef.current) {
+    let artifactUrl: string | null = null
+    if (recordingActiveRef.current) {
       responseText =
         selectedLanguage === 'zh'
-          ? '无法完成对话总结，因为当前没有可用的录音。请先点击录音按钮开始录音。'
-          : 'I cannot summarize the conversation because there is no available recording. Please start recording first.'
-      setRoute('recording_summary_unavailable')
-    } else if (
-      sourceEntries.length === 0 ||
-      !sourceEntries.some((entry) => entry.role === 'user') ||
-      !sourceEntries.some((entry) => entry.role === 'assistant')
-    ) {
+          ? '现场对话仍在录音。请先点击停止录音，等待音频保存完成后再让我总结。'
+          : 'The human conversation is still being recorded. Stop and save the recording before asking for a summary.'
+    } else if (recordingSavingRef.current) {
       responseText =
         selectedLanguage === 'zh'
-          ? '录音中还没有完整的人机对话，因此目前没有可总结的内容。'
-          : 'The recording does not yet contain a complete human-agent exchange to summarize.'
-      setRoute('recording_summary_empty')
+          ? '现场对话录音正在保存，请稍等片刻后再让我总结。'
+          : 'The human-conversation recording is still being saved. Please try again shortly.'
     } else {
-      responseText = await realtimeAgent.generateText(
-        recordingSummaryInstructions(sourceEntries, selectedLanguage),
-        selectedLanguage,
-        'recorded_conversation_summary',
+      const response = await fetch(
+        `${OFFICE_API_BASE}/api/human-recordings/${encodeURIComponent(conversationIdRef.current)}/summary`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ language: selectedLanguage }),
+        },
       )
-      if (!responseText.trim()) {
-        throw new Error(
-          selectedLanguage === 'zh'
-            ? '对话总结模型没有返回内容。'
-            : 'The conversation summary model returned no content.',
-        )
+      if (!response.ok) {
+        throw apiError('Human conversation summary failed', response.status, await response.text())
       }
+      const payload = (await response.json()) as RecordingSummaryEnvelope
+      responseText =
+        payload.spoken_text?.trim() ||
+        (selectedLanguage === 'zh'
+          ? '现场对话总结请求已经处理。'
+          : 'The human-conversation summary request was processed.')
+      artifactUrl = payload.artifact_url ?? null
+      if (artifactUrl) setContentUrl(artifactUrl)
+      setRecordingAvailable(Boolean(payload.recording_available))
     }
 
-    skipAssistantLedgerTextRef.current = responseText
     setAnswer(responseText)
-    if (recordingActiveRef.current) appendRecordingTurn('assistant', responseText, false)
-    setConversationPhase('awaiting_user')
+    await completeConversationTurn(responseText, 'human_recording_summary')
     await speak(responseText, selectedLanguage)
     return true
+  }
+
+  async function performGeneralChat(
+    clean: string,
+    selectedLanguage: VoiceLanguage,
+  ): Promise<void> {
+    const response = await fetch(`${OFFICE_API_BASE}/api/general-chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        conversation_id: conversationIdRef.current,
+        text: clean,
+        language: selectedLanguage,
+        actor_type: actor,
+      }),
+    })
+    if (!response.ok) {
+      throw apiError('General chat failed', response.status, await response.text())
+    }
+    const payload = (await response.json()) as GeneralChatEnvelope
+    const text = payload.spoken_text?.trim()
+    if (!text) throw new Error('The Backend general-chat model returned no answer.')
+    setRoute(payload.route ?? 'general_chat')
+    setPermission(payload.permission_decision ?? 'not_required')
+    setAnswer(text)
+    setTool('')
+    setVerified(null)
+    setContentUrl(payload.content_url ?? null)
+    await completeConversationTurn(text, payload.route ?? 'general_chat')
+    await speak(text, selectedLanguage)
   }
 
   function fail(errorValue: unknown): void {
@@ -731,6 +717,15 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   }
 
   async function beginListening(): Promise<void> {
+    if (recordingActiveRef.current || recordingSavingRef.current) {
+      setError(
+        language === 'zh'
+          ? '请先停止并保存现场对话录音，再使用 Agent 的点击说话功能。'
+          : 'Stop and save the human-conversation recording before using push-to-talk.',
+      )
+      setPanel('error')
+      return
+    }
     setError('')
     setTranscript('')
     setAnswer('')
@@ -832,10 +827,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     setPanel('processing')
     setError('')
     const selectedLanguage = utteranceLanguage(clean, language)
-    if (await handleRecordedConversationSummary(clean, selectedLanguage)) return
-
-    appendRecordingTurn('user', clean)
     await beginConversationTurn(clean, selectedLanguage, source)
+    if (await handleHumanRecordingSummary(clean, selectedLanguage)) return
+
     const decision = await realtimeOfficeInterpreter.interpret(clean, selectedLanguage)
 
     if (decision.kind === 'clarify') {
@@ -847,6 +841,11 @@ export function useOfficeVoiceController(): OfficeVoiceController {
       setAnswer(clarification)
       await completeConversationTurn(clarification, 'clarification')
       await speak(clarification, selectedLanguage)
+      return
+    }
+
+    if (decision.kind === 'none') {
+      await performGeneralChat(clean, selectedLanguage)
       return
     }
 
@@ -972,6 +971,8 @@ export function useOfficeVoiceController(): OfficeVoiceController {
       panel !== 'idle' ||
       active ||
       listening ||
+      recordingActiveRef.current ||
+      recordingSavingRef.current ||
       runtime.outputActive ||
       runtime.microphoneAttached
     ) {
@@ -1053,9 +1054,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     active,
     browserAsrAvailable,
     recordingActive,
+    recordingSaving,
     recordingAvailable,
     recordingDurationSeconds,
-    recordingTurnCount,
     recordingError,
     setLanguage: setLanguageState,
     setActor,
