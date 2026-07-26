@@ -103,7 +103,18 @@ export function useProximityGreeting(
         }
         return eligible
       },
-      async (detection) => await controllerRef.current.triggerProximityGreeting(detection),
+      async (detection) => {
+        window.dispatchEvent(
+          new CustomEvent('smartoffice:host-intro-start', {
+            detail: { detection, welcomeText: 'Welcome to our office.' },
+          }),
+        )
+        const triggered = await controllerRef.current.triggerProximityGreeting(detection)
+        if (!triggered) {
+          window.dispatchEvent(new CustomEvent('smartoffice:host-intro-cancel'))
+        }
+        return triggered
+      },
       (nextStatus, nextDetail = '') => {
         setStatus(nextStatus)
         setDetail(nextDetail)
