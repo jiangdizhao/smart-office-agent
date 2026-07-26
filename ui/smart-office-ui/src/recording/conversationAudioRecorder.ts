@@ -1,5 +1,3 @@
-import { realtimeAgent } from '../voice/realtimeAgentRuntime'
-
 export type ConversationRecordingResult = {
   blob: Blob
   mimeType: string
@@ -22,17 +20,10 @@ export class ConversationAudioRecorder {
   private destination: MediaStreamAudioDestinationNode | null = null
   private microphoneStream: MediaStream | null = null
   private microphoneSource: MediaStreamAudioSourceNode | null = null
-  private remoteSource: MediaStreamAudioSourceNode | null = null
-  private remoteTrackId = ''
   private mediaRecorder: MediaRecorder | null = null
   private chunks: Blob[] = []
   private startedAt = 0
   private lastResult: ConversationRecordingResult | null = null
-
-  private readonly remoteStreamListener = (event: Event): void => {
-    const stream = (event as CustomEvent<MediaStream>).detail
-    if (stream) this.attachRemoteStream(stream)
-  }
 
   active(): boolean {
     return this.mediaRecorder?.state === 'recording'
@@ -61,7 +52,7 @@ export class ConversationAudioRecorder {
       const destination = context.createMediaStreamDestination()
       const microphoneStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
+          echoCancellation: false,
           noiseSuppression: true,
           autoGainControl: true,
           channelCount: 1,
@@ -78,10 +69,6 @@ export class ConversationAudioRecorder {
       this.chunks = []
       this.startedAt = Date.now()
       this.lastResult = null
-
-      const existingRemoteStream = realtimeAgent.currentRemoteAudioStream()
-      if (existingRemoteStream) this.attachRemoteStream(existingRemoteStream)
-      window.addEventListener('smartoffice:realtime-remote-stream', this.remoteStreamListener)
 
       const mimeType = supportedMimeType()
       const recorder = mimeType
@@ -150,21 +137,17 @@ export class ConversationAudioRecorder {
     anchor.href = url
     anchor.download =
       filename ??
-      `smart-office-conversation-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`
+      `human-conversation-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`
     anchor.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 5_000)
     return true
   }
 
   async dispose(preserveResult = true): Promise<void> {
-    window.removeEventListener('smartoffice:realtime-remote-stream', this.remoteStreamListener)
     if (this.mediaRecorder?.state === 'recording') {
       this.mediaRecorder.stop()
     }
     this.mediaRecorder = null
-    this.remoteSource?.disconnect()
-    this.remoteSource = null
-    this.remoteTrackId = ''
     this.microphoneSource?.disconnect()
     this.microphoneSource = null
     for (const track of this.microphoneStream?.getTracks() ?? []) track.stop()
@@ -176,16 +159,5 @@ export class ConversationAudioRecorder {
     this.chunks = []
     this.startedAt = 0
     if (!preserveResult) this.lastResult = null
-  }
-
-  private attachRemoteStream(stream: MediaStream): void {
-    const context = this.context
-    const destination = this.destination
-    const track = stream.getAudioTracks()[0]
-    if (!context || !destination || !track || track.id === this.remoteTrackId) return
-    this.remoteSource?.disconnect()
-    this.remoteSource = context.createMediaStreamSource(stream)
-    this.remoteSource.connect(destination)
-    this.remoteTrackId = track.id
   }
 }
