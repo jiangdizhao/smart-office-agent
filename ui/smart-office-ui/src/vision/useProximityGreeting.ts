@@ -80,9 +80,7 @@ export function useProximityGreeting(
           outputActive: current.runtime.outputActive,
           microphoneAttached: current.runtime.microphoneAttached,
         }
-        const phaseAllowsGreeting =
-          eligibility.conversationPhase === 'standby' ||
-          eligibility.conversationPhase === 'awaiting_user'
+        const phaseAllowsGreeting = eligibility.conversationPhase === 'standby'
         const eligible =
           phaseAllowsGreeting &&
           eligibility.panel === 'idle' &&
@@ -97,8 +95,7 @@ export function useProximityGreeting(
             ...eligibility,
             phaseAllowsGreeting,
             eligible,
-            note:
-              'standby and awaiting_user are allowed; microphoneAttached is diagnostic only',
+            note: 'introduction is standby-only; microphoneAttached is diagnostic only',
           })
         }
         return eligible
