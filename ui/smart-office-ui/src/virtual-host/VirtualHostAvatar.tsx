@@ -65,7 +65,8 @@ function stateLabel(state: VirtualHostVisualState): string {
 }
 
 export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
-  const videoRefs = [useRef<HTMLVideoElement>(null), useRef<HTMLVideoElement>(null)] as const
+  const firstVideoRef = useRef<HTMLVideoElement>(null)
+  const secondVideoRef = useRef<HTMLVideoElement>(null)
   const activeLayerRef = useRef<0 | 1>(0)
   const activeClipRef = useRef<VideoClip | null>(null)
   const stateRef = useRef(state)
@@ -82,6 +83,12 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
   const [introActive, setIntroActive] = useState(false)
   const [assetError, setAssetError] = useState(false)
 
+  const videoAt = useCallback(
+    (layer: 0 | 1): HTMLVideoElement | null =>
+      layer === 0 ? firstVideoRef.current : secondVideoRef.current,
+    [],
+  )
+
   useEffect(() => {
     stateRef.current = state
   }, [state])
@@ -95,7 +102,7 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
       transitionSerialRef.current = serial
       const previousLayer = activeLayerRef.current
       const nextLayer: 0 | 1 = previousLayer === 0 ? 1 : 0
-      const nextVideo = videoRefs[nextLayer].current
+      const nextVideo = videoAt(nextLayer)
       if (!nextVideo) return
 
       if (pauseTimerRef.current !== null) {
@@ -124,7 +131,7 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
         activeClipRef.current = clip
         setActiveLayer(nextLayer)
         pauseTimerRef.current = window.setTimeout(() => {
-          videoRefs[previousLayer].current?.pause()
+          videoAt(previousLayer)?.pause()
           pauseTimerRef.current = null
         }, CROSSFADE_MS + 90)
       } catch (error) {
@@ -133,7 +140,7 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
         setAssetError(true)
       }
     },
-    [videoRefs],
+    [videoAt],
   )
 
   const startIdleSequence = useCallback(() => {
@@ -151,9 +158,10 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
     return () => {
       transitionSerialRef.current += 1
       if (pauseTimerRef.current !== null) window.clearTimeout(pauseTimerRef.current)
-      videoRefs.forEach((videoRef) => videoRef.current?.pause())
+      firstVideoRef.current?.pause()
+      secondVideoRef.current?.pause()
     }
-  }, [startIdleSequence, videoRefs])
+  }, [startIdleSequence])
 
   useEffect(() => {
     const handleIntroStart = () => {
@@ -237,7 +245,7 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
         {([0, 1] as const).map((layer) => (
           <video
             key={layer}
-            ref={videoRefs[layer]}
+            ref={layer === 0 ? firstVideoRef : secondVideoRef}
             className={`video-avatar-layer ${activeLayer === layer ? 'active' : ''}`}
             muted
             playsInline
