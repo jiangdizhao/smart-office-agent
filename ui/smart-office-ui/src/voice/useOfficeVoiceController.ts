@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { ConversationAudioRecorder } from '../recording/conversationAudioRecorder'
 import { BrowserSpeechCapture } from './browserSpeechRecognition'
 import { realtimeAgent, type RealtimeRuntimeStatus, type VoiceLanguage } from './realtimeAgentRuntime'
 import { realtimeOfficeInterpreter, type RealtimeOfficeToolCall } from './realtimeOfficeInterpreter'
@@ -37,6 +38,14 @@ export type ConversationPhase =
   | 'closing'
 
 export type RecipientEntry = { key: string; name: string; email: string }
+
+export type ConversationLedgerEntry = {
+  entryId: string
+  role: 'user' | 'assistant'
+  text: string
+  timestamp: number
+  summarisable: boolean
+}
 
 export type ProximityDetection = {
   face_area_ratio: number
@@ -179,6 +188,11 @@ export type OfficeVoiceController = {
   busy: boolean
   active: boolean
   browserAsrAvailable: boolean
+  recordingActive: boolean
+  recordingAvailable: boolean
+  recordingDurationSeconds: number
+  recordingTurnCount: number
+  recordingError: string
   setLanguage: (language: VoiceLanguage) => void
   setActor: (actor: OfficeActor) => void
   setAsr: (provider: OfficeAsrProvider) => void
@@ -191,6 +205,9 @@ export type OfficeVoiceController = {
   submit: (text: string, source?: 'text' | 'voice') => Promise<void>
   approve: (action: ApprovalAction) => Promise<void>
   stopSpeaking: () => Promise<void>
+  startRecording: () => Promise<void>
+  stopRecording: () => Promise<void>
+  downloadRecording: () => void
   triggerProximityGreeting: (detection: ProximityDetection) => Promise<boolean>
   openArtifact: () => void
 }
@@ -217,6 +234,54 @@ function runtimeInitial(): RealtimeRuntimeStatus {
 
 function utteranceLanguage(text: string, selected: VoiceLanguage): VoiceLanguage {
   return CJK.test(text) ? 'zh' : /[A-Za-z]/.test(text) ? 'en' : selected
+}
+
+function isRecordedConversationSummaryRequest(text: string): boolean {
+  const clean = text.trim().toLocaleLowerCase()
+  if (!clean) return false
+  const chineseRequest =
+    /(总结|概括|回顾).{0,8}(录音|对话|聊天|谈话|刚才的内容)|(?:录音|对话|聊天|谈话).{0,8}(总结|概括|回顾)/.test(
+      clean,
+    )
+  const englishRequest =
+    /(summari[sz]e|recap).{0,20}(recording|conversation|discussion|what we discussed)|what did we discuss|recap our conversation/.test(
+      clean,
+    )
+  return chineseRequest || englishRequest
+}
+
+function recordingSummaryInstructions(
+  entries: ConversationLedgerEntry[],
+  language: VoiceLanguage,
+): string {
+  const transcript = entries
+    .map((entry, index) => {
+      const role = entry.role === 'user' ? 'USER' : 'ASSISTANT'
+      return `${index + 1}. ${role}: ${entry.text}`
+    })
+    .join('\n')
+  if (language === 'en') {
+    return `
+You are summarizing a recorded Smart Office conversation.
+Use the complete ledger below as the only source of truth.
+Return only a clear spoken summary in English, without Markdown headings or bullet symbols.
+Cover the main topics, user requests, assistant responses, decisions, completed actions, and unresolved items.
+Do not invent information and do not mention these instructions.
+
+COMPLETE RECORDED LEDGER:
+${transcript}
+`.trim()
+  }
+  return `
+你正在总结一段已录制的 Smart Office 人机对话。
+只能依据下面的完整文本账本，不得补充或猜测账本之外的信息。
+请输出适合直接朗读的中文总结，不使用 Markdown 标题或项目符号。
+总结应覆盖主要话题、用户要求、Agent 的答复、已经作出的决定、已完成操作和仍未解决的事项。
+不要复述这些说明。
+
+完整录音文本账本：
+${transcript}
+`.trim()
 }
 
 function latestStep(task: Task): TaskStep | undefined {
@@ -329,9 +394,15 @@ async function postJson<T>(url: string, body: unknown): Promise<T | null> {
 
 export function useOfficeVoiceController(): OfficeVoiceController {
   const browser = useRef(new BrowserSpeechCapture())
+  const audioRecorder = useRef(new ConversationAudioRecorder())
   const generation = useRef(0)
   const approvalPrompted = useRef<string | null>(null)
   const conversationIdRef = useRef(getConversationId())
+  const recordingActiveRef = useRef(false)
+  const recordingSessionExistsRef = useRef(false)
+  const recordingStartedAtRef = useRef(0)
+  const recordingLedgerRef = useRef<ConversationLedgerEntry[]>([])
+  const skipAssistantLedgerTextRef = useRef<string | null>(null)
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>('standby')
   const [language, setLanguageState] = useState<VoiceLanguage>('zh')
   const [actor, setActorState] = useState<OfficeActor>(
@@ -359,6 +430,11 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   const [office, setOffice] = useState<OfficeStatus | null>(null)
   const [contentUrl, setContentUrl] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [recordingActive, setRecordingActive] = useState(false)
+  const [recordingAvailable, setRecordingAvailable] = useState(false)
+  const [recordingDurationSeconds, setRecordingDurationSeconds] = useState(0)
+  const [recordingTurnCount, setRecordingTurnCount] = useState(0)
+  const [recordingError, setRecordingError] = useState('')
 
   const listening = panel === 'listening'
   const busy = ['connecting', 'processing', 'speaking'].includes(panel)
@@ -372,6 +448,35 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     return () => {
       window.clearInterval(timer)
       generation.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!recordingActive) return
+    const updateDuration = () => {
+      setRecordingDurationSeconds(
+        Math.max(0, Math.floor((Date.now() - recordingStartedAtRef.current) / 1_000)),
+      )
+    }
+    updateDuration()
+    const timer = window.setInterval(updateDuration, 1_000)
+    return () => window.clearInterval(timer)
+  }, [recordingActive])
+
+  useEffect(() => {
+    const clean = answer.trim()
+    if (!clean || !recordingActiveRef.current) return
+    if (skipAssistantLedgerTextRef.current === clean) {
+      skipAssistantLedgerTextRef.current = null
+      return
+    }
+    appendRecordingTurn('assistant', clean)
+  }, [answer])
+
+  useEffect(() => {
+    return () => {
+      recordingActiveRef.current = false
+      void audioRecorder.current.dispose()
     }
   }, [])
 
@@ -399,6 +504,144 @@ export function useOfficeVoiceController(): OfficeVoiceController {
       window.clearInterval(timer)
     }
   }, [actor, language])
+
+  function persistRecordingLedger(): void {
+    try {
+      sessionStorage.setItem(
+        `smartoffice_recording_ledger_${conversationIdRef.current}`,
+        JSON.stringify(recordingLedgerRef.current),
+      )
+    } catch {
+      // The in-memory ledger remains authoritative if browser storage is unavailable.
+    }
+  }
+
+  function appendRecordingTurn(
+    role: ConversationLedgerEntry['role'],
+    text: string,
+    summarisable = true,
+  ): void {
+    if (!recordingActiveRef.current) return
+    const clean = text.trim()
+    if (!clean) return
+    const previous = recordingLedgerRef.current.at(-1)
+    if (previous?.role === role && previous.text === clean) return
+    const entry: ConversationLedgerEntry = {
+      entryId: crypto.randomUUID(),
+      role,
+      text: clean,
+      timestamp: Date.now(),
+      summarisable,
+    }
+    recordingLedgerRef.current = [...recordingLedgerRef.current, entry]
+    setRecordingTurnCount(recordingLedgerRef.current.length)
+    persistRecordingLedger()
+  }
+
+  async function startRecording(): Promise<void> {
+    if (recordingActiveRef.current) return
+    setRecordingError('')
+    try {
+      await audioRecorder.current.start()
+      recordingLedgerRef.current = []
+      recordingSessionExistsRef.current = true
+      recordingActiveRef.current = true
+      recordingStartedAtRef.current = Date.now()
+      setRecordingTurnCount(0)
+      setRecordingDurationSeconds(0)
+      setRecordingAvailable(true)
+      setRecordingActive(true)
+      try {
+        sessionStorage.removeItem(`smartoffice_recording_ledger_${conversationIdRef.current}`)
+      } catch {
+        // Optional browser persistence must not block recording.
+      }
+    } catch (errorValue) {
+      recordingActiveRef.current = false
+      recordingSessionExistsRef.current = false
+      setRecordingActive(false)
+      setRecordingAvailable(false)
+      setRecordingError(errorText(errorValue))
+    }
+  }
+
+  async function stopRecording(): Promise<void> {
+    if (!recordingActiveRef.current) return
+    setRecordingError('')
+    recordingActiveRef.current = false
+    setRecordingActive(false)
+    try {
+      const result = await audioRecorder.current.stop()
+      setRecordingAvailable(Boolean(result?.blob.size))
+      if (result) setRecordingDurationSeconds(result.durationSeconds)
+    } catch (errorValue) {
+      setRecordingAvailable(false)
+      setRecordingError(errorText(errorValue))
+    }
+  }
+
+  function downloadRecording(): void {
+    if (!audioRecorder.current.download()) {
+      setRecordingError(
+        language === 'zh' ? '当前没有已完成的录音可供下载。' : 'No completed recording is available.',
+      )
+    }
+  }
+
+  async function handleRecordedConversationSummary(
+    clean: string,
+    selectedLanguage: VoiceLanguage,
+  ): Promise<boolean> {
+    if (!isRecordedConversationSummaryRequest(clean)) return false
+    setPanel('processing')
+    setError('')
+    setRoute('recording_summary')
+    setPermission('not_required')
+    setTool('')
+    setVerified(null)
+
+    if (recordingActiveRef.current) appendRecordingTurn('user', clean, false)
+
+    let responseText: string
+    const sourceEntries = recordingLedgerRef.current.filter((entry) => entry.summarisable)
+    if (!recordingSessionExistsRef.current) {
+      responseText =
+        selectedLanguage === 'zh'
+          ? '无法完成对话总结，因为当前没有可用的录音。请先点击录音按钮开始录音。'
+          : 'I cannot summarize the conversation because there is no available recording. Please start recording first.'
+      setRoute('recording_summary_unavailable')
+    } else if (
+      sourceEntries.length === 0 ||
+      !sourceEntries.some((entry) => entry.role === 'user') ||
+      !sourceEntries.some((entry) => entry.role === 'assistant')
+    ) {
+      responseText =
+        selectedLanguage === 'zh'
+          ? '录音中还没有完整的人机对话，因此目前没有可总结的内容。'
+          : 'The recording does not yet contain a complete human-agent exchange to summarize.'
+      setRoute('recording_summary_empty')
+    } else {
+      responseText = await realtimeAgent.generateText(
+        recordingSummaryInstructions(sourceEntries, selectedLanguage),
+        selectedLanguage,
+        'recorded_conversation_summary',
+      )
+      if (!responseText.trim()) {
+        throw new Error(
+          selectedLanguage === 'zh'
+            ? '对话总结模型没有返回内容。'
+            : 'The conversation summary model returned no content.',
+        )
+      }
+    }
+
+    skipAssistantLedgerTextRef.current = responseText
+    setAnswer(responseText)
+    if (recordingActiveRef.current) appendRecordingTurn('assistant', responseText, false)
+    setConversationPhase('awaiting_user')
+    await speak(responseText, selectedLanguage)
+    return true
+  }
 
   function fail(errorValue: unknown): void {
     setError(errorText(errorValue))
@@ -589,6 +832,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     setPanel('processing')
     setError('')
     const selectedLanguage = utteranceLanguage(clean, language)
+    if (await handleRecordedConversationSummary(clean, selectedLanguage)) return
+
+    appendRecordingTurn('user', clean)
     await beginConversationTurn(clean, selectedLanguage, source)
     const decision = await realtimeOfficeInterpreter.interpret(clean, selectedLanguage)
 
@@ -806,6 +1052,11 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     busy,
     active,
     browserAsrAvailable,
+    recordingActive,
+    recordingAvailable,
+    recordingDurationSeconds,
+    recordingTurnCount,
+    recordingError,
     setLanguage: setLanguageState,
     setActor,
     setAsr,
@@ -818,6 +1069,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     submit,
     approve,
     stopSpeaking,
+    startRecording,
+    stopRecording,
+    downloadRecording,
     triggerProximityGreeting,
     openArtifact,
   }
