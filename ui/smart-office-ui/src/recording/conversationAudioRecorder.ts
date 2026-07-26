@@ -8,12 +8,8 @@ export type ConversationRecordingResult = {
   durationSeconds: number
 }
 
-type AudioContextConstructor = new () => AudioContext
-
-declare global {
-  interface Window {
-    webkitAudioContext?: AudioContextConstructor
-  }
+type AudioContextWindow = Window & {
+  webkitAudioContext?: new () => AudioContext
 }
 
 function supportedMimeType(): string {
@@ -56,45 +52,51 @@ export class ConversationAudioRecorder {
     }
 
     await this.dispose(false)
-    const AudioContextClass = window.AudioContext ?? window.webkitAudioContext
+    const audioWindow = window as AudioContextWindow
+    const AudioContextClass = window.AudioContext ?? audioWindow.webkitAudioContext
     if (!AudioContextClass) throw new Error('Web Audio is unavailable.')
 
-    const context = new AudioContextClass()
-    const destination = context.createMediaStreamDestination()
-    const microphoneStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1,
-      },
-      video: false,
-    })
-    const microphoneSource = context.createMediaStreamSource(microphoneStream)
-    microphoneSource.connect(destination)
+    try {
+      const context = new AudioContextClass()
+      const destination = context.createMediaStreamDestination()
+      const microphoneStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+        video: false,
+      })
+      const microphoneSource = context.createMediaStreamSource(microphoneStream)
+      microphoneSource.connect(destination)
 
-    this.context = context
-    this.destination = destination
-    this.microphoneStream = microphoneStream
-    this.microphoneSource = microphoneSource
-    this.chunks = []
-    this.startedAt = Date.now()
-    this.lastResult = null
+      this.context = context
+      this.destination = destination
+      this.microphoneStream = microphoneStream
+      this.microphoneSource = microphoneSource
+      this.chunks = []
+      this.startedAt = Date.now()
+      this.lastResult = null
 
-    const existingRemoteStream = realtimeAgent.currentRemoteAudioStream()
-    if (existingRemoteStream) this.attachRemoteStream(existingRemoteStream)
-    window.addEventListener('smartoffice:realtime-remote-stream', this.remoteStreamListener)
+      const existingRemoteStream = realtimeAgent.currentRemoteAudioStream()
+      if (existingRemoteStream) this.attachRemoteStream(existingRemoteStream)
+      window.addEventListener('smartoffice:realtime-remote-stream', this.remoteStreamListener)
 
-    const mimeType = supportedMimeType()
-    const recorder = mimeType
-      ? new MediaRecorder(destination.stream, { mimeType })
-      : new MediaRecorder(destination.stream)
-    recorder.addEventListener('dataavailable', (event) => {
-      if (event.data.size > 0) this.chunks.push(event.data)
-    })
-    this.mediaRecorder = recorder
-    await context.resume().catch(() => undefined)
-    recorder.start(5_000)
+      const mimeType = supportedMimeType()
+      const recorder = mimeType
+        ? new MediaRecorder(destination.stream, { mimeType })
+        : new MediaRecorder(destination.stream)
+      recorder.addEventListener('dataavailable', (event) => {
+        if (event.data.size > 0) this.chunks.push(event.data)
+      })
+      this.mediaRecorder = recorder
+      await context.resume().catch(() => undefined)
+      recorder.start(5_000)
+    } catch (error) {
+      await this.dispose(false)
+      throw error
+    }
   }
 
   async stop(): Promise<ConversationRecordingResult | null> {
@@ -117,7 +119,8 @@ export class ConversationAudioRecorder {
       }
       const onError = (event: Event) => {
         cleanup()
-        reject(new Error((event as ErrorEvent).message || 'Conversation recording failed.'))
+        const recorderError = event as Event & { error?: DOMException }
+        reject(new Error(recorderError.error?.message || 'Conversation recording failed.'))
       }
       recorder.addEventListener('stop', onStop)
       recorder.addEventListener('error', onError)
@@ -145,7 +148,9 @@ export class ConversationAudioRecorder {
     const url = URL.createObjectURL(result.blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = filename ?? `smart-office-conversation-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`
+    anchor.download =
+      filename ??
+      `smart-office-conversation-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`
     anchor.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 5_000)
     return true
