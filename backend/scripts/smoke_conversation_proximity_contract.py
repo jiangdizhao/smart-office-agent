@@ -50,7 +50,7 @@ def main() -> None:
     greeting.raise_for_status()
     greeting_payload = greeting.json()
     assert greeting_payload["triggered"] is True
-    assert greeting_payload["greeting"] == "Hi there."
+    assert greeting_payload["greeting"] == "Welcome to our office."
     assert greeting_payload["conversation_phase"] == "standby"
 
     # The Backend completes each visual attention cycle immediately. The browser
@@ -63,7 +63,7 @@ def main() -> None:
     duplicate.raise_for_status()
     duplicate_payload = duplicate.json()
     assert duplicate_payload["triggered"] is True
-    assert duplicate_payload["greeting"] == "Hi there."
+    assert duplicate_payload["greeting"] == "Welcome to our office."
     assert duplicate_payload["conversation_phase"] == "standby"
 
     started = client.post(
@@ -107,7 +107,9 @@ def main() -> None:
 
     controller = read("ui/smart-office-ui/src/voice/useOfficeVoiceController.ts")
     host = read("ui/smart-office-ui/src/virtual-host/VirtualHostApp.tsx")
+    avatar = read("ui/smart-office-ui/src/virtual-host/VirtualHostAvatar.tsx")
     detector = read("ui/smart-office-ui/src/vision/proximityFaceMonitor.ts")
+    proximity_hook = read("ui/smart-office-ui/src/vision/useProximityGreeting.ts")
     drawer = read("ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx")
 
     for needle in (
@@ -138,12 +140,29 @@ def main() -> None:
     ):
         assert needle in detector, f"Missing person-face proximity detector contract: {needle}"
 
+    for needle in (
+        "smartoffice:host-intro-start",
+        "Welcome to our office.",
+    ):
+        assert needle in proximity_hook, f"Missing video introduction trigger contract: {needle}"
+
+    for needle in (
+        "idle-primary.mp4",
+        "idle-rare.mp4",
+        "talk-a.mp4",
+        "talk-b.mp4",
+        "talk-c.mp4",
+        "PRIMARY_IDLE_LOOPS_PER_RARE_GESTURE = 5",
+        "CROSSFADE_MS = 260",
+    ):
+        assert needle in avatar, f"Missing segmented video avatar contract: {needle}"
+
     assert "空闲近距主动问候" in drawer
     assert "人体占画面达到阈值且人体框内检测到人脸" in drawer
     assert "body_area_ratio" in drawer
 
-    print("PASS: conversation memory and person-size plus contained-face greeting contracts are present.")
-    print("NOTE: Real camera geometry, model download, and GPT Realtime speech output require local browser acceptance.")
+    print("PASS: conversation memory, video introduction, and segmented video-avatar contracts are present.")
+    print("NOTE: Real camera geometry, local video assets, and GPT Realtime playback require local browser acceptance.")
 
 
 if __name__ == "__main__":
