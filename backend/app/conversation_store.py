@@ -246,7 +246,7 @@ class ConversationStore:
             ):
                 return False, "", "cooldown", state
 
-            greeting = "嗨，你好吗？" if language == "zh" else "Hi there."
+            greeting = "Welcome to our office."
             state.conversation_phase = "awaiting_user"
             state.awaiting_user_since = now
             state.last_activity_at = now
