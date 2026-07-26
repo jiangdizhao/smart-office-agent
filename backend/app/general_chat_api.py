@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from app.conversation_store import ActorType, conversation_store
 from app.openai_services import generate_response_text
+from app.turn_api import TurnRequest, handle_turn
+from app.turn_router import classify_turn
 
 router = APIRouter(tags=["general-chat"])
 
@@ -22,12 +24,12 @@ class GeneralChatRequest(BaseModel):
 
 class GeneralChatResponse(BaseModel):
     ok: bool = True
-    route: Literal["general_chat"] = "general_chat"
+    route: str
     spoken_text: str
     response_language: Language
     model: str
-    permission_decision: Literal["not_required"] = "not_required"
-    content_url: None = None
+    permission_decision: str = "not_required"
+    content_url: str | None = None
 
 
 def _history_text(context: dict[str, Any], current_text: str) -> str:
@@ -97,10 +99,39 @@ async def generate_general_chat_answer(
 
 @router.post("/api/general-chat", response_model=GeneralChatResponse)
 async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
+    clean = " ".join(req.text.strip().split())
+    context = conversation_store.context_snapshot(
+        req.conversation_id,
+        language=req.language,
+        actor_type=req.actor_type,
+    )
+    decision = classify_turn(clean, req.actor_type)
+
+    if decision.reason != "general_direct_conversation":
+        delegated = await handle_turn(
+            TurnRequest(
+                conversation_id=req.conversation_id,
+                text=clean,
+                language=req.language,
+                input_source="voice",
+                actor_context={"type": req.actor_type, "source": "general_chat_router_delegate"},
+                active_task_id=context.get("active_task_id"),
+                realtime_tool_call=None,
+            )
+        )
+        return GeneralChatResponse(
+            route=delegated.route,
+            spoken_text=delegated.spoken_text,
+            response_language=delegated.response_language,
+            model="deterministic_turn_router",
+            permission_decision=delegated.permission_decision,
+            content_url=delegated.content_url,
+        )
+
     try:
         answer, model = await generate_general_chat_answer(
             conversation_id=req.conversation_id,
-            text=req.text,
+            text=clean,
             language=req.language,
             actor_type=req.actor_type,
         )
@@ -108,6 +139,7 @@ async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return GeneralChatResponse(
+        route="general_chat",
         spoken_text=answer,
         response_language=req.language,
         model=model,
