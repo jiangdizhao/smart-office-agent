@@ -103,6 +103,7 @@ export class PersistentRealtimeAgent {
   private silentStream: MediaStream | null = null
   private microphoneStream: MediaStream | null = null
   private remoteAudio: HTMLAudioElement | null = null
+  private remoteOutputStream: MediaStream | null = null
   private connectPromise: Promise<void> | null = null
   private captureStartedAt = 0
   private pendingCommit: PendingCommit | null = null
@@ -188,6 +189,24 @@ export class PersistentRealtimeAgent {
       )
       return spoken || clean
     })
+  }
+
+  async generateText(
+    instructions: string,
+    language: VoiceLanguage,
+    purpose = 'application_text_generation',
+  ): Promise<string> {
+    const clean = instructions.trim()
+    if (!clean) return ''
+    this.language = language
+    return await this.enqueue(async () => {
+      await this.ensureConnected()
+      return (await this.createResponse(['text'], clean, purpose)).trim()
+    })
+  }
+
+  currentRemoteAudioStream(): MediaStream | null {
+    return this.remoteOutputStream
   }
 
   async stopOutput(): Promise<void> {
@@ -293,7 +312,12 @@ export class PersistentRealtimeAgent {
     this.remoteAudio = remoteAudio
 
     pc.addEventListener('track', (event) => {
-      remoteAudio.srcObject = event.streams[0] ?? new MediaStream([event.track])
+      const stream = event.streams[0] ?? new MediaStream([event.track])
+      this.remoteOutputStream = stream
+      remoteAudio.srcObject = stream
+      window.dispatchEvent(
+        new CustomEvent<MediaStream>('smartoffice:realtime-remote-stream', { detail: stream }),
+      )
       void remoteAudio.play().catch(() => undefined)
     })
     dc.addEventListener('message', (event: MessageEvent<string>) => {
@@ -645,6 +669,7 @@ Output only normalized plain text without labels, JSON, Markdown, or quotation m
     this.pc = null
     this.sender = null
     this.remoteAudio = null
+    this.remoteOutputStream = null
     this.captureStartedAt = 0
   }
 }
