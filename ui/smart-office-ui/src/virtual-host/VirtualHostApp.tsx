@@ -12,6 +12,7 @@ import VirtualHostAvatar, { type VirtualHostVisualState } from './VirtualHostAva
 import './VirtualHost.css'
 import './VirtualHostPhase3.css'
 import './VirtualHostPhase4.css'
+import './ConversationRecording.css'
 
 const ACTIVE_TASK_STATUSES = ['created', 'planning', 'running']
 
@@ -84,6 +85,12 @@ function micButtonText(
   return labels[visualState][language]
 }
 
+function formatRecordingDuration(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 export default function VirtualHostApp() {
   const controller = useOfficeVoiceController()
   const proximity = useProximityGreeting(controller)
@@ -144,6 +151,14 @@ export default function VirtualHostApp() {
     setLastUserText('')
     setLastAssistantText('')
     await controller.beginListening()
+  }
+
+  async function handleRecordingAction(): Promise<void> {
+    if (controller.recordingActive) {
+      await controller.stopRecording()
+      return
+    }
+    await controller.startRecording()
   }
 
   async function handleTextSubmit(): Promise<void> {
@@ -247,25 +262,80 @@ export default function VirtualHostApp() {
         />
 
         <div className="voice-dock">
-          <button
-            type="button"
-            className={`primary-voice-button primary-${visualState}`}
-            disabled={primaryDisabled}
-            onClick={() => void handlePrimaryAction()}
-          >
-            <span className="primary-voice-icon" aria-hidden="true">
-              {visualState === 'listening' ? '■' : visualState === 'speaking' ? 'Ⅱ' : '●'}
+          <div className="voice-primary-row">
+            <button
+              type="button"
+              className={`conversation-record-button ${controller.recordingActive ? 'recording-active' : ''}`}
+              onClick={() => void handleRecordingAction()}
+              aria-pressed={controller.recordingActive}
+              aria-label={
+                controller.language === 'zh'
+                  ? controller.recordingActive
+                    ? '停止对话录音'
+                    : '开始对话录音'
+                  : controller.recordingActive
+                    ? 'Stop conversation recording'
+                    : 'Start conversation recording'
+              }
+            >
+              <span className="record-button-dot" aria-hidden="true">
+                {controller.recordingActive ? '■' : '●'}
+              </span>
+              <span>
+                {controller.recordingActive
+                  ? controller.language === 'zh'
+                    ? `停止录音 ${formatRecordingDuration(controller.recordingDurationSeconds)}`
+                    : `Stop ${formatRecordingDuration(controller.recordingDurationSeconds)}`
+                  : controller.language === 'zh'
+                    ? '开始录音'
+                    : 'Record'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              className={`primary-voice-button primary-${visualState}`}
+              disabled={primaryDisabled}
+              onClick={() => void handlePrimaryAction()}
+            >
+              <span className="primary-voice-icon" aria-hidden="true">
+                {visualState === 'listening' ? '■' : visualState === 'speaking' ? 'Ⅱ' : '●'}
+              </span>
+              <span>{micButtonText(visualState, controller.language)}</span>
+            </button>
+          </div>
+
+          <div className="voice-secondary-row">
+            <button
+              type="button"
+              className="text-input-toggle"
+              disabled={controller.busy || controller.listening}
+              onClick={() => setTextComposerOpen((open) => !open)}
+            >
+              {controller.language === 'zh' ? '文字输入' : 'Type instead'}
+            </button>
+            {controller.recordingAvailable && !controller.recordingActive ? (
+              <button
+                type="button"
+                className="recording-download-button"
+                onClick={controller.downloadRecording}
+              >
+                {controller.language === 'zh' ? '下载录音' : 'Download recording'}
+              </button>
+            ) : null}
+          </div>
+
+          {controller.recordingActive ? (
+            <span className="recording-inline-status" aria-live="polite">
+              {controller.language === 'zh'
+                ? `正在录制人机双方声音，文本账本已记录 ${controller.recordingTurnCount} 条。`
+                : `Recording both sides; ${controller.recordingTurnCount} ledger entries captured.`}
             </span>
-            <span>{micButtonText(visualState, controller.language)}</span>
-          </button>
-          <button
-            type="button"
-            className="text-input-toggle"
-            disabled={controller.busy || controller.listening}
-            onClick={() => setTextComposerOpen((open) => !open)}
-          >
-            {controller.language === 'zh' ? '文字输入' : 'Type instead'}
-          </button>
+          ) : controller.recordingError ? (
+            <span className="recording-inline-status" role="alert">
+              {controller.recordingError}
+            </span>
+          ) : null}
         </div>
 
         {textComposerOpen ? (
