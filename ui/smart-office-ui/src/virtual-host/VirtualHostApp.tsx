@@ -109,6 +109,10 @@ export default function VirtualHostApp() {
   const userCaption = controller.transcript.trim() || lastUserText
   const assistantCaption = controller.answer.trim() || lastAssistantText
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
+  const humanSummaryAvailable = Boolean(
+    controller.route === 'human_recording_summary' &&
+      controller.contentUrl?.startsWith('/api/human-recordings/artifacts/'),
+  )
   const recipientName = useMemo(() => {
     const key = controller.pendingRecipientKey
     const entry = controller.office?.recipient_catalog?.find((item) => item.key === key)
@@ -329,6 +333,15 @@ export default function VirtualHostApp() {
                 onClick={controller.downloadRecording}
               >
                 {controller.language === 'zh' ? '下载现场录音' : 'Download recording'}
+              </button>
+            ) : null}
+            {humanSummaryAvailable ? (
+              <button
+                type="button"
+                className="recording-download-button"
+                onClick={controller.openArtifact}
+              >
+                {controller.language === 'zh' ? '打开 DOCX 总结稿' : 'Open DOCX summary'}
               </button>
             ) : null}
           </div>
