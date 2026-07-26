@@ -8,6 +8,14 @@ function storedProvider(): VoiceOutputProvider {
   return localStorage.getItem(STORAGE_KEY) === 'none' ? 'none' : 'realtime'
 }
 
+function detectedSpeechLanguage(text: string, selected: VoiceLanguage): VoiceLanguage {
+  const chineseCharacters = (text.match(/[\u3400-\u9fff]/g) ?? []).length
+  const latinWords = (text.match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g) ?? []).length
+  if (chineseCharacters === 0 && latinWords > 0) return 'en'
+  if (chineseCharacters > 0) return 'zh'
+  return selected
+}
+
 export class VoiceOutputManager {
   private provider: VoiceOutputProvider = storedProvider()
 
@@ -31,7 +39,7 @@ export class VoiceOutputManager {
     const clean = text.trim()
     if (!clean || this.provider === 'none') return
     if (this.provider === 'realtime') {
-      await realtimeAgent.speakExact(clean, language)
+      await realtimeAgent.speakExact(clean, detectedSpeechLanguage(clean, language))
       return
     }
     throw new Error(`Unsupported voice output provider: ${this.provider}`)
