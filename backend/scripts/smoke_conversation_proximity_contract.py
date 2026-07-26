@@ -51,15 +51,20 @@ def main() -> None:
     greeting_payload = greeting.json()
     assert greeting_payload["triggered"] is True
     assert greeting_payload["greeting"] == "Hi there."
-    assert greeting_payload["conversation_phase"] == "awaiting_user"
+    assert greeting_payload["conversation_phase"] == "standby"
 
+    # The Backend completes each visual attention cycle immediately. The browser
+    # monitor owns continuous-unqualified rearm and therefore prevents this direct
+    # duplicate request during real UI operation. A direct API request is accepted.
     duplicate = client.post(
         f"/api/conversations/{conversation_id}/proximity-greeting",
         json={**detection, "stable_frames": 5},
     )
     duplicate.raise_for_status()
-    assert duplicate.json()["triggered"] is False
-    assert duplicate.json()["reason"].startswith("conversation_phase=")
+    duplicate_payload = duplicate.json()
+    assert duplicate_payload["triggered"] is True
+    assert duplicate_payload["greeting"] == "Hi there."
+    assert duplicate_payload["conversation_phase"] == "standby"
 
     started = client.post(
         f"/api/conversations/{conversation_id}/turn-start",
@@ -93,6 +98,7 @@ def main() -> None:
     state = context.json()["state"]
     assert state["conversation_phase"] == "awaiting_user"
     assert [message["role"] for message in state["recent_messages"]] == [
+        "assistant",
         "assistant",
         "user",
         "assistant",
