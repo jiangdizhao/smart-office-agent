@@ -64,8 +64,8 @@ function visualStateFromController(
 
 function welcomeText(language: VoiceLanguage): string {
   return language === 'zh'
-    ? '您好，我是您的 Smart Office 虚拟助手。请点击下方按钮告诉我需要处理的办公任务。'
-    : 'Hello, I am your Smart Office virtual assistant. Select the button below and tell me how I can help.'
+    ? '您好，我是您的 Smart Office 虚拟助手。您可以让我处理办公任务，也可以询问一般问题。'
+    : 'Hello, I am your Smart Office virtual assistant. You can ask general questions or request an office task.'
 }
 
 function micButtonText(
@@ -154,6 +154,7 @@ export default function VirtualHostApp() {
   }
 
   async function handleRecordingAction(): Promise<void> {
+    if (controller.recordingSaving) return
     if (controller.recordingActive) {
       await controller.stopRecording()
       return
@@ -183,7 +184,9 @@ export default function VirtualHostApp() {
     visualState === 'connecting' ||
     visualState === 'processing' ||
     visualState === 'executing' ||
-    visualState === 'waiting-approval'
+    visualState === 'waiting-approval' ||
+    controller.recordingActive ||
+    controller.recordingSaving
 
   return (
     <main
@@ -266,29 +269,34 @@ export default function VirtualHostApp() {
             <button
               type="button"
               className={`conversation-record-button ${controller.recordingActive ? 'recording-active' : ''}`}
+              disabled={controller.recordingSaving || controller.listening || controller.busy}
               onClick={() => void handleRecordingAction()}
               aria-pressed={controller.recordingActive}
               aria-label={
                 controller.language === 'zh'
                   ? controller.recordingActive
-                    ? '停止对话录音'
-                    : '开始对话录音'
+                    ? '停止现场人员对话录音'
+                    : '开始现场人员对话录音'
                   : controller.recordingActive
-                    ? 'Stop conversation recording'
-                    : 'Start conversation recording'
+                    ? 'Stop human conversation recording'
+                    : 'Start human conversation recording'
               }
             >
               <span className="record-button-dot" aria-hidden="true">
                 {controller.recordingActive ? '■' : '●'}
               </span>
               <span>
-                {controller.recordingActive
+                {controller.recordingSaving
                   ? controller.language === 'zh'
-                    ? `停止录音 ${formatRecordingDuration(controller.recordingDurationSeconds)}`
-                    : `Stop ${formatRecordingDuration(controller.recordingDurationSeconds)}`
-                  : controller.language === 'zh'
-                    ? '开始录音'
-                    : 'Record'}
+                    ? '正在保存录音'
+                    : 'Saving recording'
+                  : controller.recordingActive
+                    ? controller.language === 'zh'
+                      ? `停止录音 ${formatRecordingDuration(controller.recordingDurationSeconds)}`
+                      : `Stop ${formatRecordingDuration(controller.recordingDurationSeconds)}`
+                    : controller.language === 'zh'
+                      ? '开始现场录音'
+                      : 'Record people'}
               </span>
             </button>
 
@@ -309,7 +317,7 @@ export default function VirtualHostApp() {
             <button
               type="button"
               className="text-input-toggle"
-              disabled={controller.busy || controller.listening}
+              disabled={controller.busy || controller.listening || controller.recordingActive}
               onClick={() => setTextComposerOpen((open) => !open)}
             >
               {controller.language === 'zh' ? '文字输入' : 'Type instead'}
@@ -320,7 +328,7 @@ export default function VirtualHostApp() {
                 className="recording-download-button"
                 onClick={controller.downloadRecording}
               >
-                {controller.language === 'zh' ? '下载录音' : 'Download recording'}
+                {controller.language === 'zh' ? '下载现场录音' : 'Download recording'}
               </button>
             ) : null}
           </div>
@@ -328,12 +336,24 @@ export default function VirtualHostApp() {
           {controller.recordingActive ? (
             <span className="recording-inline-status" aria-live="polite">
               {controller.language === 'zh'
-                ? `正在录制人机双方声音，文本账本已记录 ${controller.recordingTurnCount} 条。`
-                : `Recording both sides; ${controller.recordingTurnCount} ledger entries captured.`}
+                ? '正在录制现场人员之间的对话。Agent 不参与录音；请结束谈话后点击停止录音。'
+                : 'Recording the conversation between people in the room. The Agent is not a participant.'}
+            </span>
+          ) : controller.recordingSaving ? (
+            <span className="recording-inline-status" aria-live="polite">
+              {controller.language === 'zh'
+                ? '正在生成并保存语音文件，请稍候。'
+                : 'Creating and saving the audio file.'}
             </span>
           ) : controller.recordingError ? (
             <span className="recording-inline-status" role="alert">
               {controller.recordingError}
+            </span>
+          ) : controller.recordingAvailable ? (
+            <span className="recording-inline-status" aria-live="polite">
+              {controller.language === 'zh'
+                ? '现场对话录音已保存。现在可以对 Agent 说：“总结一下刚才的录音。”'
+                : 'The human conversation recording is saved. Ask the Agent to summarize it.'}
             </span>
           ) : null}
         </div>
@@ -350,8 +370,8 @@ export default function VirtualHostApp() {
               }}
               placeholder={
                 controller.language === 'zh'
-                  ? '输入办公任务，例如：打开演示文稿并从第二页播放'
-                  : 'Enter an office task'
+                  ? '输入办公任务或一般问题'
+                  : 'Enter an office task or a general question'
               }
             />
             <button type="button" onClick={() => void handleTextSubmit()}>
