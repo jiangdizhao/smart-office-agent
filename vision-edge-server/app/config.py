@@ -51,7 +51,7 @@ def _default_camera_probe_modes() -> list[CameraProbeMode]:
 
 class CameraSettings(StrictModel):
     enabled: bool = True
-    probe_on_startup: bool = True
+    probe_on_startup: bool = False
     device_index: int = Field(default=1, ge=0)
     requested_width: int = Field(default=3840, ge=1)
     requested_height: int = Field(default=2160, ge=1)
@@ -61,6 +61,20 @@ class CameraSettings(StrictModel):
     ready_min_measured_fps: float = Field(default=10.0, gt=0)
     degraded_min_measured_fps: float = Field(default=3.0, gt=0)
     inter_attempt_delay_seconds: float = Field(default=0.25, ge=0, le=5.0)
+    runtime_backend: Literal["DSHOW", "MSMF", "ANY"] = "MSMF"
+    runtime_fourcc: str = "AUTO"
+    runtime_fps: float = Field(default=30.0, gt=0, le=120)
+    reconnect_delay_seconds: float = Field(default=1.0, ge=0.1, le=30.0)
+    reopen_after_consecutive_failures: int = Field(default=10, ge=1, le=1000)
+    stats_window_frames: int = Field(default=300, ge=30, le=5000)
+
+    @field_validator("runtime_fourcc")
+    @classmethod
+    def normalize_runtime_fourcc(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized != "AUTO" and len(normalized) != 4:
+            raise ValueError("runtime_fourcc must be AUTO or exactly four characters")
+        return normalized
 
     @model_validator(mode="after")
     def validate_performance_thresholds(self) -> CameraSettings:
@@ -75,13 +89,66 @@ class GpuSettings(StrictModel):
     nvidia_smi_timeout_seconds: float = Field(default=5.0, gt=0, le=30.0)
 
 
+class VisionSettings(StrictModel):
+    enabled: bool = True
+    start_on_startup: bool = True
+    global_width: int = Field(default=960, ge=160, le=3840)
+    global_height: int = Field(default=540, ge=90, le=2160)
+
+
+class DetectionSettings(StrictModel):
+    enabled: bool = True
+    model_path: str = "models/yolox_nano.onnx"
+    input_width: int = Field(default=416, ge=32, le=2048)
+    input_height: int = Field(default=416, ge=32, le=2048)
+    inference_hz: float = Field(default=12.0, gt=0, le=60)
+    score_threshold: float = Field(default=0.35, ge=0, le=1)
+    nms_threshold: float = Field(default=0.45, ge=0, le=1)
+    person_class_id: int = Field(default=0, ge=0)
+    max_detections: int = Field(default=20, ge=1, le=500)
+    providers: list[str] = Field(default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"], min_length=1)
+    require_cuda: bool = True
+
+
+class PresenceSettings(StrictModel):
+    enter_confirm_frames: int = Field(default=2, ge=1, le=120)
+    engage_confirm_frames: int = Field(default=3, ge=1, le=120)
+    left_timeout_seconds: float = Field(default=1.5, ge=0.1, le=60)
+    engagement_min_area_ratio: float = Field(default=0.08, ge=0, le=1)
+    engagement_zone: list[tuple[float, float]] = Field(
+        default_factory=lambda: [(0.05, 0.05), (0.95, 0.05), (0.95, 1.0), (0.05, 1.0)],
+        min_length=3,
+    )
+
+    @field_validator("engagement_zone")
+    @classmethod
+    def validate_zone(cls, value: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        for x, y in value:
+            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                raise ValueError("engagement_zone coordinates must be normalized to [0, 1]")
+        return value
+
+
+class DebugSettings(StrictModel):
+    enabled: bool = True
+    preview_width: int = Field(default=960, ge=160, le=3840)
+    preview_height: int = Field(default=540, ge=90, le=2160)
+    preview_fps: float = Field(default=5.0, gt=0, le=30)
+    jpeg_quality: int = Field(default=80, ge=20, le=100)
+    draw_zone: bool = True
+
+
 class AppConfig(StrictModel):
     service_name: str = "rtx-vision-edge-server"
-    version: str = "0.1.1"
-    phase: str = "phase0_camera_probe_v2"
+    version: str = "0.2.0"
+    phase: str = "phase1_camera_person_detection"
     server: ServerSettings = Field(default_factory=ServerSettings)
     camera: CameraSettings = Field(default_factory=CameraSettings)
     gpu: GpuSettings = Field(default_factory=GpuSettings)
+    vision: VisionSettings = Field(default_factory=VisionSettings)
+    detection: DetectionSettings = Field(default_factory=DetectionSettings)
+    presence: PresenceSettings = Field(default_factory=PresenceSettings)
+    debug: DebugSettings = Field(default_factory=DebugSettings)
 
 
 def default_config_path() -> Path:
