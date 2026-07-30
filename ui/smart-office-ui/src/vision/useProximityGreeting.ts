@@ -48,7 +48,7 @@ export type ProximityGreetingController = {
   source: ProximitySource
   detail: string
   endpoint: string
-  lastDetection: ProximityDetection | null
+  lastDetection: ProximityDetection | RemoteVisionDetection | null
   setEnabled: (enabled: boolean) => void
 }
 
@@ -66,7 +66,9 @@ export function useProximityGreeting(
   const [detail, setDetail] = useState(
     featureAvailable ? '' : 'disabled by configuration; camera and remote vision are not started',
   )
-  const [lastDetection, setLastDetection] = useState<ProximityDetection | null>(null)
+  const [lastDetection, setLastDetection] = useState<
+    ProximityDetection | RemoteVisionDetection | null
+  >(null)
   const controllerRef = useRef(controller)
   const previousConversationPhaseRef = useRef(controller.conversationPhase)
   const lastEligibilitySignatureRef = useRef('')
