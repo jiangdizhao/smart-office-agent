@@ -45,6 +45,14 @@ class VisionPipeline:
         with self._lock:
             if self._running:
                 return
+            if not self.config.vision.enabled:
+                self._status = "disabled"
+                self._last_error = None
+                return
+            if not self.config.camera.enabled:
+                self._status = "degraded"
+                self._last_error = "camera is disabled"
+                return
             self._running = True
             self._status = "starting"
             self._last_error = None
@@ -92,10 +100,17 @@ class VisionPipeline:
             if now < next_run:
                 self._skipped_frames += 1
                 continue
-            next_run = now + period
+            while next_run <= now:
+                next_run += period
+
             resize_started = time.perf_counter()
-            global_frame = cv2.resize(packet.frame, (self.config.vision.global_width, self.config.vision.global_height), interpolation=cv2.INTER_AREA)
+            global_frame = cv2.resize(
+                packet.frame,
+                (self.config.vision.global_width, self.config.vision.global_height),
+                interpolation=cv2.INTER_AREA,
+            )
             resize_ms = (time.perf_counter() - resize_started) * 1000.0
+
             detections: list[dict[str, Any]] = []
             detector_timings: dict[str, Any] = {}
             if self.detector.ready:
@@ -108,20 +123,46 @@ class VisionPipeline:
                         self._status = "degraded"
                         self._last_error = detail
                     logger.exception("person_detection_failed")
-            for event_type, payload in self.presence.update(detections, now_monotonic=packet.captured_at_monotonic):
+
+            for event_type, payload in self.presence.update(
+                detections,
+                now_monotonic=packet.captured_at_monotonic,
+            ):
                 self.emit_event(event_type, payload)
-            preview_started = time.perf_counter()
-            preview = self._annotate(global_frame, detections)
-            encode_ok, encoded = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), self.config.debug.jpeg_quality])
-            preview_ms = (time.perf_counter() - preview_started) * 1000.0
+
+            preview_ms = 0.0
+            encoded_bytes: bytes | None = None
+            if self.config.debug.enabled:
+                preview_started = time.perf_counter()
+                preview = self._annotate(global_frame, detections)
+                if preview.shape[1] != self.config.debug.preview_width or preview.shape[0] != self.config.debug.preview_height:
+                    preview = cv2.resize(
+                        preview,
+                        (self.config.debug.preview_width, self.config.debug.preview_height),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                encode_ok, encoded = cv2.imencode(
+                    ".jpg",
+                    preview,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), self.config.debug.jpeg_quality],
+                )
+                preview_ms = (time.perf_counter() - preview_started) * 1000.0
+                if encode_ok:
+                    encoded_bytes = encoded.tobytes()
+
             with self._lock:
                 self._processed_frames += 1
                 self._last_detections = detections
-                self._last_timings = {"resize_ms": round(resize_ms, 3), **detector_timings, "preview_ms": round(preview_ms, 3)}
+                self._last_timings = {
+                    "resize_ms": round(resize_ms, 3),
+                    **detector_timings,
+                    "preview_ms": round(preview_ms, 3),
+                }
                 self._last_processed_unix = time.time()
-                if encode_ok:
-                    self._preview_jpeg = encoded.tobytes()
-                if self.detector.ready and self.camera.running:
+                if encoded_bytes is not None:
+                    self._preview_jpeg = encoded_bytes
+                detector_ok = not self.config.detection.enabled or self.detector.ready
+                if detector_ok and self.camera.running:
                     self._status = "ready"
                     self._last_error = None
         with self._lock:
@@ -134,7 +175,10 @@ class VisionPipeline:
         output = frame.copy()
         height, width = output.shape[:2]
         if self.config.debug.draw_zone:
-            points = np.array([[int(x * width), int(y * height)] for x, y in self.config.presence.engagement_zone], dtype=np.int32)
+            points = np.array(
+                [[int(x * width), int(y * height)] for x, y in self.config.presence.engagement_zone],
+                dtype=np.int32,
+            )
             cv2.polylines(output, [points], isClosed=True, color=(0, 255, 255), thickness=2)
         for index, detection in enumerate(detections):
             box = detection["bbox"]
@@ -143,9 +187,35 @@ class VisionPipeline:
             y2 = int((box["y"] + box["height"]) * height)
             cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 0), 2)
             label = f"person {detection['score']:.2f} area={detection['area_ratio']:.3f}"
-            cv2.putText(output, label, (x1, max(18, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
-            cv2.putText(output, f"#{index + 1}", (x1 + 4, y1 + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-        cv2.putText(output, f"state={self.presence.state} people={len(detections)} frame={self._last_frame_id}", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(
+                output,
+                label,
+                (x1, max(18, y1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                output,
+                f"#{index + 1}",
+                (x1 + 4, y1 + 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 0),
+                2,
+            )
+        cv2.putText(
+            output,
+            f"state={self.presence.state} people={len(detections)} frame={self._last_frame_id}",
+            (12, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
         return output
 
     def latest_preview(self) -> bytes | None:
