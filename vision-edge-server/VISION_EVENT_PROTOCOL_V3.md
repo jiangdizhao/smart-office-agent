@@ -1,6 +1,7 @@
-# Vision event protocol: Phase 3 and Phase 4 additions
+# Vision Event Protocol v3
 
-The WebSocket endpoint remains:
+Protocol v3 adds a stable exhibition-visit layer between short-lived tracking and persistent,
+consented identity. The WebSocket endpoint remains:
 
 ```text
 ws://<vision-server>:8015/ws/v1/events
@@ -13,17 +14,154 @@ The wire envelope remains protocol version `1.0` for backward compatibility:
   "protocol_version": "1.0",
   "event_id": "evt_<uuid>",
   "sequence": 1,
-  "server_time": "2026-07-30T10:00:00+00:00",
+  "server_time": "2026-07-31T00:00:00+00:00",
   "source": "rtx-vision-edge-server",
-  "type": "visitor_face_ready",
+  "type": "visitor_session_recovered",
   "payload": {}
 }
 ```
 
-Clients must ignore event types they do not consume. Reconnect clients should request a fresh
+Clients must ignore event types they do not consume. Reconnecting clients should request a fresh
 `state_snapshot` because event delivery is live and not replayed.
 
-## Existing person and tracking events
+## Identifiers
+
+```text
+track_id             One continuous multi-object-tracking trajectory.
+visitor_session_id   One memory-only exhibition visit, recoverable for the configured TTL.
+identity_id          One persistent local identity created after explicit consent.
+```
+
+Consumers must not assume that `track_id` remains unchanged after a person fully leaves the camera
+view. The continuity key for an ongoing visit is `visitor_session_id`.
+
+## Visitor-session events
+
+### `visitor_session_started`
+
+```json
+{
+  "visitor_session_id": "visitor_2f9e8b0193a1",
+  "track_id": 17
+}
+```
+
+### `visitor_session_recovered`
+
+Emitted when a new track is linked to a prior visitor session.
+
+```json
+{
+  "visitor_session_id": "visitor_2f9e8b0193a1",
+  "previous_track_id": 17,
+  "current_track_id": 24,
+  "reason": "face_high",
+  "face_similarity": 0.68,
+  "face_margin": 0.21,
+  "body_similarity": 0.83,
+  "age_seconds": 6.4
+}
+```
+
+Possible recovery reasons:
+
+```text
+registered_identity
+face_high
+face_body_medium
+body_only
+```
+
+`face_body_medium` and `body_only` require repeated evidence. `registered_identity` and a clear
+high-confidence face match may recover immediately.
+
+### `visitor_session_identified`
+
+```json
+{
+  "visitor_session_id": "visitor_2f9e8b0193a1",
+  "track_id": 24,
+  "identity_id": "person_...",
+  "display_name": "Rico"
+}
+```
+
+### `visitor_session_expired`
+
+```json
+{
+  "visitor_session_id": "visitor_2f9e8b0193a1",
+  "last_track_id": 24,
+  "identity_id": "person_..."
+}
+```
+
+Anonymous face and body embeddings are deleted from memory when the session expires.
+
+## Face events
+
+### `visitor_face_recognition_usable`
+
+The current face is sufficient to attempt a comparison against the existing identity gallery. It
+may still be below the stricter enrollment gate.
+
+### `visitor_face_ready`
+
+The current track has accumulated enough enrollment-quality observations.
+
+### `visitor_face_lost`
+
+The track no longer has a recent face observation. The person track or visitor session may still
+exist.
+
+## Identity events
+
+### `visitor_identified`
+
+Emitted only after the configured adaptive confirmation rule is satisfied. Representative payload:
+
+```json
+{
+  "track_id": 24,
+  "visitor_session_id": "visitor_2f9e8b0193a1",
+  "identity_id": "person_...",
+  "display_name": "Rico",
+  "similarity": 0.64,
+  "sample_similarities": [0.69, 0.64, 0.59],
+  "second_best_similarity": 0.19,
+  "margin": 0.45,
+  "decision_tier": "high",
+  "required_observations": 1,
+  "confirmed_observations": 1,
+  "source": "sface_gallery"
+}
+```
+
+### `identity_enrolled`
+
+```json
+{
+  "track_id": 24,
+  "visitor_session_id": "visitor_2f9e8b0193a1",
+  "identity_id": "person_...",
+  "display_name": "Rico",
+  "samples_added": 4,
+  "reused_existing_identity": true
+}
+```
+
+### `identity_deleted`
+
+```json
+{
+  "identity_id": "person_..."
+}
+```
+
+## Existing tracking and reception events
+
+The following remain supported and are enriched with `visitor_session_id` when a corresponding
+session exists:
 
 ```text
 visitor_entered
@@ -34,115 +172,14 @@ group_detected
 primary_visitor_changed
 ```
 
-Those event payloads continue to carry the anonymous `track_id`.
-
-## Phase 3 events
-
-### `visitor_face_ready`
-
-Emitted when a track has passed the face quality gate for the configured number of stable face
-analysis cycles.
-
-Representative payload:
-
-```json
-{
-  "track_id": 7,
-  "frame_id": 2810,
-  "bbox": {
-    "x": 0.42,
-    "y": 0.18,
-    "width": 0.12,
-    "height": 0.22
-  },
-  "landmarks": [
-    {"x": 0.45, "y": 0.25},
-    {"x": 0.50, "y": 0.25},
-    {"x": 0.48, "y": 0.29},
-    {"x": 0.46, "y": 0.34},
-    {"x": 0.50, "y": 0.34}
-  ],
-  "quality": {
-    "score": 0.82,
-    "ready": true,
-    "sharpness": 120.0,
-    "brightness": 118.0,
-    "frontal_score": 0.88
-  },
-  "stable_frames": 3,
-  "ready": true,
-  "primary": true
-}
-```
-
-The event means the image is suitable for the configured identity pipeline. It is not a
-liveness or legal-identity assertion.
-
-### `visitor_face_lost`
-
-Emitted when a previously ready face has not been observed for the configured stale timeout.
-The person track may still exist.
-
-```json
-{
-  "track_id": 7,
-  "age_seconds": 1.04
-}
-```
-
-## Phase 4 events
-
-### `visitor_identified`
-
-Emitted once when a track is confirmed against a consented local identity.
-
-```json
-{
-  "track_id": 12,
-  "identity_id": "person_1234",
-  "display_name": "Rico",
-  "external_id": null,
-  "similarity": 0.71,
-  "second_best_similarity": 0.44,
-  "margin": 0.27,
-  "quality_score": 0.84,
-  "confirmed_observations": 3,
-  "identified_at_unix": 1785399000.0,
-  "consent_at_unix": 1785398000.0
-}
-```
-
-Consumers should use `identity_id` as the stable local key and `track_id` as the current visual
-session key.
-
-### `identity_enrolled`
-
-Emitted only after an explicit enrollment API action.
-
-```json
-{
-  "track_id": 7,
-  "identity_id": "person_1234",
-  "display_name": "Rico",
-  "consent_at_unix": 1785398000.0
-}
-```
-
-### `identity_deleted`
-
-```json
-{
-  "identity_id": "person_1234"
-}
-```
-
-After deletion, the corresponding embeddings are removed by SQLite foreign-key cascade and the
-in-memory gallery is reloaded.
+Some legacy tracker payloads may also contain `visit_session_id`. New clients must use
+`visitor_session_id`, which is the stable fusion-layer identifier.
 
 ## Privacy boundary
 
-- Face images are not stored by the identity database.
-- Enrollment is disabled without explicit consent.
-- Embeddings and consent metadata stay on the local RTX vision server.
-- `visitor_identified` describes a match to a local enrolled identity, not a government or legal
-  identity verification.
+- Anonymous visitor-session face and body embeddings are memory-only.
+- Anonymous visitor sessions are not restored after server restart.
+- No face images are stored by the identity runtime.
+- Persistent identity enrollment requires explicit consent.
+- Identity enrollment and deletion endpoints are restricted to the local RTX operator.
+- A local SFace match is not legal or government identity verification.
