@@ -102,12 +102,63 @@ class DetectionSettings(StrictModel):
     input_width: int = Field(default=416, ge=32, le=2048)
     input_height: int = Field(default=416, ge=32, le=2048)
     inference_hz: float = Field(default=12.0, gt=0, le=60)
-    score_threshold: float = Field(default=0.35, ge=0, le=1)
+    score_threshold: float = Field(default=0.10, ge=0, le=1)
     nms_threshold: float = Field(default=0.45, ge=0, le=1)
     person_class_id: int = Field(default=0, ge=0)
     max_detections: int = Field(default=20, ge=1, le=500)
-    providers: list[str] = Field(default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"], min_length=1)
+    providers: list[str] = Field(
+        default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"], min_length=1
+    )
     require_cuda: bool = True
+
+
+class ReIdSettings(StrictModel):
+    enabled: bool = True
+    model_path: str = "models/osnet_x0_25.onnx"
+    input_width: int = Field(default=128, ge=32, le=1024)
+    input_height: int = Field(default=256, ge=64, le=2048)
+    providers: list[str] = Field(
+        default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"], min_length=1
+    )
+    require_cuda: bool = True
+    allow_histogram_fallback: bool = True
+    crop_margin: float = Field(default=0.02, ge=0, le=0.25)
+    min_crop_width: int = Field(default=32, ge=8, le=2048)
+    min_crop_height: int = Field(default=80, ge=8, le=4096)
+    histogram_h_bins: int = Field(default=16, ge=4, le=64)
+    histogram_s_bins: int = Field(default=16, ge=4, le=64)
+
+
+class TrackingSettings(StrictModel):
+    enabled: bool = True
+    low_threshold: float = Field(default=0.10, ge=0, le=1)
+    high_threshold: float = Field(default=0.50, ge=0, le=1)
+    new_track_threshold: float = Field(default=0.60, ge=0, le=1)
+    confirm_hits: int = Field(default=3, ge=1, le=30)
+    confirm_window_frames: int = Field(default=5, ge=1, le=120)
+    lost_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
+    removed_retention_seconds: float = Field(default=3.0, ge=0, le=60)
+    gallery_size: int = Field(default=10, ge=1, le=100)
+    feature_ema_alpha: float = Field(default=0.10, gt=0, le=1)
+    iou_weight: float = Field(default=0.45, ge=0, le=1)
+    motion_weight: float = Field(default=0.20, ge=0, le=1)
+    appearance_weight: float = Field(default=0.35, ge=0, le=1)
+    first_stage_max_cost: float = Field(default=0.82, ge=0, le=2)
+    second_stage_max_cost: float = Field(default=0.78, ge=0, le=2)
+    tentative_max_cost: float = Field(default=0.72, ge=0, le=2)
+    max_center_distance: float = Field(default=0.25, gt=0, le=1.5)
+    lost_max_center_distance: float = Field(default=0.40, gt=0, le=2)
+    minimum_iou_gate: float = Field(default=0.01, ge=0, le=1)
+    mahalanobis_gate: float = Field(default=18.47, gt=0)
+    appearance_similarity_gate: float = Field(default=0.72, ge=-1, le=1)
+
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> TrackingSettings:
+        if not self.low_threshold <= self.high_threshold <= self.new_track_threshold:
+            raise ValueError("tracking thresholds must satisfy low <= high <= new_track")
+        if self.iou_weight + self.motion_weight + self.appearance_weight <= 0:
+            raise ValueError("at least one tracking association weight must be positive")
+        return self
 
 
 class PresenceSettings(StrictModel):
@@ -129,25 +180,43 @@ class PresenceSettings(StrictModel):
         return value
 
 
+class PrimarySettings(StrictModel):
+    acquire_stable_seconds: float = Field(default=0.5, ge=0, le=10)
+    challenger_margin: float = Field(default=0.20, ge=0, le=1)
+    challenger_hold_seconds: float = Field(default=1.0, ge=0, le=10)
+    lost_lock_seconds: float = Field(default=2.0, ge=0, le=30)
+    area_full_scale_ratio: float = Field(default=0.25, gt=0, le=1)
+    dwell_full_scale_seconds: float = Field(default=5.0, gt=0, le=120)
+    stability_full_scale_hits: int = Field(default=20, ge=1, le=1000)
+    target_x: float = Field(default=0.5, ge=0, le=1)
+    target_y: float = Field(default=0.85, ge=0, le=1)
+
+
 class DebugSettings(StrictModel):
     enabled: bool = True
     preview_width: int = Field(default=960, ge=160, le=3840)
     preview_height: int = Field(default=540, ge=90, le=2160)
-    preview_fps: float = Field(default=5.0, gt=0, le=30)
+    preview_fps: float = Field(default=10.0, gt=0, le=30)
     jpeg_quality: int = Field(default=80, ge=20, le=100)
     draw_zone: bool = True
+    draw_raw_detections: bool = False
+    draw_track_trails: bool = True
+    draw_lost_tracks: bool = True
 
 
 class AppConfig(StrictModel):
     service_name: str = "rtx-vision-edge-server"
-    version: str = "0.2.0"
-    phase: str = "phase1_camera_person_detection"
+    version: str = "0.3.0"
+    phase: str = "phase2_multi_object_tracking"
     server: ServerSettings = Field(default_factory=ServerSettings)
     camera: CameraSettings = Field(default_factory=CameraSettings)
     gpu: GpuSettings = Field(default_factory=GpuSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
     detection: DetectionSettings = Field(default_factory=DetectionSettings)
+    reid: ReIdSettings = Field(default_factory=ReIdSettings)
+    tracking: TrackingSettings = Field(default_factory=TrackingSettings)
     presence: PresenceSettings = Field(default_factory=PresenceSettings)
+    primary: PrimarySettings = Field(default_factory=PrimarySettings)
     debug: DebugSettings = Field(default_factory=DebugSettings)
 
 
