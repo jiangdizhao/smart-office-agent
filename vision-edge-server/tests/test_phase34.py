@@ -86,8 +86,8 @@ def test_face_roi_resize_maps_box_back_to_4k_coordinates(tmp_path: Path) -> None
     runtime = FaceRuntime(
         FaceSettings(
             person_crop_margin=0.0,
-            min_face_width_pixels=10,
-            min_face_height_pixels=10,
+            min_face_width_pixels=16,
+            min_face_height_pixels=16,
             min_sharpness=0,
             min_brightness=0,
             max_brightness=254,
