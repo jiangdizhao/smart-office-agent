@@ -1,0 +1,30 @@
+service_name: rtx-vision-edge-server
+version: 0.1.0
+phase: phase0_service_skeleton
+
+server:
+  host: 0.0.0.0
+  port: 8015
+  heartbeat_seconds: 5
+  log_level: INFO
+  cors_origins:
+    - "*"
+
+camera:
+  enabled: true
+  probe_on_startup: true
+  device_index: 0
+  requested_width: 3840
+  requested_height: 2160
+  requested_fps: 30
+  preferred_backends:
+    - DSHOW
+    - MSMF
+    - ANY
+  warmup_frames: 3
+  sample_frames: 5
+
+gpu:
+  probe_on_startup: true
+  require_cuda: false
+  nvidia_smi_timeout_seconds: 5

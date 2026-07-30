@@ -1,0 +1,33 @@
+name: Vision Edge Phase 0 Check
+
+on:
+  push:
+    branches:
+      - Vision-Edge-Server
+    paths:
+      - "vision-edge-server/**"
+      - ".github/workflows/vision-edge-phase0-check.yml"
+  pull_request:
+    paths:
+      - "vision-edge-server/**"
+      - ".github/workflows/vision-edge-phase0-check.yml"
+
+jobs:
+  phase0-contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vision-edge-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install contract-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi uvicorn pydantic PyYAML httpx websockets pytest
+      - name: Compile Phase 0 service
+        run: python -m compileall app scripts/smoke_test_phase0.py
+      - name: Run Phase 0 contract tests
+        run: python -m pytest

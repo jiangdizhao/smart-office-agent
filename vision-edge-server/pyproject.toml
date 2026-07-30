@@ -1,0 +1,13 @@
+[project]
+name = "rtx-vision-edge-server"
+version = "0.1.0"
+description = "Local RTX visual perception server for the Smart Office exhibition agent"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
