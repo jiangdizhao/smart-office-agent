@@ -9,6 +9,8 @@ from typing import Any, Callable
 from app.appearance import AppearanceExtractor
 from app.camera_runtime import CameraManager
 from app.config import AppConfig
+from app.face_runtime import FaceRuntime, FaceRuntimeError
+from app.identity_runtime import IdentityRuntime, IdentityRuntimeError
 from app.person_detector import DetectorUnavailableError, YoloXPersonDetector
 from app.primary_lock import OcclusionAwarePrimarySelector
 from app.tracking_runtime import MultiObjectTracker
@@ -30,10 +32,12 @@ class VisionPipeline:
             self.appearance,
         )
         self.tracker.primary = OcclusionAwarePrimarySelector(config.primary, config.presence)
+        self.face = FaceRuntime(config.face, server_root)
+        self.identity = IdentityRuntime(config.identity, server_root)
         self.emit_event = emit_event
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._running = False
         self._status = "stopped"
         self._last_error: str | None = None
@@ -42,6 +46,7 @@ class VisionPipeline:
         self._skipped_frames = 0
         self._last_detections: list[dict[str, Any]] = []
         self._last_tracks: list[dict[str, Any]] = []
+        self._last_faces: list[dict[str, Any]] = []
         self._last_timings: dict[str, Any] | None = None
         self._last_processed_unix: float | None = None
         self._preview_jpeg: bytes | None = None
@@ -69,31 +74,52 @@ class VisionPipeline:
             self._last_frame_id = 0
             self._last_detections = []
             self._last_tracks = []
+            self._last_faces = []
         self._stop_event.clear()
         self.tracker.reset()
         self.camera.start()
 
-        if self.config.detection.enabled:
-            try:
-                self.detector.load()
-            except DetectorUnavailableError as exc:
-                self.detector.last_error = str(exc)
-                with self._lock:
-                    self._status = "degraded"
-                    self._last_error = str(exc)
-                self.emit_event("server_degraded", {"component": "person_detector", "detail": str(exc)})
+        self._load_component(
+            "person_detector",
+            self.config.detection.enabled,
+            self.detector.load,
+            DetectorUnavailableError,
+        )
+        self._load_component("appearance", self.config.reid.enabled, self.appearance.load, Exception)
+        self._load_component("face_detector", self.config.face.enabled, self.face.load, FaceRuntimeError)
+        self._load_component(
+            "face_identity",
+            self.config.identity.enabled,
+            self.identity.load,
+            IdentityRuntimeError,
+        )
 
+        self._thread = threading.Thread(target=self._run_loop, name="vision-pipeline", daemon=True)
+        self._thread.start()
+
+    def _load_component(
+        self,
+        component: str,
+        enabled: bool,
+        loader: Callable[[], None],
+        expected_error: type[Exception],
+    ) -> None:
+        if not enabled:
+            return
         try:
-            self.appearance.load()
+            loader()
+        except expected_error as exc:
+            detail = str(exc)
+            with self._lock:
+                self._status = "degraded"
+                self._last_error = detail
+            self.emit_event("server_degraded", {"component": component, "detail": detail})
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}"
             with self._lock:
                 self._status = "degraded"
                 self._last_error = detail
-            self.emit_event("server_degraded", {"component": "appearance", "detail": detail})
-
-        self._thread = threading.Thread(target=self._run_loop, name="vision-pipeline", daemon=True)
-        self._thread.start()
+            self.emit_event("server_degraded", {"component": component, "detail": detail})
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop_event.set()
@@ -103,6 +129,8 @@ class VisionPipeline:
         self.camera.stop(timeout=timeout)
         self.detector.close()
         self.appearance.close()
+        self.face.close()
+        self.identity.close()
         with self._lock:
             self._running = False
             self._status = "stopped"
@@ -143,12 +171,7 @@ class VisionPipeline:
                 try:
                     detections, detector_timings = self.detector.detect(global_frame)
                 except Exception as exc:
-                    detail = f"{type(exc).__name__}: {exc}"
-                    self.detector.last_error = detail
-                    with self._lock:
-                        self._status = "degraded"
-                        self._last_error = detail
-                    logger.exception("person_detection_failed")
+                    self._degrade("person_detection_failed", exc)
 
             tracking_started = time.perf_counter()
             tracks: list[dict[str, Any]] = []
@@ -162,18 +185,43 @@ class VisionPipeline:
                     for event_type, payload in events:
                         self.emit_event(event_type, payload)
                 except Exception as exc:
-                    detail = f"{type(exc).__name__}: {exc}"
-                    with self._lock:
-                        self._status = "degraded"
-                        self._last_error = detail
-                    logger.exception("multi_object_tracking_failed")
+                    self._degrade("multi_object_tracking_failed", exc)
             tracking_ms = (time.perf_counter() - tracking_started) * 1000.0
+
+            face_started = time.perf_counter()
+            faces: list[dict[str, Any]] = []
+            if self.config.face.enabled and self.face.ready:
+                try:
+                    faces, face_events = self.face.process(
+                        packet.frame,
+                        tracks,
+                        frame_id=packet.frame_id,
+                        now_monotonic=packet.captured_at_monotonic,
+                    )
+                    for event_type, payload in face_events:
+                        self.emit_event(event_type, payload)
+                except Exception as exc:
+                    self.face.last_error = f"{type(exc).__name__}: {exc}"
+                    self._degrade("face_detection_failed", exc)
+            face_ms = (time.perf_counter() - face_started) * 1000.0
+
+            identity_started = time.perf_counter()
+            if self.config.identity.enabled and self.identity.ready:
+                try:
+                    self._process_identities(packet.frame, tracks, faces, packet.captured_at_monotonic)
+                except Exception as exc:
+                    self.identity.last_error = f"{type(exc).__name__}: {exc}"
+                    self._degrade("face_identity_failed", exc)
+            active_track_ids = {int(track["track_id"]) for track in tracks}
+            self.identity.cleanup_tracks(active_track_ids)
+            tracks = self._enrich_tracks(tracks, faces)
+            identity_ms = (time.perf_counter() - identity_started) * 1000.0
 
             preview_ms = 0.0
             encoded_bytes: bytes | None = None
             if self.config.debug.enabled:
                 preview_started = time.perf_counter()
-                preview = self._annotate(global_frame, detections, tracks)
+                preview = self._annotate(global_frame, detections, tracks, faces)
                 if (
                     preview.shape[1] != self.config.debug.preview_width
                     or preview.shape[0] != self.config.debug.preview_height
@@ -196,28 +244,82 @@ class VisionPipeline:
                 self._processed_frames += 1
                 self._last_detections = detections
                 self._last_tracks = tracks
+                self._last_faces = faces
                 self._last_timings = {
                     "resize_ms": round(resize_ms, 3),
                     **detector_timings,
                     "tracking_ms": round(tracking_ms, 3),
+                    "face_ms": round(face_ms, 3),
+                    "identity_ms": round(identity_ms, 3),
                     "preview_ms": round(preview_ms, 3),
                 }
                 self._last_processed_unix = time.time()
                 if encoded_bytes is not None:
                     self._preview_jpeg = encoded_bytes
-                detector_ok = not self.config.detection.enabled or self.detector.ready
-                appearance_ok = not self.config.reid.enabled or self.appearance.ready
-                if detector_ok and appearance_ok and self.camera.running:
+                if self._components_ready() and self.camera.running:
                     self._status = "ready"
                     self._last_error = None
         with self._lock:
             self._running = False
+
+    def _process_identities(
+        self,
+        source_frame: Any,
+        tracks: list[dict[str, Any]],
+        faces: list[dict[str, Any]],
+        now_monotonic: float,
+    ) -> None:
+        track_state = {int(track["track_id"]): track for track in tracks}
+        for face in faces:
+            track_id = int(face["track_id"])
+            track = track_state.get(track_id)
+            if track is None or track.get("state") != "confirmed" or not face.get("ready"):
+                continue
+            face_row = self.face.face_row(track_id)
+            if face_row is None:
+                continue
+            _, event = self.identity.process_track(
+                track_id=track_id,
+                source_frame=source_frame,
+                face_row=face_row,
+                quality_score=float(face["quality"]["score"]),
+                now_monotonic=now_monotonic,
+            )
+            if event is not None:
+                self.emit_event(event[0], event[1])
+
+    def _enrich_tracks(
+        self,
+        tracks: list[dict[str, Any]],
+        faces: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        faces_by_track = {int(face["track_id"]): face for face in faces}
+        enriched = self.identity.enrich_tracks(tracks)
+        for track in enriched:
+            track["face"] = faces_by_track.get(int(track["track_id"]))
+        return enriched
+
+    def _degrade(self, message: str, exc: Exception) -> None:
+        detail = f"{type(exc).__name__}: {exc}"
+        with self._lock:
+            self._status = "degraded"
+            self._last_error = detail
+        logger.exception(message)
+
+    def _components_ready(self) -> bool:
+        return bool(
+            (not self.config.detection.enabled or self.detector.ready)
+            and (not self.config.reid.enabled or self.appearance.ready)
+            and (not self.config.face.enabled or self.face.ready)
+            and (not self.config.identity.enabled or self.identity.ready)
+        )
 
     def _annotate(
         self,
         frame: Any,
         detections: list[dict[str, Any]],
         tracks: list[dict[str, Any]],
+        faces: list[dict[str, Any]],
     ) -> Any:
         import cv2
         import numpy as np
@@ -242,22 +344,21 @@ class VisionPipeline:
                 continue
             x1, y1, x2, y2 = _bbox_pixels(track["bbox"], width, height)
             if track["primary"]:
-                color = (255, 0, 255)
-                thickness = 4
+                color, thickness = (255, 0, 255), 4
             elif state == "lost":
-                color = (0, 165, 255)
-                thickness = 2
+                color, thickness = (0, 165, 255), 2
             elif state == "tentative":
-                color = (255, 255, 0)
-                thickness = 2
+                color, thickness = (255, 255, 0), 2
             else:
-                color = (0, 255, 0)
-                thickness = 2
+                color, thickness = (0, 255, 0), 2
             cv2.rectangle(output, (x1, y1), (x2, y2), color, thickness)
             label = (
                 f"ID {track['track_id']} {state} "
                 f"score={track['score']:.2f} area={track['area_ratio']:.3f}"
             )
+            identity = track.get("identity")
+            if identity and self.config.debug.draw_identity:
+                label += f" NAME={identity['display_name']} sim={identity['similarity']:.2f}"
             if track["primary"]:
                 label += " PRIMARY"
             if track["engaged"]:
@@ -267,7 +368,7 @@ class VisionPipeline:
                 label,
                 (x1, max(20, y1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.52,
+                0.50,
                 color,
                 2,
                 cv2.LINE_AA,
@@ -279,28 +380,59 @@ class VisionPipeline:
                 )
                 cv2.polylines(output, [trail], isClosed=False, color=color, thickness=2)
 
+        if self.config.debug.draw_faces:
+            for face in faces:
+                x1, y1, x2, y2 = _bbox_pixels(face["bbox"], width, height)
+                face_color = (255, 180, 0) if face.get("ready") else (80, 140, 255)
+                cv2.rectangle(output, (x1, y1), (x2, y2), face_color, 2)
+                quality = face["quality"]
+                identity = self.identity.result_for_track(int(face["track_id"]))
+                face_label = (
+                    f"face T{face['track_id']} q={quality['score']:.2f} "
+                    f"sharp={quality['sharpness']:.0f} frontal={quality['frontal_score']:.2f}"
+                )
+                if identity and self.config.debug.draw_identity:
+                    face_label += f" {identity['display_name']}"
+                cv2.putText(
+                    output,
+                    face_label,
+                    (x1, min(height - 8, y2 + 18)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    face_color,
+                    1,
+                    cv2.LINE_AA,
+                )
+                if self.config.debug.draw_face_landmarks:
+                    for point in face["landmarks"]:
+                        cv2.circle(
+                            output,
+                            (int(point["x"] * width), int(point["y"] * height)),
+                            2,
+                            face_color,
+                            -1,
+                        )
+
         tracker_snapshot = self.tracker.snapshot()
-        appearance_backend = tracker_snapshot["appearance"]["backend"]
+        identity_snapshot = self.identity.snapshot()
         lines = [
             (
-                f"phase2 state={tracker_snapshot['scene_state']} "
-                f"people={tracker_snapshot['person_count']} "
-                f"tracks={tracker_snapshot['track_count']} "
+                f"phase4 state={tracker_snapshot['scene_state']} "
+                f"people={tracker_snapshot['person_count']} tracks={tracker_snapshot['track_count']} "
                 f"primary={tracker_snapshot['primary_track_id']}"
             ),
             (
-                f"frame={self._last_frame_id} detector={len(detections)} "
-                f"appearance={appearance_backend} tracker={tracker_snapshot['last_update_ms']}ms"
+                f"frame={self._last_frame_id} detector={len(detections)} faces={len(faces)} "
+                f"known={identity_snapshot['identity_count']} identified={len(identity_snapshot['recognized_tracks'])}"
             ),
         ]
         for index, text in enumerate(lines):
-            y = 28 + index * 26
             cv2.putText(
                 output,
                 text,
-                (12, y),
+                (12, 28 + index * 26),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
+                0.60,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -318,12 +450,64 @@ class VisionPipeline:
                 "processed_at_unix": self._last_processed_unix,
                 "raw_person_count": len(self._last_detections),
                 "detections": list(self._last_detections),
-                "tracking": self.tracker.snapshot(),
+                "tracking": self.tracks_snapshot(),
+                "faces": self.face.snapshot(),
+                "identity": self.identity.snapshot(),
                 "timings": dict(self._last_timings) if self._last_timings else None,
             }
 
     def tracks_snapshot(self) -> dict[str, Any]:
-        return self.tracker.snapshot()
+        snapshot = self.tracker.snapshot()
+        with self._lock:
+            current_tracks = list(self._last_tracks)
+        snapshot["tracks"] = current_tracks
+        snapshot["face"] = self.face.snapshot()
+        snapshot["identity"] = self.identity.snapshot()
+        return snapshot
+
+    def faces_snapshot(self) -> dict[str, Any]:
+        snapshot = self.face.snapshot()
+        snapshot["recognized_tracks"] = self.identity.snapshot()["recognized_tracks"]
+        return snapshot
+
+    def identities_snapshot(self) -> dict[str, Any]:
+        return self.identity.snapshot()
+
+    def enroll_identity(
+        self,
+        *,
+        track_id: int,
+        display_name: str,
+        consent: bool,
+        external_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        identity_id: str | None = None,
+    ) -> dict[str, Any]:
+        face = self.face.face_observation(track_id)
+        if face is None or not face.get("ready"):
+            raise ValueError("the selected track does not have a stable high-quality face")
+        identity = self.identity.enroll(
+            track_id=track_id,
+            display_name=display_name,
+            consent=consent,
+            external_id=external_id,
+            metadata=metadata,
+            identity_id=identity_id,
+        )
+        payload = {
+            "track_id": track_id,
+            "identity_id": identity["identity_id"],
+            "display_name": identity["display_name"],
+            "consent_at_unix": identity["consent_at_unix"],
+        }
+        self.emit_event("identity_enrolled", payload)
+        return {"identity": identity, "track_id": track_id, "face": face}
+
+    def delete_identity(self, identity_id: str) -> bool:
+        deleted = self.identity.delete_identity(identity_id)
+        if deleted:
+            self.emit_event("identity_deleted", {"identity_id": identity_id})
+        return deleted
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -339,7 +523,9 @@ class VisionPipeline:
             }
         status["camera"] = self.camera.status()
         status["detector"] = self.detector.status()
-        status["tracking"] = self.tracker.snapshot()
+        status["tracking"] = self.tracks_snapshot()
+        status["face"] = self.face.snapshot()
+        status["identity"] = self.identity.snapshot()
         return status
 
 
