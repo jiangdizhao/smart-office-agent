@@ -1,6 +1,6 @@
 service_name: rtx-vision-edge-server
-version: 0.5.0
-phase: phase4_face_identity
+version: 0.6.0
+phase: phase4_identity_session_fusion
 
 server:
   host: 0.0.0.0
@@ -134,37 +134,81 @@ primary:
 face:
   enabled: true
   model_path: models/face_detection_yunet_2023mar.onnx
-  inference_hz: 5
-  score_threshold: 0.75
+  inference_hz: 7.5
+  score_threshold: 0.65
   nms_threshold: 0.30
   top_k: 5000
   max_tracks_per_cycle: 4
   person_crop_margin: 0.04
-  max_face_center_y_ratio: 0.72
-  min_face_width_pixels: 80
-  min_face_height_pixels: 80
-  min_sharpness: 35
-  sharpness_full_scale: 180
-  min_brightness: 35
-  max_brightness: 225
-  max_abs_roll_degrees: 28
-  max_nose_offset_ratio: 0.38
-  min_frontal_score: 0.55
-  min_quality_score: 0.58
-  ready_stable_frames: 3
-  stale_seconds: 1.0
+  max_face_center_y_ratio: 0.76
+
+  recognition_min_face_width_pixels: 56
+  recognition_min_face_height_pixels: 56
+  recognition_min_sharpness: 12
+  recognition_min_brightness: 20
+  recognition_max_brightness: 240
+  recognition_min_frontal_score: 0.30
+  recognition_min_quality_score: 0.40
+  recognition_stable_frames: 1
+
+  min_face_width_pixels: 64
+  min_face_height_pixels: 64
+  min_sharpness: 22
+  sharpness_full_scale: 160
+  min_brightness: 25
+  max_brightness: 235
+  max_abs_roll_degrees: 32
+  max_nose_offset_ratio: 0.45
+  min_frontal_score: 0.45
+  min_quality_score: 0.52
+  ready_stable_frames: 2
+  stale_seconds: 1.5
 
 identity:
   enabled: true
   model_path: models/face_recognition_sface_2021dec.onnx
   database_path: data/identity/visitor_identities.sqlite3
-  cosine_threshold: 0.50
-  minimum_margin: 0.08
-  confirm_observations: 3
-  recognition_interval_seconds: 0.40
-  enrollment_min_quality: 0.65
-  max_samples_per_identity: 10
+  cosine_threshold: 0.45
+  minimum_margin: 0.03
+  confirm_observations: 2
+  adaptive_confirmation_enabled: true
+  high_similarity_threshold: 0.60
+  medium_similarity_threshold: 0.45
+  low_similarity_threshold: 0.38
+  high_minimum_margin: 0.015
+  medium_minimum_margin: 0.03
+  low_minimum_margin: 0.05
+  high_confirm_observations: 1
+  medium_confirm_observations: 2
+  low_confirm_observations: 3
+  top_k_samples: 3
+  recognition_interval_seconds: 0.20
+  enrollment_min_quality: 0.52
+  enrollment_capture_seconds: 3.0
+  enrollment_prebuffer_seconds: 1.0
+  enrollment_target_samples: 8
+  enrollment_min_samples: 3
+  enrollment_max_selected_samples: 5
+  enrollment_duplicate_similarity: 0.995
+  recent_samples_per_track: 40
+  max_samples_per_identity: 12
   require_explicit_consent: true
+
+visitor_session:
+  enabled: true
+  ttl_seconds: 60
+  max_face_embeddings: 8
+  max_body_embeddings: 8
+  face_high_similarity: 0.56
+  face_medium_similarity: 0.44
+  face_minimum_margin: 0.03
+  body_high_similarity: 0.82
+  body_medium_similarity: 0.72
+  body_minimum_margin: 0.04
+  medium_confirmations: 2
+  body_only_confirmations: 3
+  body_only_max_age_seconds: 12
+  max_center_distance: 0.65
 
 debug:
   enabled: true
@@ -179,3 +223,4 @@ debug:
   draw_faces: true
   draw_face_landmarks: true
   draw_identity: true
+  draw_visitor_session: true
