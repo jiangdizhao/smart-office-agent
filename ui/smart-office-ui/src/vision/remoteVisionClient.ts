@@ -10,9 +10,30 @@ export type RemoteVisionStatus =
 export type RemoteVisionDetection = ProximityDetection & {
   track_id: number
   visitor_session_id: string
+  track_state?: string | null
+  visible: boolean
+  primary: boolean
+  engaged: boolean
+  greeting_eligible: boolean
   identity_id?: string | null
   display_name?: string | null
+  identity_similarity?: number | null
+  face_quality_score: number
+  recognition_usable: boolean
+  enrollment_usable: boolean
+  schema_version?: string | null
+  service_ready?: boolean
+  scene_state?: string | null
+  person_count?: number
+  visitor_count?: number
   source_event: string
+  updated_at: string
+}
+
+export function isRemoteVisionDetection(
+  detection: ProximityDetection | RemoteVisionDetection | null,
+): detection is RemoteVisionDetection {
+  return Boolean(detection && 'visitor_session_id' in detection && 'track_id' in detection)
 }
 
 type RemoteFace = {
@@ -22,6 +43,7 @@ type RemoteFace = {
   frontal_score?: number
   quality_score?: number
   recognition_usable?: boolean
+  enrollment_usable?: boolean
   stable_frames?: number
 }
 
@@ -34,6 +56,7 @@ type RemoteIdentity = {
 type RemoteVisitor = {
   track_id?: number
   visitor_session_id?: string | null
+  state?: string | null
   visible?: boolean
   primary?: boolean
   engaged?: boolean
@@ -50,6 +73,7 @@ type ClientState = {
   schema_version?: string
   ready?: boolean
   scene_state?: string
+  person_count?: number
   primary?: RemoteVisitor | null
   visitors?: RemoteVisitor[]
 }
@@ -81,6 +105,11 @@ function clamp(value: unknown): number {
   return Math.max(0, Math.min(1, numeric))
 }
 
+function optionalNumber(value: unknown): number | null {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
 export function remoteVisionUrl(): string {
   const configured = String(import.meta.env.VITE_VISION_SERVER_WS ?? '').trim()
   if (configured) return configured
@@ -91,13 +120,18 @@ export function remoteVisionUrl(): string {
   return 'ws://127.0.0.1:8015/ws/v1/events'
 }
 
-function toDetection(visitor: RemoteVisitor, sourceEvent: string): RemoteVisionDetection | null {
+function toDetection(
+  visitor: RemoteVisitor,
+  sourceEvent: string,
+  state: ClientState,
+): RemoteVisionDetection | null {
   const sessionId = String(visitor.visitor_session_id ?? '').trim()
   const trackId = Number(visitor.track_id)
   if (!sessionId || !Number.isFinite(trackId) || trackId <= 0) return null
   const face = visitor.face ?? {}
   const bodyConfidence = clamp(visitor.score)
   const faceConfidence = clamp(face.confidence)
+  const visitors = Array.isArray(state.visitors) ? state.visitors : []
   return {
     body_area_ratio: clamp(visitor.body_area_ratio),
     body_confidence: bodyConfidence,
@@ -112,9 +146,24 @@ function toDetection(visitor: RemoteVisitor, sourceEvent: string): RemoteVisionD
     detector: 'rtx-vision-phase5',
     track_id: trackId,
     visitor_session_id: sessionId,
+    track_state: visitor.state ?? null,
+    visible: Boolean(visitor.visible),
+    primary: Boolean(visitor.primary),
+    engaged: Boolean(visitor.engaged),
+    greeting_eligible: Boolean(visitor.greeting_eligible),
     identity_id: visitor.identity?.identity_id ?? null,
     display_name: visitor.identity?.display_name ?? null,
+    identity_similarity: optionalNumber(visitor.identity?.similarity),
+    face_quality_score: clamp(face.quality_score),
+    recognition_usable: Boolean(face.recognition_usable),
+    enrollment_usable: Boolean(face.enrollment_usable),
+    schema_version: state.schema_version ?? null,
+    service_ready: Boolean(state.ready),
+    scene_state: state.scene_state ?? null,
+    person_count: Math.max(0, Number(state.person_count) || 0),
+    visitor_count: visitors.length,
     source_event: sourceEvent,
+    updated_at: new Date().toISOString(),
   }
 }
 
@@ -272,7 +321,7 @@ export class RemoteVisionClient {
       this.options.onDetection(null)
       return
     }
-    const detection = toDetection(primary, 'client_state_snapshot')
+    const detection = toDetection(primary, 'client_state_snapshot', state)
     this.options.onDetection(detection)
     if (detection && primary.greeting_eligible) {
       this.options.onGreetingCandidate(detection)
