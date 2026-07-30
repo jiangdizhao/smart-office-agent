@@ -127,6 +127,7 @@ class VisitorSessionRuntime:
         self.settings = settings
         self.sessions: dict[str, VisitorSession] = {}
         self.track_to_session: dict[int, str] = {}
+        self._pending_matches: dict[int, tuple[str | None, int, str | None]] = {}
         self._lock = threading.RLock()
         self.recovery_count = 0
         self.expired_count = 0
@@ -139,6 +140,7 @@ class VisitorSessionRuntime:
         with self._lock:
             self.sessions.clear()
             self.track_to_session.clear()
+            self._pending_matches.clear()
             self.recovery_count = 0
             self.expired_count = 0
 
@@ -157,8 +159,6 @@ class VisitorSessionRuntime:
             return [dict(track) for track in tracks], events
 
         with self._lock:
-            # A visitor session is acquired only after MOT confirms the track. This avoids creating
-            # a new session during the tentative frames before SFace has produced an embedding.
             visible_tracks = [
                 dict(track)
                 for track in tracks
@@ -188,8 +188,6 @@ class VisitorSessionRuntime:
                 mapped_id = self.track_to_session.get(track_id)
                 session = self.sessions.get(mapped_id or "")
 
-                # A track may have acquired a provisional session before good face evidence became
-                # available. Re-evaluate that young session and merge it into a previous session.
                 if session is not None and self._is_provisional(session, track_id, now):
                     candidate, reason, diagnostics = self._match_session(
                         track=item,
@@ -200,11 +198,7 @@ class VisitorSessionRuntime:
                         assigned_sessions=assigned_sessions,
                         excluded_session_ids={session.visitor_session_id},
                     )
-                    if candidate is not None and reason in {
-                        "registered_identity",
-                        "face_high",
-                        "face_body_medium",
-                    }:
+                    if candidate is not None:
                         provisional_id = session.visitor_session_id
                         previous_track_id = candidate.last_track_id
                         self._discard_session(provisional_id)
@@ -298,8 +292,6 @@ class VisitorSessionRuntime:
                     )
                 by_track[track_id] = self._enrich_track(item, session, now)
 
-            # Lost and tentative tracks retain a historical mapping when one exists, but they do
-            # not keep a visitor session active and cannot block a returning confirmed track.
             for track_id, item in list(by_track.items()):
                 if track_id in visible_track_ids:
                     continue
@@ -361,6 +353,29 @@ class VisitorSessionRuntime:
         self.sessions[session.visitor_session_id] = session
         return session
 
+    def _confirm_candidate(
+        self,
+        *,
+        track_id: int,
+        session: VisitorSession,
+        reason: str,
+        required: int,
+    ) -> VisitorSession | None:
+        previous_id, count, previous_reason = self._pending_matches.get(
+            track_id, (None, 0, None)
+        )
+        same = previous_id == session.visitor_session_id and previous_reason == reason
+        count = count + 1 if same else 1
+        self._pending_matches[track_id] = (
+            session.visitor_session_id,
+            count,
+            reason,
+        )
+        if count < required:
+            return None
+        self._pending_matches.pop(track_id, None)
+        return session
+
     def _match_session(
         self,
         *,
@@ -372,6 +387,7 @@ class VisitorSessionRuntime:
         assigned_sessions: set[str],
         excluded_session_ids: set[str],
     ) -> tuple[VisitorSession | None, str | None, dict[str, Any]]:
+        track_id = int(track["track_id"])
         candidates = [
             session
             for session in self.sessions.values()
@@ -392,6 +408,7 @@ class VisitorSessionRuntime:
                 selected = max(
                     identity_matches, key=lambda item: item.last_seen_monotonic
                 )
+                self._pending_matches.pop(track_id, None)
                 return selected, "registered_identity", {"identity_id": identity_id}
 
         scored: list[tuple[float, float, float, VisitorSession]] = []
@@ -407,6 +424,7 @@ class VisitorSessionRuntime:
             scored.append((face_score, body_score, center_distance, session))
         scored.sort(key=lambda row: (row[0], row[1], -row[2]), reverse=True)
         if not scored:
+            self._pending_matches.pop(track_id, None)
             return None, None, {}
 
         best_face, best_body, center_distance, best_session = scored[0]
@@ -428,7 +446,9 @@ class VisitorSessionRuntime:
             best_face >= self.settings.face_high_similarity
             and face_margin >= self.settings.face_minimum_margin
         ):
+            self._pending_matches.pop(track_id, None)
             return best_session, "face_high", diagnostics
+
         if (
             best_face >= self.settings.face_medium_similarity
             and face_margin >= self.settings.face_minimum_margin
@@ -437,7 +457,14 @@ class VisitorSessionRuntime:
                 or center_distance <= self.settings.max_center_distance
             )
         ):
-            return best_session, "face_body_medium", diagnostics
+            confirmed = self._confirm_candidate(
+                track_id=track_id,
+                session=best_session,
+                reason="face_body_medium",
+                required=self.settings.medium_confirmations,
+            )
+            return confirmed, "face_body_medium", diagnostics
+
         if (
             face_embedding is None
             and age <= self.settings.body_only_max_age_seconds
@@ -445,7 +472,15 @@ class VisitorSessionRuntime:
             and body_margin >= self.settings.body_minimum_margin
             and center_distance <= self.settings.max_center_distance
         ):
-            return best_session, "body_only", diagnostics
+            confirmed = self._confirm_candidate(
+                track_id=track_id,
+                session=best_session,
+                reason="body_only",
+                required=self.settings.body_only_confirmations,
+            )
+            return confirmed, "body_only", diagnostics
+
+        self._pending_matches.pop(track_id, None)
         return None, None, diagnostics
 
     def _discard_session(self, session_id: str) -> None:
@@ -453,6 +488,7 @@ class VisitorSessionRuntime:
         for track_id, mapped_id in list(self.track_to_session.items()):
             if mapped_id == session_id:
                 self.track_to_session.pop(track_id, None)
+                self._pending_matches.pop(track_id, None)
 
     def _expire(self, now: float) -> list[VisitorSession]:
         expired: list[VisitorSession] = []
@@ -493,6 +529,7 @@ class VisitorSessionRuntime:
                 ),
                 "recovery_count": self.recovery_count,
                 "expired_count": self.expired_count,
+                "pending_match_count": len(self._pending_matches),
                 "sessions": sessions,
                 "privacy": {
                     "stores_images": False,
