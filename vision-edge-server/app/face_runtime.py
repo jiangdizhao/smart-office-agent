@@ -56,21 +56,36 @@ def analyse_face_quality(
     eye_distance = float(np.linalg.norm(left_eye - right_eye))
     eye_midpoint = (left_eye + right_eye) / 2.0
     mouth_midpoint = (left_mouth + right_mouth) / 2.0
-    roll_degrees = math.degrees(math.atan2(left_eye[1] - right_eye[1], left_eye[0] - right_eye[0]))
+    roll_degrees = math.degrees(
+        math.atan2(left_eye[1] - right_eye[1], left_eye[0] - right_eye[0])
+    )
     nose_offset = abs(float(nose[0] - eye_midpoint[0])) / max(eye_distance, 1e-6)
-    vertical_ratio = float((nose[1] - eye_midpoint[1]) / max(mouth_midpoint[1] - eye_midpoint[1], 1e-6))
+    vertical_ratio = float(
+        (nose[1] - eye_midpoint[1])
+        / max(mouth_midpoint[1] - eye_midpoint[1], 1e-6)
+    )
 
-    roll_score = _clip(1.0 - abs(roll_degrees) / max(settings.max_abs_roll_degrees, 1e-6))
-    yaw_score = _clip(1.0 - nose_offset / max(settings.max_nose_offset_ratio, 1e-6))
+    roll_score = _clip(
+        1.0 - abs(roll_degrees) / max(settings.max_abs_roll_degrees, 1e-6)
+    )
+    yaw_score = _clip(
+        1.0 - nose_offset / max(settings.max_nose_offset_ratio, 1e-6)
+    )
     vertical_score = _clip(1.0 - abs(vertical_ratio - 0.48) / 0.35)
     frontal_score = 0.45 * yaw_score + 0.35 * roll_score + 0.20 * vertical_score
 
-    size_score = min(width / settings.min_face_width_pixels, height / settings.min_face_height_pixels, 1.0)
+    size_score = min(
+        width / settings.min_face_width_pixels,
+        height / settings.min_face_height_pixels,
+        1.0,
+    )
     sharpness_score = _clip(sharpness / max(settings.sharpness_full_scale, 1e-6))
     if brightness < settings.min_brightness:
         brightness_score = _clip(brightness / max(settings.min_brightness, 1e-6))
     elif brightness > settings.max_brightness:
-        brightness_score = _clip((255.0 - brightness) / max(255.0 - settings.max_brightness, 1e-6))
+        brightness_score = _clip(
+            (255.0 - brightness) / max(255.0 - settings.max_brightness, 1e-6)
+        )
     else:
         brightness_score = 1.0
 
@@ -108,7 +123,9 @@ class FaceRuntime:
     def __init__(self, settings: FaceSettings, server_root: Path) -> None:
         self.settings = settings
         configured = Path(settings.model_path)
-        self.model_path = configured if configured.is_absolute() else server_root / configured
+        self.model_path = (
+            configured if configured.is_absolute() else server_root / configured
+        )
         self.detector: Any | None = None
         self.last_error: str | None = None
         self.detect_count = 0
@@ -128,13 +145,16 @@ class FaceRuntime:
             return
         if not self.model_path.exists():
             raise FaceRuntimeError(
-                f"YuNet face model is missing: {self.model_path}. Run scripts/download_face_models.ps1."
+                f"YuNet face model is missing: {self.model_path}. "
+                "Run scripts/download_face_models.ps1."
             )
         try:
             import cv2
 
             if not hasattr(cv2, "FaceDetectorYN"):
-                raise RuntimeError(f"OpenCV {cv2.__version__} does not provide FaceDetectorYN")
+                raise RuntimeError(
+                    f"OpenCV {cv2.__version__} does not provide FaceDetectorYN"
+                )
             self.detector = cv2.FaceDetectorYN.create(
                 str(self.model_path),
                 "",
@@ -146,7 +166,9 @@ class FaceRuntime:
             self.last_error = None
         except Exception as exc:
             self.detector = None
-            raise FaceRuntimeError(f"YuNet initialization failed: {type(exc).__name__}: {exc}") from exc
+            raise FaceRuntimeError(
+                f"YuNet initialization failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     def close(self) -> None:
         with self._lock:
@@ -158,7 +180,10 @@ class FaceRuntime:
     def should_run(self, now_monotonic: float) -> bool:
         if not self.settings.enabled or self.detector is None:
             return False
-        return now_monotonic - self._last_run_monotonic >= 1.0 / self.settings.inference_hz
+        return (
+            now_monotonic - self._last_run_monotonic
+            >= 1.0 / self.settings.inference_hz
+        )
 
     def process(
         self,
@@ -182,16 +207,24 @@ class FaceRuntime:
         candidates = [
             track
             for track in tracks
-            if track.get("visible") and track.get("state") in {"confirmed", "tentative"}
+            if track.get("visible")
+            and track.get("state") in {"confirmed", "tentative"}
         ]
-        candidates.sort(key=lambda item: (not bool(item.get("primary")), -float(item.get("area_ratio", 0.0))))
+        candidates.sort(
+            key=lambda item: (
+                not bool(item.get("primary")),
+                -float(item.get("area_ratio", 0.0)),
+            )
+        )
         candidates = candidates[: self.settings.max_tracks_per_cycle]
 
         observed_ids: set[int] = set()
         with self._lock:
             for track in candidates:
                 track_id = int(track["track_id"])
-                observation, face_row = self._detect_track_face(source_frame, track, frame_id, now_monotonic)
+                observation, face_row = self._detect_track_face(
+                    source_frame, track, frame_id, now_monotonic
+                )
                 if observation is None or face_row is None:
                     continue
                 observed_ids.add(track_id)
@@ -201,7 +234,8 @@ class FaceRuntime:
                     stable_frames = int(previous.get("stable_frames", 0)) + 1
                 observation["stable_frames"] = stable_frames
                 observation["ready"] = bool(
-                    observation["quality"]["ready"] and stable_frames >= self.settings.ready_stable_frames
+                    observation["quality"]["ready"]
+                    and stable_frames >= self.settings.ready_stable_frames
                 )
                 self._faces[track_id] = observation
                 self._face_rows[track_id] = face_row
@@ -209,7 +243,9 @@ class FaceRuntime:
                 is_ready = bool(observation["ready"])
                 self._ready_state[track_id] = is_ready
                 if is_ready and not was_ready:
-                    events.append(("visitor_face_ready", self._public_face(observation)))
+                    events.append(
+                        ("visitor_face_ready", self._public_face(observation))
+                    )
 
             for track_id in list(self._faces):
                 if track_id not in active_ids:
@@ -220,11 +256,21 @@ class FaceRuntime:
                     age = now_monotonic - float(observation["last_seen_monotonic"])
                     if age > self.settings.stale_seconds:
                         if self._ready_state.get(track_id, False):
-                            events.append(("visitor_face_lost", {"track_id": track_id, "age_seconds": round(age, 3)}))
+                            events.append(
+                                (
+                                    "visitor_face_lost",
+                                    {
+                                        "track_id": track_id,
+                                        "age_seconds": round(age, 3),
+                                    },
+                                )
+                            )
                         self._remove_track(track_id)
 
         self.detect_count += 1
-        self.last_detection_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        self.last_detection_ms = round(
+            (time.perf_counter() - started) * 1000.0, 3
+        )
         return self.snapshot()["faces"], events
 
     def _detect_track_face(
@@ -246,7 +292,9 @@ class FaceRuntime:
             "width": box["width"] + 2 * margin_x,
             "height": box["height"] + 2 * margin_y,
         }
-        x1, y1, x2, y2 = _bbox_pixels(crop_box, frame_width, frame_height)
+        x1, y1, x2, y2 = _bbox_pixels(
+            crop_box, frame_width, frame_height
+        )
         if x2 - x1 < 32 or y2 - y1 < 32:
             return None, None
         crop = source_frame[y1:y2, x1:x2]
@@ -258,7 +306,7 @@ class FaceRuntime:
         selected: np.ndarray | None = None
         selected_rank: tuple[float, float] | None = None
         for row in np.asarray(faces, dtype=np.float32):
-            fx, fy, fw, fh = [float(value) for value in row[:4]]
+            _, fy, fw, fh = [float(value) for value in row[:4]]
             center_y_ratio = (fy + fh / 2.0) / max(crop.shape[0], 1)
             if center_y_ratio > self.settings.max_face_center_y_ratio:
                 continue
@@ -269,8 +317,10 @@ class FaceRuntime:
         if selected is None:
             return None, None
 
-        selected[[0, 2, 4, 6, 8, 10, 12]] += x1
-        selected[[1, 3, 5, 7, 9, 11, 13]] += y1
+        # YuNet row layout is [x, y, w, h, five landmark pairs, score].
+        # Offset only coordinate fields. Width and height remain unchanged.
+        selected[[0, 4, 6, 8, 10, 12]] += x1
+        selected[[1, 5, 7, 9, 11, 13]] += y1
         quality = analyse_face_quality(source_frame, selected, self.settings)
         x, y, width, height = [float(value) for value in selected[:4]]
         landmarks = np.asarray(selected[4:14]).reshape(5, 2)
@@ -286,7 +336,10 @@ class FaceRuntime:
                 "height": _clip(height / frame_height),
             },
             "landmarks": [
-                {"x": _clip(float(point[0]) / frame_width), "y": _clip(float(point[1]) / frame_height)}
+                {
+                    "x": _clip(float(point[0]) / frame_width),
+                    "y": _clip(float(point[1]) / frame_height),
+                }
                 for point in landmarks
             ],
             "quality": quality,
@@ -296,12 +349,23 @@ class FaceRuntime:
         }
         return observation, selected
 
-    def expire(self, tracks: list[dict[str, Any]], now_monotonic: float) -> None:
-        active_ids = {int(track["track_id"]) for track in tracks if track.get("state") != "removed"}
+    def expire(
+        self, tracks: list[dict[str, Any]], now_monotonic: float
+    ) -> None:
+        active_ids = {
+            int(track["track_id"])
+            for track in tracks
+            if track.get("state") != "removed"
+        }
         with self._lock:
             for track_id in list(self._faces):
                 observation = self._faces[track_id]
-                if track_id not in active_ids or now_monotonic - float(observation["last_seen_monotonic"]) > self.settings.stale_seconds:
+                if (
+                    track_id not in active_ids
+                    or now_monotonic
+                    - float(observation["last_seen_monotonic"])
+                    > self.settings.stale_seconds
+                ):
                     self._remove_track(track_id)
 
     def _remove_track(self, track_id: int) -> None:
@@ -317,7 +381,11 @@ class FaceRuntime:
     def face_observation(self, track_id: int) -> dict[str, Any] | None:
         with self._lock:
             observation = self._faces.get(int(track_id))
-            return None if observation is None else self._public_face(observation)
+            return (
+                None
+                if observation is None
+                else self._public_face(observation)
+            )
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -338,4 +406,8 @@ class FaceRuntime:
 
     @staticmethod
     def _public_face(observation: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in observation.items() if key != "last_seen_monotonic"}
+        return {
+            key: value
+            for key, value in observation.items()
+            if key != "last_seen_monotonic"
+        }
