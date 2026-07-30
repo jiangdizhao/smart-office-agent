@@ -1,6 +1,6 @@
 service_name: rtx-vision-edge-server
-version: 0.2.0
-phase: phase1_camera_person_detection
+version: 0.3.0
+phase: phase2_multi_object_tracking
 
 server:
   host: 0.0.0.0
@@ -61,7 +61,7 @@ detection:
   input_width: 416
   input_height: 416
   inference_hz: 12
-  score_threshold: 0.35
+  score_threshold: 0.10
   nms_threshold: 0.45
   person_class_id: 0
   max_detections: 20
@@ -69,6 +69,45 @@ detection:
     - CUDAExecutionProvider
     - CPUExecutionProvider
   require_cuda: true
+
+reid:
+  enabled: true
+  model_path: models/osnet_x0_25.onnx
+  input_width: 128
+  input_height: 256
+  providers:
+    - CUDAExecutionProvider
+    - CPUExecutionProvider
+  require_cuda: true
+  allow_histogram_fallback: true
+  crop_margin: 0.02
+  min_crop_width: 32
+  min_crop_height: 80
+  histogram_h_bins: 16
+  histogram_s_bins: 16
+
+tracking:
+  enabled: true
+  low_threshold: 0.10
+  high_threshold: 0.50
+  new_track_threshold: 0.60
+  confirm_hits: 3
+  confirm_window_frames: 5
+  lost_timeout_seconds: 2.0
+  removed_retention_seconds: 3.0
+  gallery_size: 10
+  feature_ema_alpha: 0.10
+  iou_weight: 0.45
+  motion_weight: 0.20
+  appearance_weight: 0.35
+  first_stage_max_cost: 0.82
+  second_stage_max_cost: 0.78
+  tentative_max_cost: 0.72
+  max_center_distance: 0.25
+  lost_max_center_distance: 0.40
+  minimum_iou_gate: 0.01
+  mahalanobis_gate: 18.47
+  appearance_similarity_gate: 0.72
 
 presence:
   enter_confirm_frames: 2
@@ -81,10 +120,24 @@ presence:
     - [0.95, 1.0]
     - [0.05, 1.0]
 
+primary:
+  acquire_stable_seconds: 0.5
+  challenger_margin: 0.20
+  challenger_hold_seconds: 1.0
+  lost_lock_seconds: 2.0
+  area_full_scale_ratio: 0.25
+  dwell_full_scale_seconds: 5.0
+  stability_full_scale_hits: 20
+  target_x: 0.5
+  target_y: 0.85
+
 debug:
   enabled: true
   preview_width: 960
   preview_height: 540
-  preview_fps: 5
+  preview_fps: 10
   jpeg_quality: 80
   draw_zone: true
+  draw_raw_detections: false
+  draw_track_trails: true
+  draw_lost_tracks: true
