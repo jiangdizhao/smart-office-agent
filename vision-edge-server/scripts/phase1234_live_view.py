@@ -13,7 +13,9 @@ import numpy as np
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Display Phase 1-4 detection, tracking, face quality, and identity results."
+        description=(
+            "Display detection, tracking, visitor-session, face-quality, and identity results."
+        )
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:8015")
     parser.add_argument("--window-width", type=int, default=960)
@@ -30,7 +32,9 @@ def main() -> int:
     base_url = args.base_url.rstrip("/")
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_path = output_dir / f"phase1234_view_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    log_path = output_dir / (
+        f"phase1234_view_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    )
     delay = 1.0 / max(args.poll_hz, 1.0)
     paused = False
     last_frame: np.ndarray | None = None
@@ -41,36 +45,48 @@ def main() -> int:
     displayed = 0
     started = time.perf_counter()
 
-    window_name = "Smart Office Vision Phase 1-4"
-    print("Phase 1-4 live visual test")
+    window_name = "Smart Office Vision Identity Fusion"
+    print("Smart Office detection, tracking, visitor-session and identity live test")
     print(f"Server: {base_url}")
-    print("Keys: Q/Esc quit, P pause, Space save, R restart, L list identities, E enroll primary")
+    print(
+        "Keys: Q/Esc quit, P pause, Space save, R restart, "
+        "L list identities, E capture/enroll primary"
+    )
     if not args.enroll_name:
         print("E is disabled until -EnrollName is supplied to the PowerShell launcher.")
+    else:
+        print(
+            "E starts a multi-second capture. Keep looking toward the camera until it completes."
+        )
     print(f"JSONL observations: {log_path}")
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, args.window_width, args.window_height)
 
-    with httpx.Client(timeout=8.0, headers={"Cache-Control": "no-cache"}) as client, log_path.open(
-        "a", encoding="utf-8"
-    ) as log_file:
+    with httpx.Client(
+        timeout=10.0, headers={"Cache-Control": "no-cache"}
+    ) as client, log_path.open("a", encoding="utf-8") as log_file:
         while True:
             loop_started = time.perf_counter()
             error: str | None = None
             if not paused:
                 try:
                     fetch_started = time.perf_counter()
-                    frame_response = client.get(f"{base_url}/api/v1/debug/frame.jpg")
+                    frame_response = client.get(
+                        f"{base_url}/api/v1/debug/frame.jpg"
+                    )
                     frame_response.raise_for_status()
                     decoded = cv2.imdecode(
-                        np.frombuffer(frame_response.content, dtype=np.uint8), cv2.IMREAD_COLOR
+                        np.frombuffer(frame_response.content, dtype=np.uint8),
+                        cv2.IMREAD_COLOR,
                     )
                     if decoded is None:
                         raise RuntimeError("OpenCV could not decode the debug JPEG")
                     tracks_response = client.get(f"{base_url}/api/v1/tracks")
                     faces_response = client.get(f"{base_url}/api/v1/faces")
-                    identities_response = client.get(f"{base_url}/api/v1/identities")
+                    identities_response = client.get(
+                        f"{base_url}/api/v1/identities"
+                    )
                     tracks_response.raise_for_status()
                     faces_response.raise_for_status()
                     identities_response.raise_for_status()
@@ -78,7 +94,9 @@ def main() -> int:
                     last_faces = faces_response.json()
                     last_identities = identities_response.json()
                     last_frame = decoded
-                    last_fetch_ms = (time.perf_counter() - fetch_started) * 1000.0
+                    last_fetch_ms = (
+                        time.perf_counter() - fetch_started
+                    ) * 1000.0
                     displayed += 1
                     observation = {
                         "timestamp": datetime.now().isoformat(),
@@ -87,10 +105,15 @@ def main() -> int:
                         "primary_track_id": last_tracks.get("primary_track_id"),
                         "tracks": last_tracks.get("tracks", []),
                         "faces": last_faces.get("faces", []),
-                        "recognized_tracks": last_identities.get("recognized_tracks", []),
+                        "recognized_tracks": last_identities.get(
+                            "recognized_tracks", []
+                        ),
+                        "visitor_sessions": last_tracks.get("visitor_sessions"),
                         "last_association": last_tracks.get("last_association"),
                     }
-                    log_file.write(json.dumps(observation, ensure_ascii=False) + "\n")
+                    log_file.write(
+                        json.dumps(observation, ensure_ascii=False) + "\n"
+                    )
                     log_file.flush()
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
@@ -114,20 +137,36 @@ def main() -> int:
             if key in (ord("p"), ord("P")):
                 paused = not paused
             elif key == 32 and last_frame is not None:
-                screenshot = output_dir / f"phase1234_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+                screenshot = output_dir / (
+                    f"phase1234_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+                )
                 cv2.imwrite(str(screenshot), canvas)
                 print(f"Saved screenshot: {screenshot}")
             elif key in (ord("r"), ord("R")):
                 try:
-                    response = client.post(f"{base_url}/api/v1/vision/restart", timeout=20.0)
+                    response = client.post(
+                        f"{base_url}/api/v1/vision/restart", timeout=20.0
+                    )
                     response.raise_for_status()
                     print("Vision pipeline restart requested.")
                 except Exception as exc:
                     print(f"Restart failed: {type(exc).__name__}: {exc}")
             elif key in (ord("l"), ord("L")):
-                print(json.dumps(last_identities.get("identities", []), ensure_ascii=False, indent=2))
+                print(
+                    json.dumps(
+                        last_identities.get("identities", []),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             elif key in (ord("e"), ord("E")):
-                enroll_primary(client, base_url, last_tracks, args.enroll_name, args.external_id)
+                enroll_primary(
+                    client,
+                    base_url,
+                    last_tracks,
+                    args.enroll_name,
+                    args.external_id,
+                )
 
             elapsed = time.perf_counter() - loop_started
             if elapsed < delay:
@@ -152,6 +191,20 @@ def enroll_primary(
     if not track_id:
         print("Enrollment skipped: there is no primary track.")
         return
+    current = next(
+        (
+            item
+            for item in tracks.get("tracks", [])
+            if item.get("track_id") == track_id
+        ),
+        {},
+    )
+    session_id = current.get("visitor_session_id")
+    identity = current.get("identity") or {}
+    print(
+        f"Capturing enrollment samples for {display_name}; "
+        f"track={track_id}, visitor_session={session_id or 'pending'}..."
+    )
     try:
         response = client.post(
             f"{base_url}/api/v1/identities/enroll",
@@ -159,17 +212,28 @@ def enroll_primary(
                 "track_id": int(track_id),
                 "display_name": display_name,
                 "external_id": external_id or None,
-                "identity_id": None,
+                # Reuse a currently recognized identity; the server also de-duplicates by name.
+                "identity_id": identity.get("identity_id"),
                 "consent": True,
                 "metadata": {"source": "phase1234_live_view_operator_key"},
             },
-            timeout=20.0,
+            timeout=30.0,
         )
         response.raise_for_status()
-        identity = response.json()["identity"]
-        print(f"Enrolled {identity['display_name']} as {identity['identity_id']} for track {track_id}.")
+        payload = response.json()
+        enrolled = payload["identity"]
+        print(
+            f"Enrollment complete: {enrolled['display_name']} -> "
+            f"{enrolled['identity_id']}; samples_added={enrolled.get('samples_added')}; "
+            f"capture={enrolled.get('capture_seconds')}s; "
+            f"reused_existing={enrolled.get('reused_existing_identity')}"
+        )
     except Exception as exc:
-        detail = exc.response.text if isinstance(exc, httpx.HTTPStatusError) else str(exc)
+        detail = (
+            exc.response.text
+            if isinstance(exc, httpx.HTTPStatusError)
+            else str(exc)
+        )
         print(f"Enrollment failed: {type(exc).__name__}: {detail}")
 
 
@@ -189,7 +253,7 @@ def compose_canvas(
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
         cv2.putText(
             canvas,
-            "Waiting for Phase 1-4 debug frame...",
+            "Waiting for identity-fusion debug frame...",
             (25, height // 2),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -200,32 +264,59 @@ def compose_canvas(
     else:
         canvas = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
-    panel_height = 72
+    panel_height = 76
     overlay = canvas.copy()
-    cv2.rectangle(overlay, (0, height - panel_height), (width, height), (0, 0, 0), -1)
+    cv2.rectangle(
+        overlay, (0, height - panel_height), (width, height), (0, 0, 0), -1
+    )
     cv2.addWeighted(overlay, 0.70, canvas, 0.30, 0, canvas)
     recognized = identities.get("recognized_tracks") or []
     primary_id = tracks.get("primary_track_id")
-    primary_identity = next(
-        (item for item in recognized if item.get("track_id") == primary_id), None
+    primary_track = next(
+        (
+            item
+            for item in tracks.get("tracks", [])
+            if item.get("track_id") == primary_id
+        ),
+        {},
     )
+    primary_identity = primary_track.get("identity") or next(
+        (
+            item
+            for item in recognized
+            if item.get("track_id") == primary_id
+        ),
+        {},
+    )
+    visitor_id = str(primary_track.get("visitor_session_id") or "-").replace(
+        "visitor_", ""
+    )[:8]
+    session_snapshot = tracks.get("visitor_sessions") or {}
     line1 = (
-        f"scene={tracks.get('scene_state', 'unknown')} people={tracks.get('person_count', 0)} "
-        f"tracks={tracks.get('track_count', 0)} primary={primary_id} "
-        f"name={(primary_identity or {}).get('display_name', 'unknown')}"
+        f"scene={tracks.get('scene_state', 'unknown')} "
+        f"people={tracks.get('person_count', 0)} tracks={tracks.get('track_count', 0)} "
+        f"primary=T{primary_id} visitor={visitor_id} "
+        f"name={primary_identity.get('display_name', 'unknown')}"
     )
     line2 = (
-        f"faces={faces.get('face_count', 0)} ready_faces={faces.get('ready_face_count', 0)} "
-        f"known={identities.get('identity_count', 0)} recognized={len(recognized)}"
+        f"faces={faces.get('face_count', 0)} "
+        f"recognition_usable={faces.get('recognition_usable_count', 0)} "
+        f"enrollment_usable={faces.get('enrollment_usable_count', 0)} "
+        f"known={identities.get('identity_count', 0)} "
+        f"sessions={session_snapshot.get('session_count', 0)} "
+        f"recovered={session_snapshot.get('recovery_count', 0)}"
     )
-    line3 = f"fetch={fetch_ms:.1f}ms display={display_fps:.1f}fps {'PAUSED' if paused else 'LIVE'}"
+    line3 = (
+        f"fetch={fetch_ms:.1f}ms display={display_fps:.1f}fps "
+        f"{'PAUSED' if paused else 'LIVE'}"
+    )
     for index, text in enumerate((line1, line2, line3)):
         cv2.putText(
             canvas,
             text,
-            (10, height - 50 + index * 20),
+            (10, height - 54 + index * 21),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.46,
+            0.43,
             (255, 255, 255) if index < 2 else (220, 220, 220),
             1,
             cv2.LINE_AA,
