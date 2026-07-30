@@ -5,11 +5,12 @@ import json
 from pathlib import Path
 
 from app.config import load_config
-from app.hardware import probe_camera, probe_gpu
+from app.gpu_probe import probe_gpu
+from app.hardware import probe_camera
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="RTX Vision Edge Server Phase 0 utilities")
+    parser = argparse.ArgumentParser(description="RTX Vision Edge Server utilities")
     parser.add_argument("command", choices=["probe-gpu", "probe-camera", "probe-all", "show-config"])
     parser.add_argument("--config", type=Path, default=None)
     return parser
