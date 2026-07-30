@@ -91,10 +91,13 @@ class IdentityStore:
         vector = normalize_embedding(embedding)
         now = time.time()
         identity_id = identity_id or f"person_{uuid.uuid4().hex}"
-        metadata_json = json.dumps(metadata or {}, ensure_ascii=False, separators=(",", ":"))
+        metadata_json = json.dumps(
+            metadata or {}, ensure_ascii=False, separators=(",", ":")
+        )
         with self._lock, self._connect() as connection:
             existing = connection.execute(
-                "SELECT identity_id FROM identities WHERE identity_id = ?", (identity_id,)
+                "SELECT identity_id FROM identities WHERE identity_id = ?",
+                (identity_id,),
             ).fetchone()
             if existing is None:
                 connection.execute(
@@ -133,8 +136,9 @@ class IdentityStore:
                 )
             connection.execute(
                 """
-                INSERT INTO identity_samples(identity_id, embedding, dimensions, quality_score, created_at_unix)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO identity_samples(
+                    identity_id, embedding, dimensions, quality_score, created_at_unix
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     identity_id,
@@ -153,7 +157,8 @@ class IdentityStore:
             ).fetchall()
             for row in rows[self.max_samples_per_identity :]:
                 connection.execute(
-                    "DELETE FROM identity_samples WHERE sample_id = ?", (int(row["sample_id"]),)
+                    "DELETE FROM identity_samples WHERE sample_id = ?",
+                    (int(row["sample_id"]),),
                 )
         return self.get(identity_id) or {}
 
@@ -187,11 +192,15 @@ class IdentityStore:
 
     def delete(self, identity_id: str) -> bool:
         with self._lock, self._connect() as connection:
-            cursor = connection.execute("DELETE FROM identities WHERE identity_id = ?", (identity_id,))
+            cursor = connection.execute(
+                "DELETE FROM identities WHERE identity_id = ?", (identity_id,)
+            )
             return cursor.rowcount > 0
 
     def prototypes(self) -> dict[str, tuple[dict[str, Any], np.ndarray]]:
-        identities = {item["identity_id"]: item for item in self.list_identities()}
+        identities = {
+            item["identity_id"]: item for item in self.list_identities()
+        }
         result: dict[str, tuple[dict[str, Any], np.ndarray]] = {}
         with self._lock, self._connect() as connection:
             rows = connection.execute(
@@ -206,14 +215,22 @@ class IdentityStore:
             identity_id = str(row["identity_id"])
             if identity_id not in identities:
                 continue
-            vector = np.frombuffer(row["embedding"], dtype=np.float32, count=int(row["dimensions"])).copy()
+            vector = np.frombuffer(
+                row["embedding"],
+                dtype=np.float32,
+                count=int(row["dimensions"]),
+            ).copy()
             if vector.size:
-                grouped.setdefault(identity_id, []).append(normalize_embedding(vector))
+                grouped.setdefault(identity_id, []).append(
+                    normalize_embedding(vector)
+                )
         for identity_id, samples in grouped.items():
             dimensions = {sample.size for sample in samples}
             if len(dimensions) != 1:
                 continue
-            prototype = normalize_embedding(np.mean(np.stack(samples, axis=0), axis=0))
+            prototype = normalize_embedding(
+                np.mean(np.stack(samples, axis=0), axis=0)
+            )
             result[identity_id] = (identities[identity_id], prototype)
         return result
 
@@ -241,8 +258,12 @@ class IdentityRuntime:
         model = Path(settings.model_path)
         database = Path(settings.database_path)
         self.model_path = model if model.is_absolute() else server_root / model
-        self.database_path = database if database.is_absolute() else server_root / database
-        self.store = IdentityStore(self.database_path, settings.max_samples_per_identity)
+        self.database_path = (
+            database if database.is_absolute() else server_root / database
+        )
+        self.store = IdentityStore(
+            self.database_path, settings.max_samples_per_identity
+        )
         self.recognizer: Any | None = None
         self.last_error: str | None = None
         self.embedding_count = 0
@@ -265,18 +286,25 @@ class IdentityRuntime:
             return
         if not self.model_path.exists():
             raise IdentityRuntimeError(
-                f"SFace model is missing: {self.model_path}. Run scripts/download_face_models.ps1."
+                f"SFace model is missing: {self.model_path}. "
+                "Run scripts/download_face_models.ps1."
             )
         try:
             import cv2
 
             if not hasattr(cv2, "FaceRecognizerSF"):
-                raise RuntimeError(f"OpenCV {cv2.__version__} does not provide FaceRecognizerSF")
-            self.recognizer = cv2.FaceRecognizerSF.create(str(self.model_path), "")
+                raise RuntimeError(
+                    f"OpenCV {cv2.__version__} does not provide FaceRecognizerSF"
+                )
+            self.recognizer = cv2.FaceRecognizerSF.create(
+                str(self.model_path), ""
+            )
             self.last_error = None
         except Exception as exc:
             self.recognizer = None
-            raise IdentityRuntimeError(f"SFace initialization failed: {type(exc).__name__}: {exc}") from exc
+            raise IdentityRuntimeError(
+                f"SFace initialization failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     def close(self) -> None:
         with self._lock:
@@ -291,15 +319,23 @@ class IdentityRuntime:
         with self._lock:
             self._prototypes = self.store.prototypes()
 
-    def extract_embedding(self, source_frame: np.ndarray, face_row: np.ndarray) -> np.ndarray:
+    def extract_embedding(
+        self, source_frame: np.ndarray, face_row: np.ndarray
+    ) -> np.ndarray:
         if self.recognizer is None:
             raise IdentityRuntimeError("SFace recognizer is not loaded")
         started = time.perf_counter()
-        aligned = self.recognizer.alignCrop(source_frame, np.asarray(face_row, dtype=np.float32))
+        # SFace alignment consumes bbox + five landmark pairs. Exclude YuNet score.
+        aligned = self.recognizer.alignCrop(
+            source_frame,
+            np.asarray(face_row[:14], dtype=np.float32),
+        )
         feature = self.recognizer.feature(aligned)
         embedding = normalize_embedding(np.asarray(feature, dtype=np.float32))
         self.embedding_count += 1
-        self.last_embedding_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        self.last_embedding_ms = round(
+            (time.perf_counter() - started) * 1000.0, 3
+        )
         return embedding
 
     def process_track(
@@ -313,7 +349,10 @@ class IdentityRuntime:
     ) -> tuple[dict[str, Any] | None, tuple[str, dict[str, Any]] | None]:
         if not self.settings.enabled or self.recognizer is None:
             return None, None
-        if now_monotonic - self._last_attempt.get(track_id, 0.0) < self.settings.recognition_interval_seconds:
+        if (
+            now_monotonic - self._last_attempt.get(track_id, 0.0)
+            < self.settings.recognition_interval_seconds
+        ):
             return self.result_for_track(track_id), None
         self._last_attempt[track_id] = now_monotonic
         embedding = self.extract_embedding(source_frame, face_row)
@@ -340,9 +379,17 @@ class IdentityRuntime:
             scored: list[tuple[float, str, dict[str, Any]]] = []
             for identity_id, (identity, prototype) in self._prototypes.items():
                 if prototype.size == vector.size:
-                    scored.append((cosine_similarity(vector, prototype), identity_id, identity))
+                    scored.append(
+                        (
+                            cosine_similarity(vector, prototype),
+                            identity_id,
+                            identity,
+                        )
+                    )
             scored.sort(reverse=True, key=lambda item: item[0])
-            best_score, best_id, best_identity = scored[0] if scored else (-1.0, "", {})
+            best_score, best_id, best_identity = (
+                scored[0] if scored else (-1.0, "", {})
+            )
             second_score = scored[1][0] if len(scored) > 1 else -1.0
             margin = best_score - second_score
             eligible = bool(
@@ -351,12 +398,17 @@ class IdentityRuntime:
                 and margin >= self.settings.minimum_margin
             )
             candidate_id = best_id if eligible else None
-            previous_candidate, count = self._candidates.get(track_id, (None, 0))
+            previous_candidate, count = self._candidates.get(
+                track_id, (None, 0)
+            )
             count = count + 1 if previous_candidate == candidate_id else 1
             self._candidates[track_id] = (candidate_id, count)
 
             previous_result = self._track_results.get(track_id)
-            if candidate_id is None or count < self.settings.confirm_observations:
+            if (
+                candidate_id is None
+                or count < self.settings.confirm_observations
+            ):
                 if previous_result is None:
                     return None, None
                 return dict(previous_result), None
@@ -374,7 +426,10 @@ class IdentityRuntime:
                 "identified_at_unix": time.time(),
                 "consent_at_unix": best_identity["consent_at_unix"],
             }
-            changed = previous_result is None or previous_result.get("identity_id") != candidate_id
+            changed = (
+                previous_result is None
+                or previous_result.get("identity_id") != candidate_id
+            )
             self._track_results[track_id] = result
             if not changed:
                 return dict(result), None
@@ -391,13 +446,17 @@ class IdentityRuntime:
         identity_id: str | None = None,
     ) -> dict[str, Any]:
         if self.settings.require_explicit_consent and not consent:
-            raise ValueError("explicit consent is required for identity enrollment")
+            raise ValueError(
+                "explicit consent is required for identity enrollment"
+            )
         with self._lock:
             cached = self._track_embeddings.get(track_id)
             quality_score = self._track_embedding_quality.get(track_id, 0.0)
             embedding = None if cached is None else cached.copy()
         if embedding is None:
-            raise ValueError("no current high-quality face embedding is available for this track")
+            raise ValueError(
+                "no current high-quality face embedding is available for this track"
+            )
         if quality_score < self.settings.enrollment_min_quality:
             raise ValueError(
                 f"face quality {quality_score:.3f} is below enrollment minimum "
@@ -459,19 +518,25 @@ class IdentityRuntime:
             result = self._track_results.get(int(track_id))
             return None if result is None else dict(result)
 
-    def enrich_tracks(self, tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def enrich_tracks(
+        self, tracks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         enriched: list[dict[str, Any]] = []
         with self._lock:
             for track in tracks:
                 item = dict(track)
                 identity = self._track_results.get(int(track["track_id"]))
-                item["identity"] = None if identity is None else dict(identity)
+                item["identity"] = (
+                    None if identity is None else dict(identity)
+                )
                 enriched.append(item)
         return enriched
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            recognized = [dict(result) for result in self._track_results.values()]
+            recognized = [
+                dict(result) for result in self._track_results.values()
+            ]
             gallery_count = len(self._prototypes)
         recognized.sort(key=lambda item: item["track_id"])
         return {
