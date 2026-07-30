@@ -21,12 +21,52 @@ def _clip(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
-def _bbox_pixels(box: dict[str, float], width: int, height: int) -> tuple[int, int, int, int]:
+def _bbox_pixels(
+    box: dict[str, float], width: int, height: int
+) -> tuple[int, int, int, int]:
     x1 = int(_clip(box["x"]) * width)
     y1 = int(_clip(box["y"]) * height)
     x2 = int(_clip(box["x"] + box["width"]) * width)
     y2 = int(_clip(box["y"] + box["height"]) * height)
     return x1, y1, x2, y2
+
+
+def _failure_reasons(
+    *,
+    confidence: float,
+    width: float,
+    height: float,
+    sharpness: float,
+    brightness: float,
+    frontal_score: float,
+    quality_score: float,
+    confidence_min: float,
+    width_min: float,
+    height_min: float,
+    sharpness_min: float,
+    brightness_min: float,
+    brightness_max: float,
+    frontal_min: float,
+    quality_min: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if confidence < confidence_min:
+        reasons.append(f"confidence {confidence:.2f} < {confidence_min:.2f}")
+    if width < width_min:
+        reasons.append(f"width {width:.0f} < {width_min:.0f}px")
+    if height < height_min:
+        reasons.append(f"height {height:.0f} < {height_min:.0f}px")
+    if sharpness < sharpness_min:
+        reasons.append(f"sharpness {sharpness:.1f} < {sharpness_min:.1f}")
+    if brightness < brightness_min:
+        reasons.append(f"brightness {brightness:.1f} < {brightness_min:.1f}")
+    elif brightness > brightness_max:
+        reasons.append(f"brightness {brightness:.1f} > {brightness_max:.1f}")
+    if frontal_score < frontal_min:
+        reasons.append(f"frontal {frontal_score:.2f} < {frontal_min:.2f}")
+    if quality_score < quality_min:
+        reasons.append(f"quality {quality_score:.2f} < {quality_min:.2f}")
+    return reasons
 
 
 def analyse_face_quality(
@@ -94,18 +134,51 @@ def analyse_face_quality(
         + 0.20 * frontal_score
         + 0.10 * brightness_score
     )
-    ready = bool(
-        confidence >= settings.score_threshold
-        and width >= settings.min_face_width_pixels
-        and height >= settings.min_face_height_pixels
-        and sharpness >= settings.min_sharpness
-        and settings.min_brightness <= brightness <= settings.max_brightness
-        and frontal_score >= settings.min_frontal_score
-        and quality_score >= settings.min_quality_score
+
+    recognition_reasons = _failure_reasons(
+        confidence=confidence,
+        width=width,
+        height=height,
+        sharpness=sharpness,
+        brightness=brightness,
+        frontal_score=frontal_score,
+        quality_score=quality_score,
+        confidence_min=settings.score_threshold,
+        width_min=settings.recognition_min_face_width_pixels,
+        height_min=settings.recognition_min_face_height_pixels,
+        sharpness_min=settings.recognition_min_sharpness,
+        brightness_min=settings.recognition_min_brightness,
+        brightness_max=settings.recognition_max_brightness,
+        frontal_min=settings.recognition_min_frontal_score,
+        quality_min=settings.recognition_min_quality_score,
     )
+    enrollment_reasons = _failure_reasons(
+        confidence=confidence,
+        width=width,
+        height=height,
+        sharpness=sharpness,
+        brightness=brightness,
+        frontal_score=frontal_score,
+        quality_score=quality_score,
+        confidence_min=max(settings.score_threshold, 0.70),
+        width_min=settings.min_face_width_pixels,
+        height_min=settings.min_face_height_pixels,
+        sharpness_min=settings.min_sharpness,
+        brightness_min=settings.min_brightness,
+        brightness_max=settings.max_brightness,
+        frontal_min=settings.min_frontal_score,
+        quality_min=settings.min_quality_score,
+    )
+    recognition_candidate = not recognition_reasons
+    enrollment_candidate = not enrollment_reasons
     return {
         "score": round(quality_score, 6),
-        "ready": ready,
+        # Backward compatibility: quality.ready means the stricter enrollment candidate.
+        "ready": enrollment_candidate,
+        "recognition_candidate": recognition_candidate,
+        "enrollment_candidate": enrollment_candidate,
+        "recognition_rejection_reasons": recognition_reasons,
+        "enrollment_rejection_reasons": enrollment_reasons,
         "face_confidence": round(confidence, 6),
         "width_pixels": round(width, 2),
         "height_pixels": round(height, 2),
@@ -129,6 +202,9 @@ class FaceRuntime:
         self._last_run_monotonic = 0.0
         self._faces: dict[int, dict[str, Any]] = {}
         self._face_rows: dict[int, np.ndarray] = {}
+        self._recognition_streaks: dict[int, int] = {}
+        self._enrollment_streaks: dict[int, int] = {}
+        self._recognition_state: dict[int, bool] = {}
         self._ready_state: dict[int, bool] = {}
         self._lock = threading.RLock()
 
@@ -148,7 +224,9 @@ class FaceRuntime:
             import cv2
 
             if not hasattr(cv2, "FaceDetectorYN"):
-                raise RuntimeError(f"OpenCV {cv2.__version__} does not provide FaceDetectorYN")
+                raise RuntimeError(
+                    f"OpenCV {cv2.__version__} does not provide FaceDetectorYN"
+                )
             self.detector = cv2.FaceDetectorYN.create(
                 str(self.model_path),
                 "",
@@ -169,6 +247,9 @@ class FaceRuntime:
             self.detector = None
             self._faces.clear()
             self._face_rows.clear()
+            self._recognition_streaks.clear()
+            self._enrollment_streaks.clear()
+            self._recognition_state.clear()
             self._ready_state.clear()
 
     def should_run(self, now_monotonic: float) -> bool:
@@ -216,19 +297,46 @@ class FaceRuntime:
                     source_frame, track, frame_id, now_monotonic
                 )
                 if observation is None or face_row is None:
+                    self._recognition_streaks[track_id] = 0
+                    self._enrollment_streaks[track_id] = 0
                     continue
                 observed_ids.add(track_id)
-                previous = self._faces.get(track_id)
-                stable_frames = 1
-                if previous is not None and previous.get("quality", {}).get("ready"):
-                    stable_frames = int(previous.get("stable_frames", 0)) + 1
-                observation["stable_frames"] = stable_frames
-                observation["ready"] = bool(
-                    observation["quality"]["ready"]
-                    and stable_frames >= self.settings.ready_stable_frames
+                quality = observation["quality"]
+                recognition_streak = (
+                    self._recognition_streaks.get(track_id, 0) + 1
+                    if quality["recognition_candidate"]
+                    else 0
                 )
+                enrollment_streak = (
+                    self._enrollment_streaks.get(track_id, 0) + 1
+                    if quality["enrollment_candidate"]
+                    else 0
+                )
+                self._recognition_streaks[track_id] = recognition_streak
+                self._enrollment_streaks[track_id] = enrollment_streak
+                observation["recognition_stable_frames"] = recognition_streak
+                observation["enrollment_stable_frames"] = enrollment_streak
+                observation["stable_frames"] = enrollment_streak
+                observation["recognition_usable"] = bool(
+                    quality["recognition_candidate"]
+                    and recognition_streak >= self.settings.recognition_stable_frames
+                )
+                observation["enrollment_usable"] = bool(
+                    quality["enrollment_candidate"]
+                    and enrollment_streak >= self.settings.ready_stable_frames
+                )
+                observation["ready"] = observation["enrollment_usable"]
                 self._faces[track_id] = observation
                 self._face_rows[track_id] = face_row
+
+                was_recognition_usable = self._recognition_state.get(track_id, False)
+                recognition_usable = bool(observation["recognition_usable"])
+                self._recognition_state[track_id] = recognition_usable
+                if recognition_usable and not was_recognition_usable:
+                    events.append(
+                        ("visitor_face_recognition_usable", self._public_face(observation))
+                    )
+
                 was_ready = self._ready_state.get(track_id, False)
                 is_ready = bool(observation["ready"])
                 self._ready_state[track_id] = is_ready
@@ -282,12 +390,14 @@ class FaceRuntime:
             return None, None
         crop = source_frame[y1:y2, x1:x2]
 
-        # Bound YuNet cost for close visitors while retaining the 4K source coordinates.
         scale = min(1.0, MAX_DETECTOR_SIDE / max(crop.shape[0], crop.shape[1]))
         if scale < 1.0:
             detector_input = cv2.resize(
                 crop,
-                (max(1, int(crop.shape[1] * scale)), max(1, int(crop.shape[0] * scale))),
+                (
+                    max(1, int(crop.shape[1] * scale)),
+                    max(1, int(crop.shape[0] * scale)),
+                ),
                 interpolation=cv2.INTER_AREA,
             )
         else:
@@ -313,7 +423,6 @@ class FaceRuntime:
         if selected is None:
             return None, None
 
-        # YuNet row layout is [x, y, w, h, five landmark pairs, score].
         selected[[0, 4, 6, 8, 10, 12]] += x1
         selected[[1, 5, 7, 9, 11, 13]] += y1
         quality = analyse_face_quality(source_frame, selected, self.settings)
@@ -338,7 +447,11 @@ class FaceRuntime:
                 for point in landmarks
             ],
             "quality": quality,
+            "recognition_stable_frames": 0,
+            "enrollment_stable_frames": 0,
             "stable_frames": 0,
+            "recognition_usable": False,
+            "enrollment_usable": False,
             "ready": False,
             "primary": bool(track.get("primary")),
         }
@@ -363,6 +476,9 @@ class FaceRuntime:
     def _remove_track(self, track_id: int) -> None:
         self._faces.pop(track_id, None)
         self._face_rows.pop(track_id, None)
+        self._recognition_streaks.pop(track_id, None)
+        self._enrollment_streaks.pop(track_id, None)
+        self._recognition_state.pop(track_id, None)
         self._ready_state.pop(track_id, None)
 
     def face_row(self, track_id: int) -> np.ndarray | None:
@@ -388,6 +504,12 @@ class FaceRuntime:
             "detect_count": self.detect_count,
             "last_detection_ms": self.last_detection_ms,
             "face_count": len(faces),
+            "recognition_usable_count": sum(
+                1 for item in faces if item["recognition_usable"]
+            ),
+            "enrollment_usable_count": sum(
+                1 for item in faces if item["enrollment_usable"]
+            ),
             "ready_face_count": sum(1 for item in faces if item["ready"]),
             "faces": faces,
             "last_error": self.last_error,
