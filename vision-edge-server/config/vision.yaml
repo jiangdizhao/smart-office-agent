@@ -154,7 +154,7 @@ face:
 
   min_face_width_pixels: 64
   min_face_height_pixels: 64
-  min_sharpness: 30
+  min_sharpness: 22
   sharpness_full_scale: 160
   min_brightness: 25
   max_brightness: 235
