@@ -29,11 +29,11 @@ Not implemented in Phase 0:
 - debug video dashboard;
 - Smart Office client integration.
 
-The camera probe requests 3840×2160 because the current USB camera cannot be switched to 1080p. Later phases will retain only the latest 4K frame, create a low-resolution global-detection copy, and use high-resolution regions only for face processing.
+The camera probe requests 3840×2160 because the current USB camera cannot be switched to 1080p. Later phases will retain only the latest source frame, create a low-resolution global-detection copy, and use high-resolution regions only for face processing. The probe reports the actual mode accepted by the driver.
 
 ## Environment
 
-Use a dedicated Python 3.11+ environment instead of the existing Smart Office environment.
+A dedicated Python 3.11+ environment is recommended:
 
 ```powershell
 conda create -n visionedge python=3.11 -y
@@ -43,19 +43,44 @@ python -m pip install --upgrade pip
 python -m pip install -r .\requirements-vision.txt
 ```
 
-The start script does not assume a Conda environment name. It uses the currently selected `python`, or an explicitly supplied Python executable.
+The Vision dependencies pin `numpy<2` and `protobuf<5` because the service may share an environment with binary extensions and MediaPipe packages that require those ABI/dependency ranges.
+
+If the existing `smartoffice` environment is used, repair any previously upgraded protobuf before continuing:
+
+```powershell
+conda activate smartoffice
+python -m pip install --upgrade --force-reinstall "numpy>=1.26,<2" "protobuf>=4.25.8,<5"
+python -m pip install -r .\requirements-vision.txt
+python -m pip check
+```
+
+The PowerShell scripts resolve Python in this order:
+
+1. an explicitly supplied `-PythonExe`;
+2. `$env:CONDA_PREFIX\python.exe` from the active Conda environment;
+3. `python` from `PATH`.
+
+Each script prints the actual `sys.executable` before running. This avoids a nested Windows PowerShell process silently selecting the Anaconda base interpreter.
 
 ## Probe hardware before starting the service
 
+From an activated Conda environment, direct invocation is preferred:
+
 ```powershell
 cd D:\smart-office-agent\vision-edge-server
+.\scripts\probe_hardware.ps1 -Mode all
+```
+
+Nested PowerShell invocation is also supported because the script now resolves `$env:CONDA_PREFIX\python.exe`:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\probe_hardware.ps1 -Mode all
 ```
 
 Explicit interpreter example:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\probe_hardware.ps1 -Mode all -PythonExe "D:\anaconda3\envs\visionedge\python.exe"
+.\scripts\probe_hardware.ps1 -Mode all -PythonExe "D:\anaconda3\envs\visionedge\python.exe"
 ```
 
 Expected GPU evidence includes:
@@ -65,13 +90,20 @@ CUDAExecutionProvider
 RTX 3070 Ti Laptop GPU
 ```
 
+The first lines of the script output must show the intended interpreter, for example:
+
+```text
+Conda environment: smartoffice
+Python: D:\anaconda3\envs\smartoffice\python.exe
+```
+
 The camera report must be read from its `actual` fields; requested settings are not treated as proof that the driver accepted them.
 
 ## Start
 
 ```powershell
 cd D:\smart-office-agent\vision-edge-server
-powershell -ExecutionPolicy Bypass -File .\scripts\start_vision_server.ps1
+.\scripts\start_vision_server.ps1
 ```
 
 Or:
@@ -95,8 +127,9 @@ ws://127.0.0.1:8015/ws/v1/events
 Keep the server running, then open another terminal:
 
 ```powershell
+conda activate smartoffice
 cd D:\smart-office-agent\vision-edge-server
-powershell -ExecutionPolicy Bypass -File .\scripts\run_smoke_test.ps1
+.\scripts\run_smoke_test.ps1
 ```
 
 Expected final line:
