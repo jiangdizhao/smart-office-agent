@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from app.config import PresenceSettings, PrimarySettings, TrackingSettings
+from app.primary_lock import OcclusionAwarePrimarySelector
 from app.tracking_runtime import (
     BLOCKED_COST,
     MultiObjectTracker,
@@ -154,3 +155,23 @@ def test_primary_selector_uses_hysteresis() -> None:
     )
     primary_id, _ = selector.update([first, second], 1.3)
     assert primary_id == 1
+
+
+def test_primary_lock_survives_short_occlusion_then_expires() -> None:
+    presence = PresenceSettings()
+    selector = OcclusionAwarePrimarySelector(
+        PrimarySettings(acquire_stable_seconds=0.2, lost_lock_seconds=2.0),
+        presence,
+    )
+    first = confirmed_track(1, detection(0.35), now=1.0, hits=20)
+    selector.update([first], 1.0)
+    primary_id, _ = selector.update([first], 1.25)
+    assert primary_id == 1
+
+    primary_id, event = selector.update([], 2.0)
+    assert primary_id == 1
+    assert event is None
+
+    primary_id, event = selector.update([], 3.5)
+    assert primary_id is None
+    assert event and event["previous_track_id"] == 1
