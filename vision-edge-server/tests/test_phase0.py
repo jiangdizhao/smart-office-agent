@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.config import AppConfig, load_config
 from app.events import EventFactory
+from app.hardware import classify_camera_performance, select_best_camera_attempt
 from app.main import create_app
 
 
@@ -29,6 +30,53 @@ gpu:
     assert config.service_name == "test-vision"
     assert config.server.port == 9123
     assert config.camera.enabled is False
+    assert config.camera.device_index == 1
+    assert config.camera.probe_modes[0].fourcc == "MJPG"
+
+
+def test_camera_performance_classification() -> None:
+    assert (
+        classify_camera_performance(12.0, ready_min_fps=10.0, degraded_min_fps=3.0)
+        == "ready"
+    )
+    assert (
+        classify_camera_performance(6.0, ready_min_fps=10.0, degraded_min_fps=3.0)
+        == "degraded"
+    )
+    assert (
+        classify_camera_performance(1.1, ready_min_fps=10.0, degraded_min_fps=3.0)
+        == "unusable_for_realtime"
+    )
+
+
+def test_camera_selection_prefers_realtime_then_resolution_match() -> None:
+    attempts = [
+        {
+            "successful": True,
+            "status": "ready",
+            "requested": {"backend": "DSHOW", "fourcc": "MJPG", "fps": 30},
+            "performance": {"measured_fps": 28.0, "resolution_match": False},
+            "sample": {"success_ratio": 1.0, "mean_read_ms": 35.0},
+        },
+        {
+            "successful": True,
+            "status": "ready",
+            "requested": {"backend": "DSHOW", "fourcc": "MJPG", "fps": 15},
+            "performance": {"measured_fps": 14.0, "resolution_match": True},
+            "sample": {"success_ratio": 1.0, "mean_read_ms": 70.0},
+        },
+        {
+            "successful": True,
+            "status": "degraded",
+            "requested": {"backend": "DSHOW", "fourcc": "YUY2", "fps": 15},
+            "performance": {"measured_fps": 5.0, "resolution_match": True},
+            "sample": {"success_ratio": 1.0, "mean_read_ms": 200.0},
+        },
+    ]
+    selected = select_best_camera_attempt(attempts)
+    assert selected is not None
+    assert selected["requested"]["fourcc"] == "MJPG"
+    assert selected["requested"]["fps"] == 15
 
 
 def test_event_sequence_is_monotonic() -> None:
