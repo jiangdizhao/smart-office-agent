@@ -49,33 +49,53 @@ class VisionRuntime:
             "camera": self.camera,
         }
 
-    async def run_hardware_probes(self) -> dict[str, Any]:
+    async def run_hardware_probes(
+        self,
+        *,
+        include_gpu: bool = True,
+        include_camera: bool = True,
+    ) -> dict[str, Any]:
         async with self._probe_lock:
             self.probe_running = True
-            logger.info("hardware_probe_started", extra={"event": "hardware_probe_started"})
+            logger.info(
+                "hardware_probe_started",
+                extra={
+                    "event": "hardware_probe_started",
+                    "include_gpu": include_gpu,
+                    "include_camera": include_camera,
+                },
+            )
             try:
-                gpu_task = asyncio.to_thread(probe_gpu, self.config.gpu)
-                if self.config.camera.enabled:
-                    camera_task = asyncio.to_thread(probe_camera, self.config.camera)
-                    self.gpu, self.camera = await asyncio.gather(gpu_task, camera_task)
-                else:
-                    self.gpu = await gpu_task
-                    self.camera = probe_camera(self.config.camera)
-                payload = {
-                    "gpu_ok": bool((self.gpu or {}).get("ok")),
-                    "camera_ok": bool((self.camera or {}).get("ok")),
-                    "status": self.public_status(),
-                }
-                event = self.event_factory.build("probe_completed", payload)
-                await self.hub.broadcast(event)
-                logger.info(
-                    "hardware_probe_completed",
-                    extra={
-                        "event": "hardware_probe_completed",
-                        "gpu_ok": payload["gpu_ok"],
-                        "camera_ok": payload["camera_ok"],
-                    },
-                )
-                return payload
+                jobs: dict[str, asyncio.Future[dict[str, Any]] | asyncio.Task[dict[str, Any]] | Any] = {}
+                if include_gpu:
+                    jobs["gpu"] = asyncio.to_thread(probe_gpu, self.config.gpu)
+                if include_camera:
+                    jobs["camera"] = asyncio.to_thread(probe_camera, self.config.camera)
+
+                if jobs:
+                    names = list(jobs)
+                    results = await asyncio.gather(*(jobs[name] for name in names))
+                    for name, result in zip(names, results, strict=True):
+                        if name == "gpu":
+                            self.gpu = result
+                        else:
+                            self.camera = result
             finally:
                 self.probe_running = False
+
+            payload = {
+                "gpu_ok": None if self.gpu is None else bool(self.gpu.get("ok")),
+                "camera_ok": None if self.camera is None else bool(self.camera.get("ok")),
+                "status": self.public_status(),
+            }
+            event = self.event_factory.build("probe_completed", payload)
+            await self.hub.broadcast(event)
+            logger.info(
+                "hardware_probe_completed",
+                extra={
+                    "event": "hardware_probe_completed",
+                    "gpu_ok": payload["gpu_ok"],
+                    "camera_ok": payload["camera_ok"],
+                },
+            )
+            return payload

@@ -52,7 +52,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if loaded_config.gpu.probe_on_startup or (
             loaded_config.camera.enabled and loaded_config.camera.probe_on_startup
         ):
-            tasks.append(asyncio.create_task(runtime.run_hardware_probes()))
+            tasks.append(
+                asyncio.create_task(
+                    runtime.run_hardware_probes(
+                        include_gpu=loaded_config.gpu.probe_on_startup,
+                        include_camera=(
+                            loaded_config.camera.enabled and loaded_config.camera.probe_on_startup
+                        ),
+                    )
+                )
+            )
 
         try:
             yield
