@@ -1,6 +1,6 @@
 service_name: rtx-vision-edge-server
-version: 0.1.0
-phase: phase0_service_skeleton
+version: 0.1.1
+phase: phase0_camera_probe_v2
 
 server:
   host: 0.0.0.0
@@ -16,13 +16,27 @@ camera:
   device_index: 1
   requested_width: 3840
   requested_height: 2160
-  requested_fps: 30
-  preferred_backends:
-    - DSHOW
-    - MSMF
-    - ANY
-  warmup_frames: 3
-  sample_frames: 5
+  probe_modes:
+    - backend: DSHOW
+      fourcc: MJPG
+      fps: 30
+    - backend: DSHOW
+      fourcc: MJPG
+      fps: 15
+    - backend: DSHOW
+      fourcc: YUY2
+      fps: 15
+    - backend: MSMF
+      fourcc: MJPG
+      fps: 30
+    - backend: MSMF
+      fourcc: MJPG
+      fps: 15
+  warmup_frames: 2
+  sample_frames: 6
+  ready_min_measured_fps: 10
+  degraded_min_measured_fps: 3
+  inter_attempt_delay_seconds: 0.25
 
 gpu:
   probe_on_startup: true
