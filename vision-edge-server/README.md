@@ -1,14 +1,13 @@
 # RTX Vision Edge Server
 
-Standalone Windows vision service on branch `Vision-Edge-Server`. It is isolated from the
-inherited Smart Office task runtime and is intended for the RTX 3070 Ti laptop with USB camera
-index `1`.
+Standalone Windows vision service on branch `Vision-Edge-Server`. It is isolated from the inherited
+Smart Office task runtime and is intended for the RTX 3070 Ti laptop with USB camera index `1`.
 
 ## Current milestone
 
 ```text
-version: 0.5.0
-phase: phase4_face_identity
+version: 0.6.0
+phase: phase4_identity_session_fusion
 ```
 
 The complete local pipeline is:
@@ -17,10 +16,25 @@ The complete local pipeline is:
 camera 1 + MSMF + AUTO + 3840×2160 @ 30 FPS
 → latest-frame buffer
 → 960×540 YOLOX-Nano person detection on ONNX Runtime CUDA
-→ Phase 2 anonymous tracking and Primary selection
-→ Phase 3 track-linked YuNet face detection and quality
-→ Phase 4 consent-based local SFace identity
+→ ByteTrack-style / Kalman / OSNet anonymous tracking
+→ YuNet face detection inside the matching 4K person ROI
+→ SFace recognition and consent-based local enrollment
+→ memory-only visitor-session fusion across changing track IDs
 ```
+
+## Identifier model
+
+The service deliberately exposes three different identifiers:
+
+```text
+track_id             one continuous MOT trajectory; it may change after leaving the frame
+visitor_session_id   one exhibition visit; recoverable across new track IDs for 60 seconds
+identity_id          persistent, consented local identity such as Rico
+```
+
+A person can therefore return as a new `track_id` while retaining the same `visitor_session_id` and,
+when enrolled, the same `identity_id` and display name. Reusing a low-level `track_id` after a true
+exit is not required and would be unsafe in multi-person scenes.
 
 ## Implemented phases
 
@@ -46,44 +60,85 @@ camera 1 + MSMF + AUTO + 3840×2160 @ 30 FPS
 - XYWH constant-velocity Kalman filter;
 - ByteTrack-style high/low-confidence association;
 - Hungarian minimum-cost assignment;
-- OSNet x0.25 appearance evidence;
+- OSNet x0.25 body-appearance evidence;
 - tentative, confirmed, lost, recovered and removed lifecycle;
 - two-second short-occlusion recovery;
 - observation-centric velocity correction after recovery;
-- stable `track_id`, track trails, engagement and Primary hysteresis;
-- visitor, group and Primary events.
+- per-track trails, engagement and Primary hysteresis.
 
-The user has already passed Phase 2 unit tests, strict OSNet smoke testing, single-person
-stability, short complete occlusion and timeout-boundary tests. Two-person crossing and Primary
-hysteresis remain deferred until multiple participants are available.
+The user has passed Phase 2 unit tests, strict OSNet smoke testing, single-person stability, short
+complete occlusion and timeout-boundary tests. Two-person crossing and Primary hysteresis remain
+deferred until multiple participants are available.
 
-### Phase 3: face detection and quality
+### Phase 3: face detection and two quality gates
 
 - YuNet face detection inside the high-resolution 4K person ROI;
 - face box and five landmarks linked to `track_id`;
-- Primary and larger tracks prioritized at a configurable 5 Hz;
+- up to four visible tracks prioritized at 7.5 Hz;
 - face confidence, pixel size, sharpness, brightness, roll and frontal score;
-- stable quality gate before identity processing;
-- `visitor_face_ready` and `visitor_face_lost` events.
+- a permissive **recognition-usable** gate for comparing against an existing gallery;
+- a stricter **enrollment-usable** gate for writing consented samples;
+- explicit rejection reasons such as `sharpness 18.0 < 22.0` in the debug overlay.
 
-### Phase 4: consent-based local identity
+Recognition no longer waits for the stricter enrollment gate.
 
-- SFace aligned face embedding;
-- cosine matching with best-versus-second-best margin;
-- three accepted observations before confirmation;
-- local SQLite identity gallery;
+### Phase 4: fast multi-sample identity
+
+- SFace aligned face embeddings;
+- per-identity, per-sample comparison rather than a single averaged prototype;
+- quality-weighted top-three sample score;
+- adaptive confirmation:
+  - high-confidence match: one observation;
+  - medium-confidence match: two observations;
+  - low-confidence match: three observations;
+- display-name grouping so duplicate `Rico` database rows do not compete against each other in the
+  best-versus-second-best margin;
+- sticky identity for the active visitor session after a reliable confirmation;
 - explicit-consent enrollment only;
-- no automatic enrollment and no stored face photographs;
-- bounded embedding samples per identity;
-- identity listing and deletion;
-- `visitor_identified`, `identity_enrolled` and `identity_deleted` events.
+- three-second enrollment capture using several high-quality, non-identical samples;
+- re-enrolling a recognized person or the same display name adds samples to the existing identity;
+- local SQLite gallery, bounded samples, identity listing and deletion;
+- no stored face photographs.
 
-Phase 4 is a local exhibition identity capability, not a claim of legal identity, liveness
-verification, demographic inference or unrestricted surveillance.
+### Visitor-session fusion
+
+`VisitorSessionRuntime` keeps anonymous face and body embeddings in memory only:
+
+```text
+TTL: 60 seconds
+maximum face embeddings per session: 8
+maximum body embeddings per session: 8
+```
+
+Recovery evidence is ordered from strongest to weakest:
+
+1. same registered `identity_id`;
+2. high-confidence SFace similarity;
+3. repeated medium SFace evidence combined with OSNet body or spatial evidence;
+4. repeated body-only evidence for a short return interval.
+
+A young provisional session can be replaced after SFace becomes available, preventing a new track
+from becoming permanently detached merely because its first confirmed frame did not yet contain a
+usable face.
+
+Events include:
+
+```text
+visitor_session_started
+visitor_session_recovered
+visitor_session_identified
+visitor_session_expired
+visitor_identified
+identity_enrolled
+identity_deleted
+```
+
+Anonymous session embeddings are not written to SQLite and disappear when the service restarts or
+the session TTL expires.
 
 ## Environment
 
-Use the verified `smartoffice` environment:
+Use the verified environment:
 
 ```powershell
 conda activate smartoffice
@@ -102,7 +157,7 @@ onnxruntime-gpu[cuda,cudnn]==1.28.0
 
 PowerShell launchers resolve Python in this order:
 
-1. explicit `-PythonExe`;
+1. explicitly supplied `-PythonExe`;
 2. `$env:CONDA_PREFIX\python.exe`;
 3. `python` from `PATH`.
 
@@ -135,14 +190,32 @@ models/face_detection_yunet_2023mar.onnx
 models/face_recognition_sface_2021dec.onnx
 ```
 
-PyTorch remains confined to the separate OSNet exporter environment. The working
-`smartoffice` runtime uses OpenCV and ONNX Runtime.
+PyTorch remains confined to the separate OSNet exporter environment. The `smartoffice` runtime uses
+OpenCV and ONNX Runtime.
 
-## Unit tests
+## Pull and test
 
 ```powershell
+cd D:\smart-office-agent
+git switch Vision-Edge-Server
+git pull --ff-only origin Vision-Edge-Server
+git rev-parse --short HEAD
+
+conda activate smartoffice
+cd D:\smart-office-agent\vision-edge-server
 python -m pytest -q
 ```
+
+The unit suite now covers:
+
+- Phase 0-4 contracts;
+- recognition versus enrollment quality gates;
+- adaptive immediate high-confidence recognition;
+- duplicate-name pooling;
+- multi-sample enrollment and same-name reuse;
+- face-based visitor-session recovery across new tracks;
+- delayed-face provisional-session rebinding;
+- identity propagation across track changes.
 
 ## Start the service
 
@@ -156,42 +229,49 @@ Close Camera, Teams and every other camera user first:
 Expected service identity:
 
 ```text
-version = 0.5.0
-phase = phase4_face_identity
+version = 0.6.0
+phase = phase4_identity_session_fusion
 ```
 
-## Automated validation
+## Automated live smoke test
 
-Phase 1 and Phase 2:
-
-```powershell
-.\scripts\run_phase2_smoke_test.ps1 `
-  -PythonExe "D:\anaconda3\envs\smartoffice\python.exe" `
-  -RequireOsnet
-```
-
-Phase 3 and Phase 4 model/runtime check:
+Open a second PowerShell:
 
 ```powershell
-.\scripts\run_phase34_smoke_test.ps1 `
+conda activate smartoffice
+cd D:\smart-office-agent\vision-edge-server
+
+.\scripts\run_phase1234_smoke_test.ps1 `
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe"
 ```
 
-Strict visible-face check:
+Strict visible-face recognition-input check:
 
 ```powershell
-.\scripts\run_phase34_smoke_test.ps1 `
+.\scripts\run_phase1234_smoke_test.ps1 `
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe" `
   -RequireFace
 ```
 
-## Compact Phase 1-4 live evaluation window
+`-RequireFace` now requires a recognition-usable face, not the stricter enrollment-usable state.
+
+## Compact live evaluation window
 
 ```powershell
 .\scripts\run_phase1234_live_view.ps1 `
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe" `
   -WindowWidth 960 `
   -WindowHeight 540
+```
+
+The overlay distinguishes:
+
+```text
+T=<number>          low-level track_id
+V=<short code>      stable visitor_session_id
+NAME=<name>         persistent identity when recognized
+rec=Y/N             usable for recognition
+enroll=Y/N          usable for enrollment
 ```
 
 Controls:
@@ -202,19 +282,28 @@ P         pause or resume
 Space     save annotated screenshot
 R         restart the server-side vision pipeline
 L         print enrolled identities
-E         enroll the current Primary when -EnrollName was supplied
+E         start consented multi-sample enrollment when -EnrollName is supplied
 ```
 
-To make operator enrollment available after explicit participant consent:
+To enable operator enrollment after explicit participant consent:
 
 ```powershell
 .\scripts\run_phase1234_live_view.ps1 `
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe" `
+  -WindowWidth 960 `
+  -WindowHeight 540 `
   -EnrollName "Rico"
 ```
 
-Pressing `E` is rejected unless the Primary has a stable high-quality face and a current
-SFace embedding.
+Press `E`, look toward the camera for about three seconds, and wait for output such as:
+
+```text
+Enrollment complete: Rico -> person_...; samples_added=3; capture=3.0s;
+reused_existing=True
+```
+
+When the current track is already recognized, or a case-insensitive `Rico` entry already exists,
+samples are appended to that identity instead of creating another competing person.
 
 The viewer writes JSONL diagnostics and screenshots under:
 
@@ -222,10 +311,24 @@ The viewer writes JSONL diagnostics and screenshots under:
 logs/phase1234_live_view/
 ```
 
-Detailed procedures:
+## Return and recovery test
 
-- [`PHASE2_TESTING.md`](./PHASE2_TESTING.md)
-- [`PHASE3_4_TESTING.md`](./PHASE3_4_TESTING.md)
+1. Enter the frame and wait until the overlay shows a `T` and `V` value.
+2. For an enrolled visitor, wait for `NAME=Rico`.
+3. Leave completely for longer than two seconds but less than sixty seconds.
+4. Re-enter and look toward the camera.
+
+Expected behavior:
+
+```text
+track_id:           allowed to change, for example T12 -> T17
+visitor_session_id: expected to recover, same V code
+identity:           Rico remains or is restored quickly
+```
+
+The debug header increments `recovered=<count>` when a visitor session is reconnected. Exact
+recognition latency and false-match behavior must be validated on the actual exhibition camera and,
+later, with multiple participants.
 
 ## Identity management
 
@@ -235,23 +338,16 @@ List:
 .\scripts\manage_identity.ps1 -Action list
 ```
 
-Enroll the current consented track:
-
-```powershell
-.\scripts\manage_identity.ps1 `
-  -Action enroll `
-  -TrackId 1 `
-  -DisplayName "Rico" `
-  -Consent
-```
-
-Delete:
+Delete an obsolete duplicate row using its actual ID:
 
 ```powershell
 .\scripts\manage_identity.ps1 `
   -Action delete `
   -IdentityId "person_replace_with_actual_id"
 ```
+
+Old duplicate display-name rows are pooled during matching, but deleting unwanted historical rows is
+still recommended for a clean gallery.
 
 Local database:
 
@@ -268,9 +364,9 @@ GET    /health
 GET    /api/v1/status
 GET    /api/v1/config/public
 GET    /api/v1/detections
-GET    /api/v1/tracks
-GET    /api/v1/faces
-GET    /api/v1/identities
+GET    /api/v1/tracks              includes visitor_sessions
+GET    /api/v1/faces               includes visitor_sessions
+GET    /api/v1/identities          includes visitor_sessions
 POST   /api/v1/identities/enroll
 DELETE /api/v1/identities/{identity_id}
 GET    /api/v1/debug/frame.jpg
@@ -304,8 +400,7 @@ Five-minute camera benchmark:
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe"
 ```
 
-Stop the live pipeline before running a camera probe because both operations own camera index
-`1`.
+Stop the live pipeline before running a camera probe because both operations own camera index `1`.
 
 ## Network access from the i5 client
 
