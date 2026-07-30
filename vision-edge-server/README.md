@@ -1,39 +1,85 @@
 # RTX Vision Edge Server
 
-Standalone Windows vision service on branch `Vision-Edge-Server`. It is isolated from the inherited Smart Office task runtime and is intended for the RTX 3070 Ti laptop with USB camera index `1`.
+Standalone Windows vision service on branch `Vision-Edge-Server`. It is isolated from the
+inherited Smart Office task runtime and is intended for the RTX 3070 Ti laptop with USB camera
+index `1`.
 
 ## Current milestone
 
 ```text
-version: 0.3.0
-phase: phase2_multi_object_tracking
+version: 0.5.0
+phase: phase4_face_identity
 ```
 
-Phase 0 established hardware probing and sustained camera benchmarking. Phase 1 established the verified live path:
+The complete local pipeline is:
 
 ```text
 camera 1 + MSMF + AUTO + 3840×2160 @ 30 FPS
 → latest-frame buffer
-→ 960×540 global frame
-→ YOLOX-Nano 416×416
-→ CUDAExecutionProvider
+→ 960×540 YOLOX-Nano person detection on ONNX Runtime CUDA
+→ Phase 2 anonymous tracking and Primary selection
+→ Phase 3 track-linked YuNet face detection and quality
+→ Phase 4 consent-based local SFace identity
 ```
 
-Phase 2 adds anonymous multi-object tracking and primary-visitor selection:
+## Implemented phases
+
+### Phase 0: hardware foundation
+
+- GPU and camera probes;
+- actual camera-mode measurement;
+- five-minute sustained 4K capture benchmark;
+- FastAPI and WebSocket service foundation.
+
+### Phase 1: person detection
+
+- dedicated MSMF camera thread;
+- latest-frame replacement rather than an inference backlog;
+- verified 4K30 capture;
+- 960×540 global frame;
+- YOLOX-Nano person detection;
+- CUDAExecutionProvider verification;
+- annotated debug JPEG and MJPEG stream.
+
+### Phase 2: anonymous multi-object tracking
 
 - XYWH constant-velocity Kalman filter;
 - ByteTrack-style high/low-confidence association;
 - Hungarian minimum-cost assignment;
-- appearance-assisted matching with OSNet x0.25 ONNX when available;
-- explicit HSV-histogram fallback for initial functional testing;
-- tentative, confirmed, lost, recovered, and removed track lifecycle;
-- two-second short-occlusion recovery window;
-- lightweight observation-centric velocity correction after recovery;
-- stable `track_id` values, trails, engagement state, and primary hysteresis;
-- `visitor_entered`, `visitor_engaged`, `track_recovered`, `visitor_left`, `group_detected`, and `primary_visitor_changed` events;
-- compact OpenCV evaluation window with detector boxes and track overlays.
+- OSNet x0.25 appearance evidence;
+- tentative, confirmed, lost, recovered and removed lifecycle;
+- two-second short-occlusion recovery;
+- observation-centric velocity correction after recovery;
+- stable `track_id`, track trails, engagement and Primary hysteresis;
+- visitor, group and Primary events.
 
-Phase 2 does **not** perform face recognition or persistent human identity. A visitor returning after the lost timeout may receive a new `track_id`.
+The user has already passed Phase 2 unit tests, strict OSNet smoke testing, single-person
+stability, short complete occlusion and timeout-boundary tests. Two-person crossing and Primary
+hysteresis remain deferred until multiple participants are available.
+
+### Phase 3: face detection and quality
+
+- YuNet face detection inside the high-resolution 4K person ROI;
+- face box and five landmarks linked to `track_id`;
+- Primary and larger tracks prioritized at a configurable 5 Hz;
+- face confidence, pixel size, sharpness, brightness, roll and frontal score;
+- stable quality gate before identity processing;
+- `visitor_face_ready` and `visitor_face_lost` events.
+
+### Phase 4: consent-based local identity
+
+- SFace aligned face embedding;
+- cosine matching with best-versus-second-best margin;
+- three accepted observations before confirmation;
+- local SQLite identity gallery;
+- explicit-consent enrollment only;
+- no automatic enrollment and no stored face photographs;
+- bounded embedding samples per identity;
+- identity listing and deletion;
+- `visitor_identified`, `identity_enrolled` and `identity_deleted` events.
+
+Phase 4 is a local exhibition identity capability, not a claim of legal identity, liveness
+verification, demographic inference or unrestricted surveillance.
 
 ## Environment
 
@@ -45,7 +91,7 @@ cd D:\smart-office-agent\vision-edge-server
 python -m pip check
 ```
 
-Important pinned dependencies:
+Pinned compatibility dependencies include:
 
 ```text
 opencv-python==4.9.0.80
@@ -68,37 +114,29 @@ YOLOX-Nano:
 .\scripts\download_yolox_nano.ps1
 ```
 
-Expected file:
-
-```text
-models/yolox_nano.onnx
-```
-
-Recommended Phase 2 OSNet x0.25 ONNX export:
+OSNet x0.25 ONNX export:
 
 ```powershell
 .\scripts\export_osnet_x0_25_onnx.ps1
 ```
 
-Expected file:
+YuNet and SFace:
+
+```powershell
+.\scripts\download_face_models.ps1
+```
+
+Expected files:
 
 ```text
+models/yolox_nano.onnx
 models/osnet_x0_25.onnx
+models/face_detection_yunet_2023mar.onnx
+models/face_recognition_sface_2021dec.onnx
 ```
 
-The exporter creates a separate `visionedge-osnet-export` Conda environment. PyTorch is not installed into `smartoffice`.
-
-When the OSNet file is absent, the server reports:
-
-```text
-appearance.backend = hsv_histogram
-```
-
-This fallback is useful for functional tests but is not equivalent to neural ReID. Final crossing and occlusion tests should use:
-
-```text
-appearance.backend = osnet_onnx
-```
+PyTorch remains confined to the separate OSNet exporter environment. The working
+`smartoffice` runtime uses OpenCV and ONNX Runtime.
 
 ## Unit tests
 
@@ -108,25 +146,23 @@ python -m pytest -q
 
 ## Start the service
 
-Close Camera, Teams, and any other camera user first:
+Close Camera, Teams and every other camera user first:
 
 ```powershell
 .\scripts\start_vision_server.ps1 `
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe"
 ```
 
-## Automated Phase 1 + Phase 2 smoke test
+Expected service identity:
 
-Open a second terminal:
-
-```powershell
-conda activate smartoffice
-cd D:\smart-office-agent\vision-edge-server
-.\scripts\run_phase2_smoke_test.ps1 `
-  -PythonExe "D:\anaconda3\envs\smartoffice\python.exe"
+```text
+version = 0.5.0
+phase = phase4_face_identity
 ```
 
-Strict neural-ReID check after exporting OSNet:
+## Automated validation
+
+Phase 1 and Phase 2:
 
 ```powershell
 .\scripts\run_phase2_smoke_test.ps1 `
@@ -134,10 +170,25 @@ Strict neural-ReID check after exporting OSNet:
   -RequireOsnet
 ```
 
-## Compact live evaluation window
+Phase 3 and Phase 4 model/runtime check:
 
 ```powershell
-.\scripts\run_phase12_live_view.ps1 `
+.\scripts\run_phase34_smoke_test.ps1 `
+  -PythonExe "D:\anaconda3\envs\smartoffice\python.exe"
+```
+
+Strict visible-face check:
+
+```powershell
+.\scripts\run_phase34_smoke_test.ps1 `
+  -PythonExe "D:\anaconda3\envs\smartoffice\python.exe" `
+  -RequireFace
+```
+
+## Compact Phase 1-4 live evaluation window
+
+```powershell
+.\scripts\run_phase1234_live_view.ps1 `
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe" `
   -WindowWidth 960 `
   -WindowHeight 540
@@ -149,43 +200,86 @@ Controls:
 Q / Esc   quit
 P         pause or resume
 Space     save annotated screenshot
-R         restart server-side vision pipeline
+R         restart the server-side vision pipeline
+L         print enrolled identities
+E         enroll the current Primary when -EnrollName was supplied
 ```
 
-Overlay conventions:
+To make operator enrollment available after explicit participant consent:
+
+```powershell
+.\scripts\run_phase1234_live_view.ps1 `
+  -PythonExe "D:\anaconda3\envs\smartoffice\python.exe" `
+  -EnrollName "Rico"
+```
+
+Pressing `E` is rejected unless the Primary has a stable high-quality face and a current
+SFace embedding.
+
+The viewer writes JSONL diagnostics and screenshots under:
 
 ```text
-thin grey box    raw YOLOX detection
-green box        confirmed track
-cyan box         tentative track
-orange box       temporarily lost/predicted track
-magenta box      primary visitor
-coloured line    track trail
+logs/phase1234_live_view/
 ```
 
-The viewer writes frame-by-frame diagnostic JSONL under:
+Detailed procedures:
+
+- [`PHASE2_TESTING.md`](./PHASE2_TESTING.md)
+- [`PHASE3_4_TESTING.md`](./PHASE3_4_TESTING.md)
+
+## Identity management
+
+List:
+
+```powershell
+.\scripts\manage_identity.ps1 -Action list
+```
+
+Enroll the current consented track:
+
+```powershell
+.\scripts\manage_identity.ps1 `
+  -Action enroll `
+  -TrackId 1 `
+  -DisplayName "Rico" `
+  -Consent
+```
+
+Delete:
+
+```powershell
+.\scripts\manage_identity.ps1 `
+  -Action delete `
+  -IdentityId "person_replace_with_actual_id"
+```
+
+Local database:
 
 ```text
-logs/phase12_live_view/
+data/identity/visitor_identities.sqlite3
 ```
 
-Detailed controlled test procedures are in [`PHASE2_TESTING.md`](./PHASE2_TESTING.md).
+The `data/`, `logs/` and ONNX model paths are ignored by Git.
 
 ## Main endpoints
 
 ```text
-GET  /health
-GET  /api/v1/status
-GET  /api/v1/config/public
-GET  /api/v1/detections
-GET  /api/v1/tracks
-GET  /api/v1/debug/frame.jpg
-GET  /api/v1/debug/stream.mjpg
-POST /api/v1/vision/start
-POST /api/v1/vision/stop
-POST /api/v1/vision/restart
-POST /api/v1/probe
-WS   /ws/v1/events
+GET    /health
+GET    /api/v1/status
+GET    /api/v1/config/public
+GET    /api/v1/detections
+GET    /api/v1/tracks
+GET    /api/v1/faces
+GET    /api/v1/identities
+POST   /api/v1/identities/enroll
+DELETE /api/v1/identities/{identity_id}
+GET    /api/v1/debug/frame.jpg
+GET    /api/v1/debug/stream.mjpg
+POST   /api/v1/vision/start
+POST   /api/v1/vision/stop
+POST   /api/v1/vision/restart
+POST   /api/v1/probe
+WS     /ws/v1/events
 ```
 
 Interactive API documentation:
@@ -210,13 +304,15 @@ Five-minute camera benchmark:
   -PythonExe "D:\anaconda3\envs\smartoffice\python.exe"
 ```
 
-Stop the live vision pipeline before running a camera probe because both operations own camera index `1`.
+Stop the live pipeline before running a camera probe because both operations own camera index
+`1`.
 
 ## Network access from the i5 client
 
 ```powershell
 Invoke-RestMethod http://<RTX-LAPTOP-IP>:8015/health
 Invoke-RestMethod http://<RTX-LAPTOP-IP>:8015/api/v1/tracks
+Invoke-RestMethod http://<RTX-LAPTOP-IP>:8015/api/v1/faces
 ```
 
 Debug stream:
