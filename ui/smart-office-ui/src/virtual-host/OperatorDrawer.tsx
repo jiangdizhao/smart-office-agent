@@ -18,12 +18,17 @@ function proximityLabel(
 ): string {
   const labels: Record<ProximityGreetingController['status'], { zh: string; en: string }> = {
     disabled: { zh: '已关闭', en: 'Disabled' },
-    starting: { zh: '正在启动摄像头与人体检测模型', en: 'Starting camera and person detector' },
-    watching: { zh: '正在等待人体靠近且框内检测到人脸', en: 'Watching for a nearby person with a face inside the body box' },
-    blocked: { zh: '摄像头权限被拒绝', en: 'Camera permission denied' },
-    unsupported: { zh: '当前浏览器不支持', en: 'Unsupported by this browser' },
-    error: { zh: '人体近距感应出现错误', en: 'Person proximity detection error' },
+    starting: { zh: '正在启动本地视觉检测', en: 'Starting local vision detection' },
+    watching: { zh: '本地视觉正在等待访客', en: 'Local vision is watching for a visitor' },
+    blocked: { zh: '浏览器摄像头权限被拒绝', en: 'Browser camera permission denied' },
+    unsupported: { zh: '当前浏览器不支持本地视觉', en: 'Local vision is unsupported by this browser' },
+    error: { zh: '访客感应出现错误', en: 'Visitor detection error' },
     stopped: { zh: '已停止', en: 'Stopped' },
+    connecting: { zh: '正在连接 RTX 视觉服务器', en: 'Connecting to the RTX vision server' },
+    connected: { zh: 'RTX 视觉服务器已连接', en: 'RTX vision server connected' },
+    reconnecting: { zh: 'RTX 视觉连接中断，正在重连', en: 'RTX vision disconnected; reconnecting' },
+    offline: { zh: 'RTX 视觉服务器不可用', en: 'RTX vision server unavailable' },
+    fallback: { zh: '正在使用浏览器 MediaPipe 备用路径', en: 'Using the browser MediaPipe fallback' },
   }
   return labels[status][zh ? 'zh' : 'en']
 }
@@ -50,7 +55,7 @@ export default function OperatorDrawer({
         <div className="drawer-heading exhibition-drawer-heading">
           <div>
             <span>{zh ? '展会控制' : 'Exhibition controls'}</span>
-            <strong>{zh ? '语音、摄像头与界面设置' : 'Voice, camera and interface settings'}</strong>
+            <strong>{zh ? '语音、视觉与界面设置' : 'Voice, vision and interface settings'}</strong>
           </div>
           <button type="button" onClick={onClose} aria-label={zh ? '关闭' : 'Close'}>
             ×
@@ -104,12 +109,16 @@ export default function OperatorDrawer({
         <section className="drawer-section" aria-labelledby="proximity-setting-title">
           <div className="drawer-section-heading">
             <strong id="proximity-setting-title">
-              {zh ? '空闲近距主动问候' : 'Idle proximity greeting'}
+              {zh ? '空闲访客主动问候' : 'Idle visitor greeting'}
             </strong>
             <span>
-              {zh
-                ? '仅在待机、人体占画面达到阈值且人体框内检测到人脸时触发'
-                : 'Only on standby when a person is large enough and a face is inside the person box'}
+              {proximity.source === 'remote'
+                ? zh
+                  ? '由 RTX 视觉服务器的 Primary、engaged、face 和 visitor session 状态驱动'
+                  : 'Driven by RTX Primary, engaged, face and visitor-session state'
+                : zh
+                  ? '当前使用浏览器本地视觉备用路径'
+                  : 'Currently using the browser-local vision fallback'}
             </span>
           </div>
           <div className="drawer-segmented-control">
@@ -136,6 +145,9 @@ export default function OperatorDrawer({
               ? ` · ${zh ? '人体' : 'person'} ${(proximity.lastDetection.body_area_ratio * 100).toFixed(0)}% · ${proximity.lastDetection.face_inside_body ? (zh ? '有人脸' : 'face found') : (zh ? '未检测到人脸' : 'no face')}`
               : ''}
           </p>
+          {proximity.endpoint ? (
+            <p className="drawer-inline-note">{zh ? '远程端点' : 'Remote endpoint'}: {proximity.endpoint}</p>
+          ) : null}
           {proximity.detail ? <p className="drawer-inline-note">{proximity.detail}</p> : null}
         </section>
 
@@ -168,7 +180,7 @@ export default function OperatorDrawer({
 
         <section className="drawer-section" aria-labelledby="voice-output-title">
           <div className="drawer-section-heading">
-            <strong id="voice-output-title">{zh ? '语音输出' : 'Voice output'}</strong>
+            <strong id="voice-output-title">{zh ? '语音输出' : 'Playback mode'}</strong>
             <span>{zh ? '默认使用 GPT Realtime' : 'GPT Realtime by default'}</span>
           </div>
           <label className="drawer-field">
