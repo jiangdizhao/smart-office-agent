@@ -55,14 +55,20 @@ class VisitorSession:
     def best_face_similarity(self, query: np.ndarray | None) -> float:
         if query is None:
             return -1.0
-        return max((_similarity(query, item) for item in self.face_embeddings), default=-1.0)
+        return max(
+            (_similarity(query, item) for item in self.face_embeddings),
+            default=-1.0,
+        )
 
     def best_body_similarity(self, query: np.ndarray | None) -> float:
         if query is None:
             return -1.0
-        return max((_similarity(query, item) for item in self.body_embeddings), default=-1.0)
+        return max(
+            (_similarity(query, item) for item in self.body_embeddings),
+            default=-1.0,
+        )
 
-    def update(
+    def update_visible(
         self,
         *,
         track: dict[str, Any],
@@ -80,6 +86,7 @@ class VisitorSession:
         self.primary = bool(track.get("primary"))
         if track_id not in self.track_ids:
             self.track_ids.append(track_id)
+
         normalized_face = _normalize(face_embedding)
         if normalized_face is not None:
             self.face_embeddings.append(normalized_face)
@@ -100,7 +107,9 @@ class VisitorSession:
             "last_track_id": self.last_track_id,
             "track_ids": list(self.track_ids),
             "age_seconds": round(max(now - self.created_at_monotonic, 0.0), 3),
-            "last_seen_age_seconds": round(max(now - self.last_seen_monotonic, 0.0), 3),
+            "last_seen_age_seconds": round(
+                max(now - self.last_seen_monotonic, 0.0), 3
+            ),
             "face_embedding_count": len(self.face_embeddings),
             "body_embedding_count": len(self.body_embeddings),
             "identity": None if self.identity is None else dict(self.identity),
@@ -111,18 +120,16 @@ class VisitorSession:
 
 
 class VisitorSessionRuntime:
-    """Short-lived anonymous visitor memory.
+    """Memory-only bridge between short MOT tracks and a stable visitor session.
 
-    The memory never stores images and never writes anonymous embeddings to disk. It bridges a
-    sequence of short MOT tracks into one visitor session, using a registered identity first,
-    then SFace, and finally OSNet body appearance as progressively weaker evidence.
+    Anonymous face/body embeddings are retained only for the configured TTL. No images and no
+    anonymous embeddings are written to disk.
     """
 
     def __init__(self, settings: VisitorSessionSettings) -> None:
         self.settings = settings
         self.sessions: dict[str, VisitorSession] = {}
         self.track_to_session: dict[int, str] = {}
-        self._candidates: dict[int, tuple[str | None, int]] = {}
         self._lock = threading.RLock()
         self.recovery_count = 0
         self.expired_count = 0
@@ -135,7 +142,6 @@ class VisitorSessionRuntime:
         with self._lock:
             self.sessions.clear()
             self.track_to_session.clear()
-            self._candidates.clear()
             self.recovery_count = 0
             self.expired_count = 0
 
@@ -154,27 +160,30 @@ class VisitorSessionRuntime:
             return [dict(track) for track in tracks], events
 
         with self._lock:
-            active_track_ids = {
-                int(track["track_id"])
+            visible_tracks = [
+                dict(track)
                 for track in tracks
-                if track.get("state") != "removed"
-            }
+                if bool(track.get("visible"))
+                and track.get("state") in {"confirmed", "tentative"}
+            ]
+            visible_track_ids = {int(track["track_id"]) for track in visible_tracks}
             for session in self.sessions.values():
-                if session.active_track_id not in active_track_ids:
+                if session.active_track_id not in visible_track_ids:
                     session.active_track_id = None
 
-            enriched: list[dict[str, Any]] = []
             assigned_sessions: set[str] = set()
-            ordered = sorted(
-                tracks,
+            by_track: dict[int, dict[str, Any]] = {
+                int(track["track_id"]): dict(track) for track in tracks
+            }
+            visible_tracks.sort(
                 key=lambda item: (
                     not bool(item.get("primary")),
                     item.get("state") != "confirmed",
                     -float(item.get("area_ratio", 0.0)),
-                ),
+                )
             )
-            for track in ordered:
-                item = dict(track)
+
+            for item in visible_tracks:
                 track_id = int(item["track_id"])
                 face = _normalize(face_embeddings.get(track_id))
                 body = _normalize(body_embeddings.get(track_id))
@@ -182,10 +191,10 @@ class VisitorSessionRuntime:
                 session_id = self.track_to_session.get(track_id)
                 session = self.sessions.get(session_id or "")
                 recovery_reason: str | None = None
-                match_diagnostics: dict[str, Any] = {}
+                diagnostics: dict[str, Any] = {}
 
                 if session is None:
-                    session, recovery_reason, match_diagnostics = self._match_session(
+                    session, recovery_reason, diagnostics = self._match_session(
                         track=item,
                         face_embedding=face,
                         body_embedding=body,
@@ -217,16 +226,18 @@ class VisitorSessionRuntime:
                                     "previous_track_id": previous_track_id,
                                     "current_track_id": track_id,
                                     "reason": recovery_reason,
-                                    **match_diagnostics,
+                                    **diagnostics,
                                 },
                             )
                         )
                     self.track_to_session[track_id] = session.visitor_session_id
 
                 previous_identity_id = (
-                    None if session.identity is None else session.identity.get("identity_id")
+                    None
+                    if session.identity is None
+                    else session.identity.get("identity_id")
                 )
-                session.update(
+                session.update_visible(
                     track=item,
                     face_embedding=face,
                     body_embedding=body,
@@ -250,13 +261,16 @@ class VisitorSessionRuntime:
                             },
                         )
                     )
+                by_track[track_id] = self._enrich_track(item, session, now)
 
-                item["visitor_session_id"] = session.visitor_session_id
-                item["visitor_session"] = session.public(now)
-                if item.get("identity") is None and session.identity is not None:
-                    item["identity"] = dict(session.identity)
-                    item["identity_source"] = "visitor_session_memory"
-                enriched.append(item)
+            # Lost tracks retain their historical mapping but do not keep a session active.
+            for track_id, item in list(by_track.items()):
+                if track_id in visible_track_ids:
+                    continue
+                session_id = self.track_to_session.get(track_id)
+                session = self.sessions.get(session_id or "")
+                if session is not None:
+                    by_track[track_id] = self._enrich_track(item, session, now)
 
             expired = self._expire(now)
             for session in expired:
@@ -274,8 +288,21 @@ class VisitorSessionRuntime:
                         },
                     )
                 )
-            enriched.sort(key=lambda item: int(item["track_id"]))
-            return enriched, events
+            return [by_track[key] for key in sorted(by_track)], events
+
+    def _enrich_track(
+        self,
+        track: dict[str, Any],
+        session: VisitorSession,
+        now: float,
+    ) -> dict[str, Any]:
+        item = dict(track)
+        item["visitor_session_id"] = session.visitor_session_id
+        item["visitor_session"] = session.public(now)
+        if item.get("identity") is None and session.identity is not None:
+            item["identity"] = dict(session.identity)
+            item["identity_source"] = "visitor_session_memory"
+        return item
 
     def _create_session(self, track: dict[str, Any], now: float) -> VisitorSession:
         track_id = int(track["track_id"])
@@ -304,7 +331,6 @@ class VisitorSessionRuntime:
         now: float,
         assigned_sessions: set[str],
     ) -> tuple[VisitorSession | None, str | None, dict[str, Any]]:
-        track_id = int(track["track_id"])
         candidates = [
             session
             for session in self.sessions.values()
@@ -321,8 +347,9 @@ class VisitorSessionRuntime:
                 and session.identity.get("identity_id") == identity_id
             ]
             if identity_matches:
-                selected = max(identity_matches, key=lambda item: item.last_seen_monotonic)
-                self._candidates.pop(track_id, None)
+                selected = max(
+                    identity_matches, key=lambda item: item.last_seen_monotonic
+                )
                 return selected, "registered_identity", {"identity_id": identity_id}
 
         scored: list[tuple[float, float, float, VisitorSession]] = []
@@ -331,12 +358,14 @@ class VisitorSessionRuntime:
             face_score = session.best_face_similarity(face_embedding)
             body_score = session.best_body_similarity(body_embedding)
             center_distance = float(
-                np.linalg.norm(current_center - np.asarray(session.last_center, dtype=np.float32))
+                np.linalg.norm(
+                    current_center
+                    - np.asarray(session.last_center, dtype=np.float32)
+                )
             )
             scored.append((face_score, body_score, center_distance, session))
         scored.sort(key=lambda row: (row[0], row[1], -row[2]), reverse=True)
         if not scored:
-            self._candidates.pop(track_id, None)
             return None, None, {}
 
         best_face, best_body, center_distance, best_session = scored[0]
@@ -358,7 +387,6 @@ class VisitorSessionRuntime:
             best_face >= self.settings.face_high_similarity
             and face_margin >= self.settings.face_minimum_margin
         ):
-            self._candidates.pop(track_id, None)
             return best_session, "face_high", diagnostics
 
         medium_face = (
@@ -369,6 +397,9 @@ class VisitorSessionRuntime:
                 or center_distance <= self.settings.max_center_distance
             )
         )
+        if medium_face:
+            return best_session, "face_body_medium", diagnostics
+
         body_only = (
             face_embedding is None
             and age <= self.settings.body_only_max_age_seconds
@@ -376,18 +407,8 @@ class VisitorSessionRuntime:
             and body_margin >= self.settings.body_minimum_margin
             and center_distance <= self.settings.max_center_distance
         )
-        candidate_id = best_session.visitor_session_id if (medium_face or body_only) else None
-        previous_id, count = self._candidates.get(track_id, (None, 0))
-        count = count + 1 if previous_id == candidate_id else 1
-        self._candidates[track_id] = (candidate_id, count)
-        required = (
-            self.settings.body_only_confirmations
-            if body_only
-            else self.settings.medium_confirmations
-        )
-        if candidate_id is not None and count >= required:
-            self._candidates.pop(track_id, None)
-            return best_session, "body_only" if body_only else "face_body_medium", diagnostics
+        if body_only:
+            return best_session, "body_only", diagnostics
         return None, None, diagnostics
 
     def _expire(self, now: float) -> list[VisitorSession]:
@@ -400,7 +421,6 @@ class VisitorSessionRuntime:
             for track_id, mapped_session in list(self.track_to_session.items()):
                 if mapped_session == session_id:
                     self.track_to_session.pop(track_id, None)
-                    self._candidates.pop(track_id, None)
         self.expired_count += len(expired)
         return expired
 
