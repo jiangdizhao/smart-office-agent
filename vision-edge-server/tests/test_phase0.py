@@ -22,6 +22,9 @@ camera:
   probe_on_startup: false
 gpu:
   probe_on_startup: false
+vision:
+  enabled: false
+  start_on_startup: false
 """.strip(),
         encoding="utf-8",
     )
@@ -35,18 +38,9 @@ gpu:
 
 
 def test_camera_performance_classification() -> None:
-    assert (
-        classify_camera_performance(12.0, ready_min_fps=10.0, degraded_min_fps=3.0)
-        == "ready"
-    )
-    assert (
-        classify_camera_performance(6.0, ready_min_fps=10.0, degraded_min_fps=3.0)
-        == "degraded"
-    )
-    assert (
-        classify_camera_performance(1.1, ready_min_fps=10.0, degraded_min_fps=3.0)
-        == "unusable_for_realtime"
-    )
+    assert classify_camera_performance(12.0, ready_min_fps=10.0, degraded_min_fps=3.0) == "ready"
+    assert classify_camera_performance(6.0, ready_min_fps=10.0, degraded_min_fps=3.0) == "degraded"
+    assert classify_camera_performance(1.1, ready_min_fps=10.0, degraded_min_fps=3.0) == "unusable_for_realtime"
 
 
 def test_camera_selection_prefers_realtime_then_resolution_match() -> None:
@@ -96,6 +90,7 @@ def test_http_and_websocket_contract() -> None:
             "server": {"heartbeat_seconds": 60},
             "camera": {"enabled": False, "probe_on_startup": False},
             "gpu": {"probe_on_startup": False},
+            "vision": {"enabled": False, "start_on_startup": False},
         }
     )
     app = create_app(config)
