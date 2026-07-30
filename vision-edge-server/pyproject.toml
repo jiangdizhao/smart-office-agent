@@ -1,6 +1,6 @@
 [project]
 name = "rtx-vision-edge-server"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local RTX visual perception server for the Smart Office exhibition agent"
 requires-python = ">=3.11"
 
