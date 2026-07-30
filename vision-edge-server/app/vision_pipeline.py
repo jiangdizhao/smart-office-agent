@@ -6,10 +6,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from app.appearance import AppearanceExtractor
 from app.camera_runtime import CameraManager
 from app.config import AppConfig
 from app.person_detector import DetectorUnavailableError, YoloXPersonDetector
-from app.presence import PresenceStateMachine
+from app.tracking_runtime import MultiObjectTracker
 
 logger = logging.getLogger(__name__)
 EventCallback = Callable[[str, dict[str, Any]], None]
@@ -20,7 +21,13 @@ class VisionPipeline:
         self.config = config
         self.camera = CameraManager(config.camera)
         self.detector = YoloXPersonDetector(config.detection, server_root)
-        self.presence = PresenceStateMachine(config.presence)
+        self.appearance = AppearanceExtractor(config.reid, server_root)
+        self.tracker = MultiObjectTracker(
+            config.tracking,
+            config.presence,
+            config.primary,
+            self.appearance,
+        )
         self.emit_event = emit_event
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -32,6 +39,7 @@ class VisionPipeline:
         self._processed_frames = 0
         self._skipped_frames = 0
         self._last_detections: list[dict[str, Any]] = []
+        self._last_tracks: list[dict[str, Any]] = []
         self._last_timings: dict[str, Any] | None = None
         self._last_processed_unix: float | None = None
         self._preview_jpeg: bytes | None = None
@@ -56,8 +64,13 @@ class VisionPipeline:
             self._running = True
             self._status = "starting"
             self._last_error = None
+            self._last_frame_id = 0
+            self._last_detections = []
+            self._last_tracks = []
         self._stop_event.clear()
+        self.tracker.reset()
         self.camera.start()
+
         if self.config.detection.enabled:
             try:
                 self.detector.load()
@@ -67,6 +80,16 @@ class VisionPipeline:
                     self._status = "degraded"
                     self._last_error = str(exc)
                 self.emit_event("server_degraded", {"component": "person_detector", "detail": str(exc)})
+
+        try:
+            self.appearance.load()
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            with self._lock:
+                self._status = "degraded"
+                self._last_error = detail
+            self.emit_event("server_degraded", {"component": "appearance", "detail": detail})
+
         self._thread = threading.Thread(target=self._run_loop, name="vision-pipeline", daemon=True)
         self._thread.start()
 
@@ -77,6 +100,7 @@ class VisionPipeline:
             thread.join(timeout=timeout)
         self.camera.stop(timeout=timeout)
         self.detector.close()
+        self.appearance.close()
         with self._lock:
             self._running = False
             self._status = "stopped"
@@ -124,18 +148,34 @@ class VisionPipeline:
                         self._last_error = detail
                     logger.exception("person_detection_failed")
 
-            for event_type, payload in self.presence.update(
-                detections,
-                now_monotonic=packet.captured_at_monotonic,
-            ):
-                self.emit_event(event_type, payload)
+            tracking_started = time.perf_counter()
+            tracks: list[dict[str, Any]] = []
+            if self.config.tracking.enabled:
+                try:
+                    tracks, events = self.tracker.update(
+                        detections,
+                        packet.frame,
+                        now=packet.captured_at_monotonic,
+                    )
+                    for event_type, payload in events:
+                        self.emit_event(event_type, payload)
+                except Exception as exc:
+                    detail = f"{type(exc).__name__}: {exc}"
+                    with self._lock:
+                        self._status = "degraded"
+                        self._last_error = detail
+                    logger.exception("multi_object_tracking_failed")
+            tracking_ms = (time.perf_counter() - tracking_started) * 1000.0
 
             preview_ms = 0.0
             encoded_bytes: bytes | None = None
             if self.config.debug.enabled:
                 preview_started = time.perf_counter()
-                preview = self._annotate(global_frame, detections)
-                if preview.shape[1] != self.config.debug.preview_width or preview.shape[0] != self.config.debug.preview_height:
+                preview = self._annotate(global_frame, detections, tracks)
+                if (
+                    preview.shape[1] != self.config.debug.preview_width
+                    or preview.shape[0] != self.config.debug.preview_height
+                ):
                     preview = cv2.resize(
                         preview,
                         (self.config.debug.preview_width, self.config.debug.preview_height),
@@ -153,22 +193,30 @@ class VisionPipeline:
             with self._lock:
                 self._processed_frames += 1
                 self._last_detections = detections
+                self._last_tracks = tracks
                 self._last_timings = {
                     "resize_ms": round(resize_ms, 3),
                     **detector_timings,
+                    "tracking_ms": round(tracking_ms, 3),
                     "preview_ms": round(preview_ms, 3),
                 }
                 self._last_processed_unix = time.time()
                 if encoded_bytes is not None:
                     self._preview_jpeg = encoded_bytes
                 detector_ok = not self.config.detection.enabled or self.detector.ready
-                if detector_ok and self.camera.running:
+                appearance_ok = not self.config.reid.enabled or self.appearance.ready
+                if detector_ok and appearance_ok and self.camera.running:
                     self._status = "ready"
                     self._last_error = None
         with self._lock:
             self._running = False
 
-    def _annotate(self, frame: Any, detections: list[dict[str, Any]]) -> Any:
+    def _annotate(
+        self,
+        frame: Any,
+        detections: list[dict[str, Any]],
+        tracks: list[dict[str, Any]],
+    ) -> Any:
         import cv2
         import numpy as np
 
@@ -176,46 +224,88 @@ class VisionPipeline:
         height, width = output.shape[:2]
         if self.config.debug.draw_zone:
             points = np.array(
-                [[int(x * width), int(y * height)] for x, y in self.config.presence.engagement_zone],
+                [
+                    [int(x * width), int(y * height)]
+                    for x, y in self.config.presence.engagement_zone
+                ],
                 dtype=np.int32,
             )
             cv2.polylines(output, [points], isClosed=True, color=(0, 255, 255), thickness=2)
-        for index, detection in enumerate(detections):
-            box = detection["bbox"]
-            x1, y1 = int(box["x"] * width), int(box["y"] * height)
-            x2 = int((box["x"] + box["width"]) * width)
-            y2 = int((box["y"] + box["height"]) * height)
-            cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            label = f"person {detection['score']:.2f} area={detection['area_ratio']:.3f}"
+
+        if self.config.debug.draw_raw_detections:
+            for detection in detections:
+                x1, y1, x2, y2 = _bbox_pixels(detection["bbox"], width, height)
+                cv2.rectangle(output, (x1, y1), (x2, y2), (160, 160, 160), 1)
+
+        for track in tracks:
+            state = track["state"]
+            if state == "lost" and not self.config.debug.draw_lost_tracks:
+                continue
+            x1, y1, x2, y2 = _bbox_pixels(track["bbox"], width, height)
+            if track["primary"]:
+                color = (255, 0, 255)
+                thickness = 4
+            elif state == "lost":
+                color = (0, 165, 255)
+                thickness = 2
+            elif state == "tentative":
+                color = (255, 255, 0)
+                thickness = 2
+            else:
+                color = (0, 255, 0)
+                thickness = 2
+            cv2.rectangle(output, (x1, y1), (x2, y2), color, thickness)
+            label = (
+                f"ID {track['track_id']} {state} "
+                f"score={track['score']:.2f} area={track['area_ratio']:.3f}"
+            )
+            if track["primary"]:
+                label += " PRIMARY"
+            if track["engaged"]:
+                label += " ENGAGED"
             cv2.putText(
                 output,
                 label,
-                (x1, max(18, y1 - 8)),
+                (x1, max(20, y1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 0),
+                0.52,
+                color,
                 2,
                 cv2.LINE_AA,
             )
+            if self.config.debug.draw_track_trails and len(track["trail"]) >= 2:
+                trail = np.asarray(
+                    [[int(x * width), int(y * height)] for x, y in track["trail"]],
+                    dtype=np.int32,
+                )
+                cv2.polylines(output, [trail], isClosed=False, color=color, thickness=2)
+
+        tracker_snapshot = self.tracker.snapshot()
+        appearance_backend = tracker_snapshot["appearance"]["backend"]
+        lines = [
+            (
+                f"phase2 state={tracker_snapshot['scene_state']} "
+                f"people={tracker_snapshot['person_count']} "
+                f"tracks={tracker_snapshot['track_count']} "
+                f"primary={tracker_snapshot['primary_track_id']}"
+            ),
+            (
+                f"frame={self._last_frame_id} detector={len(detections)} "
+                f"appearance={appearance_backend} tracker={tracker_snapshot['last_update_ms']}ms"
+            ),
+        ]
+        for index, text in enumerate(lines):
+            y = 28 + index * 26
             cv2.putText(
                 output,
-                f"#{index + 1}",
-                (x1 + 4, y1 + 22),
+                text,
+                (12, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 0),
+                0.62,
+                (255, 255, 255),
                 2,
+                cv2.LINE_AA,
             )
-        cv2.putText(
-            output,
-            f"state={self.presence.state} people={len(detections)} frame={self._last_frame_id}",
-            (12, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
         return output
 
     def latest_preview(self) -> bytes | None:
@@ -227,11 +317,14 @@ class VisionPipeline:
             return {
                 "frame_id": self._last_frame_id,
                 "processed_at_unix": self._last_processed_unix,
-                "person_count": len(self._last_detections),
+                "raw_person_count": len(self._last_detections),
                 "detections": list(self._last_detections),
-                "presence": self.presence.snapshot(),
+                "tracking": self.tracker.snapshot(),
                 "timings": dict(self._last_timings) if self._last_timings else None,
             }
+
+    def tracks_snapshot(self) -> dict[str, Any]:
+        return self.tracker.snapshot()
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -247,5 +340,17 @@ class VisionPipeline:
             }
         status["camera"] = self.camera.status()
         status["detector"] = self.detector.status()
-        status["presence"] = self.presence.snapshot()
+        status["tracking"] = self.tracker.snapshot()
         return status
+
+
+def _bbox_pixels(box: dict[str, float], width: int, height: int) -> tuple[int, int, int, int]:
+    x1 = int(np_clip(box["x"], 0.0, 1.0) * width)
+    y1 = int(np_clip(box["y"], 0.0, 1.0) * height)
+    x2 = int(np_clip(box["x"] + box["width"], 0.0, 1.0) * width)
+    y2 = int(np_clip(box["y"] + box["height"], 0.0, 1.0) * height)
+    return x1, y1, x2, y2
+
+
+def np_clip(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, float(value)))
