@@ -32,7 +32,7 @@ conda run -n $EnvironmentName python -m pip install --upgrade pip
 conda run -n $EnvironmentName python -m pip install `
     torch torchvision `
     --index-url https://download.pytorch.org/whl/cpu
-conda run -n $EnvironmentName python -m pip install onnx
+conda run -n $EnvironmentName python -m pip install onnx onnxscript
 
 Push-Location $ServerRoot
 try {
