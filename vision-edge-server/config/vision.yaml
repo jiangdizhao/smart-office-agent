@@ -138,6 +138,6 @@ debug:
   preview_fps: 10
   jpeg_quality: 80
   draw_zone: true
-  draw_raw_detections: false
+  draw_raw_detections: true
   draw_track_trails: true
   draw_lost_tracks: true
