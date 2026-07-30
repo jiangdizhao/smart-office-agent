@@ -24,6 +24,13 @@ def main() -> int:
         "client_state_snapshot",
         "visitor_session_id",
         "greeting_eligible",
+        "identity_similarity",
+        "face_quality_score",
+        "recognition_usable",
+        "enrollment_usable",
+        "scene_state",
+        "person_count",
+        "updated_at",
     )
     require(
         "ui/smart-office-ui/src/vision/useProximityGreeting.ts",
@@ -32,18 +39,26 @@ def main() -> int:
         "greetedSessionsRef",
         "triggerProximityGreeting",
         "RemoteVisionClient",
+        "ProximityDetection | RemoteVisionDetection | null",
     )
     require(
         "ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx",
         "RTX vision server connected",
         "proximity.endpoint",
+        "RTX 视觉实时调试",
+        "Track ID",
+        "Visitor Session",
+        "Identity ID",
+        "人脸质量 / 正脸度",
+        "识别可用 / 注册可用",
+        "协议 / 事件源",
     )
     require(
         "ui/smart-office-ui/.env.phase5.example",
         "VITE_VISION_SOURCE=remote",
         "VITE_VISION_SERVER_WS=ws://",
     )
-    print("PASS: Phase 5 Smart Office remote-vision client contract is present.")
+    print("PASS: Phase 5 Smart Office remote-vision client and detailed diagnostics contracts are present.")
     return 0
 
 
