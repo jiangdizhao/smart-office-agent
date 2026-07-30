@@ -37,11 +37,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         runtime.bind_event_loop(asyncio.get_running_loop())
         tasks: list[asyncio.Task[Any]] = [asyncio.create_task(_heartbeat_loop(runtime))]
         if loaded_config.gpu.probe_on_startup:
-            tasks.append(asyncio.create_task(runtime.run_hardware_probes(include_gpu=True, include_camera=False)))
+            tasks.append(
+                asyncio.create_task(runtime.run_hardware_probes(include_gpu=True, include_camera=False))
+            )
         if loaded_config.vision.enabled and loaded_config.vision.start_on_startup:
             await runtime.start_vision()
         elif loaded_config.camera.enabled and loaded_config.camera.probe_on_startup:
-            tasks.append(asyncio.create_task(runtime.run_hardware_probes(include_gpu=False, include_camera=True)))
+            tasks.append(
+                asyncio.create_task(runtime.run_hardware_probes(include_gpu=False, include_camera=True))
+            )
         try:
             yield
         finally:
@@ -52,7 +56,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 with suppress(asyncio.CancelledError):
                     await task
 
-    app = FastAPI(title="RTX Vision Edge Server", version=loaded_config.version, lifespan=lifespan)
+    app = FastAPI(
+        title="RTX Vision Edge Server",
+        version=loaded_config.version,
+        lifespan=lifespan,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=loaded_config.server.cors_origins,
@@ -79,7 +87,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.get("/api/v1/config/public", tags=["system"])
     async def public_config() -> dict[str, Any]:
-        return loaded_config.model_dump(exclude={"camera": {"probe_on_startup"}, "gpu": {"probe_on_startup"}})
+        return loaded_config.model_dump(
+            exclude={"camera": {"probe_on_startup"}, "gpu": {"probe_on_startup"}}
+        )
 
     @app.post("/api/v1/probe", tags=["hardware"])
     async def rerun_probe(
@@ -89,7 +99,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if runtime.probe_running:
             raise HTTPException(status_code=409, detail="A hardware probe is already running")
         try:
-            return await runtime.run_hardware_probes(include_gpu=include_gpu, include_camera=include_camera)
+            return await runtime.run_hardware_probes(
+                include_gpu=include_gpu,
+                include_camera=include_camera,
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -109,12 +122,20 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def detections() -> dict[str, Any]:
         return runtime.vision.detections_snapshot()
 
+    @app.get("/api/v1/tracks", tags=["vision"])
+    async def tracks() -> dict[str, Any]:
+        return runtime.vision.tracks_snapshot()
+
     @app.get("/api/v1/debug/frame.jpg", tags=["debug"])
     async def debug_frame() -> Response:
         data = runtime.vision.latest_preview()
         if data is None:
             raise HTTPException(status_code=503, detail="No debug frame is available yet")
-        return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        return Response(
+            content=data,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/v1/debug/stream.mjpg", tags=["debug"])
     async def debug_stream() -> StreamingResponse:
@@ -126,7 +147,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
                 await asyncio.sleep(delay)
 
-        return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
+        return StreamingResponse(
+            generate(), media_type="multipart/x-mixed-replace; boundary=frame"
+        )
 
     @app.websocket("/ws/v1/events")
     async def event_stream(websocket: WebSocket) -> None:
@@ -142,24 +165,35 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     },
                 )
             )
-            await websocket.send_json(event_factory.build("state_snapshot", runtime.public_status()))
+            await websocket.send_json(
+                event_factory.build("state_snapshot", runtime.public_status())
+            )
             while True:
                 raw = await websocket.receive_text()
                 try:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
-                    await websocket.send_json(event_factory.build("client_error", {"detail": "Expected a JSON object"}))
+                    await websocket.send_json(
+                        event_factory.build("client_error", {"detail": "Expected a JSON object"})
+                    )
                     continue
                 message_type = str(message.get("type", "")).strip()
                 if message_type == "ping":
-                    await websocket.send_json(event_factory.build("pong", {"client_time": message.get("client_time")}))
+                    await websocket.send_json(
+                        event_factory.build("pong", {"client_time": message.get("client_time")})
+                    )
                 elif message_type == "get_state":
-                    await websocket.send_json(event_factory.build("state_snapshot", runtime.public_status()))
+                    await websocket.send_json(
+                        event_factory.build("state_snapshot", runtime.public_status())
+                    )
                 else:
                     await websocket.send_json(
                         event_factory.build(
                             "client_error",
-                            {"detail": "Unsupported client message", "received_type": message_type},
+                            {
+                                "detail": "Unsupported client message",
+                                "received_type": message_type,
+                            },
                         )
                     )
         except WebSocketDisconnect:
