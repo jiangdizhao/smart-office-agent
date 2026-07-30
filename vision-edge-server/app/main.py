@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.config import AppConfig, load_config
 from app.events import EventFactory, WebSocketHub
 from app.logging_json import configure_logging
 from app.runtime import VisionRuntime
-
-logger = logging.getLogger(__name__)
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -36,48 +34,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         app.state.event_factory = event_factory
         app.state.hub = hub
         app.state.runtime = runtime
-        tasks: list[asyncio.Task[Any]] = []
-
-        logger.info(
-            "vision_server_starting",
-            extra={
-                "event": "vision_server_starting",
-                "service": loaded_config.service_name,
-                "version": loaded_config.version,
-                "phase": loaded_config.phase,
-                "config_path": app.state.config_path,
-            },
-        )
-        tasks.append(asyncio.create_task(_heartbeat_loop(runtime)))
-        if loaded_config.gpu.probe_on_startup or (
-            loaded_config.camera.enabled and loaded_config.camera.probe_on_startup
-        ):
-            tasks.append(
-                asyncio.create_task(
-                    runtime.run_hardware_probes(
-                        include_gpu=loaded_config.gpu.probe_on_startup,
-                        include_camera=(
-                            loaded_config.camera.enabled and loaded_config.camera.probe_on_startup
-                        ),
-                    )
-                )
-            )
-
+        runtime.bind_event_loop(asyncio.get_running_loop())
+        tasks: list[asyncio.Task[Any]] = [asyncio.create_task(_heartbeat_loop(runtime))]
+        if loaded_config.gpu.probe_on_startup:
+            tasks.append(asyncio.create_task(runtime.run_hardware_probes(include_gpu=True, include_camera=False)))
+        if loaded_config.vision.enabled and loaded_config.vision.start_on_startup:
+            await runtime.start_vision()
+        elif loaded_config.camera.enabled and loaded_config.camera.probe_on_startup:
+            tasks.append(asyncio.create_task(runtime.run_hardware_probes(include_gpu=False, include_camera=True)))
         try:
             yield
         finally:
+            await runtime.stop_vision()
             for task in tasks:
                 task.cancel()
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
-            logger.info("vision_server_stopped", extra={"event": "vision_server_stopped"})
 
-    app = FastAPI(
-        title="RTX Vision Edge Server",
-        version=loaded_config.version,
-        lifespan=lifespan,
-    )
+    app = FastAPI(title="RTX Vision Edge Server", version=loaded_config.version, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=loaded_config.server.cors_origins,
@@ -104,30 +79,58 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.get("/api/v1/config/public", tags=["system"])
     async def public_config() -> dict[str, Any]:
-        return {
-            "service_name": loaded_config.service_name,
-            "version": loaded_config.version,
-            "phase": loaded_config.phase,
-            "server": {
-                "heartbeat_seconds": loaded_config.server.heartbeat_seconds,
-            },
-            "camera": loaded_config.camera.model_dump(exclude={"probe_on_startup"}),
-            "gpu": loaded_config.gpu.model_dump(exclude={"probe_on_startup"}),
-        }
+        return loaded_config.model_dump(exclude={"camera": {"probe_on_startup"}, "gpu": {"probe_on_startup"}})
 
     @app.post("/api/v1/probe", tags=["hardware"])
-    async def rerun_probe() -> dict[str, Any]:
+    async def rerun_probe(
+        include_gpu: bool = Query(default=True),
+        include_camera: bool = Query(default=True),
+    ) -> dict[str, Any]:
         if runtime.probe_running:
             raise HTTPException(status_code=409, detail="A hardware probe is already running")
-        return await runtime.run_hardware_probes()
+        try:
+            return await runtime.run_hardware_probes(include_gpu=include_gpu, include_camera=include_camera)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/vision/start", tags=["vision"])
+    async def start_vision() -> dict[str, Any]:
+        return await runtime.start_vision()
+
+    @app.post("/api/v1/vision/stop", tags=["vision"])
+    async def stop_vision() -> dict[str, Any]:
+        return await runtime.stop_vision()
+
+    @app.post("/api/v1/vision/restart", tags=["vision"])
+    async def restart_vision() -> dict[str, Any]:
+        return await runtime.restart_vision()
+
+    @app.get("/api/v1/detections", tags=["vision"])
+    async def detections() -> dict[str, Any]:
+        return runtime.vision.detections_snapshot()
+
+    @app.get("/api/v1/debug/frame.jpg", tags=["debug"])
+    async def debug_frame() -> Response:
+        data = runtime.vision.latest_preview()
+        if data is None:
+            raise HTTPException(status_code=503, detail="No debug frame is available yet")
+        return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/v1/debug/stream.mjpg", tags=["debug"])
+    async def debug_stream() -> StreamingResponse:
+        async def generate():
+            delay = 1.0 / loaded_config.debug.preview_fps
+            while True:
+                data = runtime.vision.latest_preview()
+                if data is not None:
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+                await asyncio.sleep(delay)
+
+        return StreamingResponse(generate(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.websocket("/ws/v1/events")
     async def event_stream(websocket: WebSocket) -> None:
         await hub.connect(websocket)
-        logger.info(
-            "websocket_connected",
-            extra={"event": "websocket_connected", "client_count": hub.client_count},
-        )
         try:
             await websocket.send_json(
                 event_factory.build(
@@ -145,35 +148,24 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 try:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
-                    await websocket.send_json(
-                        event_factory.build("client_error", {"detail": "Expected a JSON object"})
-                    )
+                    await websocket.send_json(event_factory.build("client_error", {"detail": "Expected a JSON object"}))
                     continue
-
                 message_type = str(message.get("type", "")).strip()
                 if message_type == "ping":
-                    await websocket.send_json(
-                        event_factory.build("pong", {"client_time": message.get("client_time")})
-                    )
+                    await websocket.send_json(event_factory.build("pong", {"client_time": message.get("client_time")}))
                 elif message_type == "get_state":
-                    await websocket.send_json(
-                        event_factory.build("state_snapshot", runtime.public_status())
-                    )
+                    await websocket.send_json(event_factory.build("state_snapshot", runtime.public_status()))
                 else:
                     await websocket.send_json(
                         event_factory.build(
                             "client_error",
-                            {"detail": "Unsupported Phase 0 client message", "received_type": message_type},
+                            {"detail": "Unsupported client message", "received_type": message_type},
                         )
                     )
         except WebSocketDisconnect:
             pass
         finally:
             await hub.disconnect(websocket)
-            logger.info(
-                "websocket_disconnected",
-                extra={"event": "websocket_disconnected", "client_count": hub.client_count},
-            )
 
     return app
 
@@ -188,6 +180,7 @@ async def _heartbeat_loop(runtime: VisionRuntime) -> None:
                     "uptime_seconds": runtime.uptime_seconds(),
                     "ready": runtime.readiness()[0],
                     "websocket_clients": runtime.hub.client_count,
+                    "vision": runtime.vision.status(),
                 },
             )
         )
