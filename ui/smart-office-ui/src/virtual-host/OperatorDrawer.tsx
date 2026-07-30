@@ -1,3 +1,4 @@
+import { isRemoteVisionDetection } from '../vision/remoteVisionClient'
 import type { ProximityGreetingController } from '../vision/useProximityGreeting'
 import type { VoiceOutputProvider } from '../voice/voiceOutputManager'
 import type {
@@ -33,6 +34,15 @@ function proximityLabel(
   return labels[status][zh ? 'zh' : 'en']
 }
 
+function percentage(value: number | null | undefined, digits = 0): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
+  return `${(value * 100).toFixed(digits)}%`
+}
+
+function yesNo(value: boolean, zh: boolean): string {
+  return value ? (zh ? '是' : 'Yes') : zh ? '否' : 'No'
+}
+
 export default function OperatorDrawer({
   controller,
   proximity,
@@ -42,6 +52,9 @@ export default function OperatorDrawer({
   const settingsDisabled = controller.listening || controller.busy
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
   const serviceReady = controller.runtime.connected
+  const remoteDetection = isRemoteVisionDetection(proximity.lastDetection)
+    ? proximity.lastDetection
+    : null
 
   return (
     <div className="operator-drawer-layer">
@@ -142,13 +155,61 @@ export default function OperatorDrawer({
           <p className="drawer-inline-note">
             {proximityLabel(proximity.status, zh)}
             {proximity.lastDetection
-              ? ` · ${zh ? '人体' : 'person'} ${(proximity.lastDetection.body_area_ratio * 100).toFixed(0)}% · ${proximity.lastDetection.face_inside_body ? (zh ? '有人脸' : 'face found') : (zh ? '未检测到人脸' : 'no face')}`
+              ? ` · ${zh ? '人体' : 'person'} ${percentage(proximity.lastDetection.body_area_ratio)} · ${proximity.lastDetection.face_inside_body ? (zh ? '有人脸' : 'face found') : (zh ? '未检测到人脸' : 'no face')}`
               : ''}
           </p>
           {proximity.endpoint ? (
             <p className="drawer-inline-note">{zh ? '远程端点' : 'Remote endpoint'}: {proximity.endpoint}</p>
           ) : null}
           {proximity.detail ? <p className="drawer-inline-note">{proximity.detail}</p> : null}
+
+          {remoteDetection ? (
+            <div
+              className="drawer-vision-diagnostics"
+              aria-label={zh ? 'RTX 视觉调试信息' : 'RTX vision diagnostics'}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(120px, 0.9fr) minmax(0, 1.35fr)',
+                gap: '8px 14px',
+                marginTop: '14px',
+                padding: '14px',
+                borderRadius: '14px',
+                background: 'rgba(5, 14, 28, 0.42)',
+                border: '1px solid rgba(145, 185, 235, 0.18)',
+                fontSize: '13px',
+                lineHeight: 1.35,
+              }}
+            >
+              <strong style={{ gridColumn: '1 / -1' }}>
+                {zh ? 'RTX 视觉实时调试' : 'RTX live vision diagnostics'}
+              </strong>
+              <span>{zh ? 'Track ID' : 'Track ID'}</span><code>{remoteDetection.track_id}</code>
+              <span>Visitor Session</span><code style={{ overflowWrap: 'anywhere' }}>{remoteDetection.visitor_session_id}</code>
+              <span>{zh ? '轨迹状态' : 'Track state'}</span><code>{remoteDetection.track_state ?? '—'}</code>
+              <span>Primary / Engaged</span><code>{yesNo(remoteDetection.primary, zh)} / {yesNo(remoteDetection.engaged, zh)}</code>
+              <span>{zh ? '可见 / 服务就绪' : 'Visible / service ready'}</span><code>{yesNo(remoteDetection.visible, zh)} / {yesNo(Boolean(remoteDetection.service_ready), zh)}</code>
+              <span>{zh ? '问候资格' : 'Greeting eligible'}</span><code>{yesNo(remoteDetection.greeting_eligible, zh)}</code>
+              <span>{zh ? '身份' : 'Identity'}</span><code>{remoteDetection.display_name || (zh ? '未注册' : 'Unknown')}</code>
+              <span>Identity ID</span><code style={{ overflowWrap: 'anywhere' }}>{remoteDetection.identity_id || '—'}</code>
+              <span>{zh ? '身份相似度' : 'Identity similarity'}</span><code>{percentage(remoteDetection.identity_similarity, 1)}</code>
+              <span>{zh ? '人体面积 / 置信度' : 'Body area / confidence'}</span><code>{percentage(remoteDetection.body_area_ratio, 1)} / {percentage(remoteDetection.body_confidence, 1)}</code>
+              <span>{zh ? '人脸面积 / 置信度' : 'Face area / confidence'}</span><code>{percentage(remoteDetection.face_area_ratio, 2)} / {percentage(remoteDetection.face_confidence, 1)}</code>
+              <span>{zh ? '人脸质量 / 正脸度' : 'Face quality / frontal'}</span><code>{percentage(remoteDetection.face_quality_score, 1)} / {percentage(remoteDetection.frontal_score, 1)}</code>
+              <span>{zh ? '识别可用 / 注册可用' : 'Recognition / enrollment usable'}</span><code>{yesNo(remoteDetection.recognition_usable, zh)} / {yesNo(remoteDetection.enrollment_usable, zh)}</code>
+              <span>{zh ? '稳定帧' : 'Stable frames'}</span><code>{remoteDetection.stable_frames}</code>
+              <span>{zh ? '中心位置' : 'Center position'}</span><code>{remoteDetection.center_x.toFixed(3)}, {remoteDetection.center_y.toFixed(3)}</code>
+              <span>{zh ? '场景 / 人数' : 'Scene / people'}</span><code>{remoteDetection.scene_state ?? '—'} / {remoteDetection.person_count ?? 0}</code>
+              <span>{zh ? '访客记录数' : 'Visitor records'}</span><code>{remoteDetection.visitor_count ?? 0}</code>
+              <span>{zh ? '协议 / 事件源' : 'Schema / source'}</span><code>{remoteDetection.schema_version ?? '—'} / {remoteDetection.source_event}</code>
+              <span>{zh ? '更新时间' : 'Updated at'}</span><code>{new Date(remoteDetection.updated_at).toLocaleTimeString()}</code>
+            </div>
+          ) : proximity.source === 'remote' && proximity.status === 'connected' ? (
+            <p className="drawer-inline-note">
+              {zh
+                ? 'RTX 已连接，但当前没有可显示的 Primary visitor。'
+                : 'RTX is connected, but there is no Primary visitor to display.'}
+            </p>
+          ) : null}
         </section>
 
         <section className="drawer-section" aria-labelledby="asr-setting-title">
