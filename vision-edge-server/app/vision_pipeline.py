@@ -10,6 +10,7 @@ from app.appearance import AppearanceExtractor
 from app.camera_runtime import CameraManager
 from app.config import AppConfig
 from app.person_detector import DetectorUnavailableError, YoloXPersonDetector
+from app.primary_lock import OcclusionAwarePrimarySelector
 from app.tracking_runtime import MultiObjectTracker
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class VisionPipeline:
             config.primary,
             self.appearance,
         )
+        self.tracker.primary = OcclusionAwarePrimarySelector(config.primary, config.presence)
         self.emit_event = emit_event
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -224,10 +226,7 @@ class VisionPipeline:
         height, width = output.shape[:2]
         if self.config.debug.draw_zone:
             points = np.array(
-                [
-                    [int(x * width), int(y * height)]
-                    for x, y in self.config.presence.engagement_zone
-                ],
+                [[int(x * width), int(y * height)] for x, y in self.config.presence.engagement_zone],
                 dtype=np.int32,
             )
             cv2.polylines(output, [points], isClosed=True, color=(0, 255, 255), thickness=2)
@@ -345,12 +344,12 @@ class VisionPipeline:
 
 
 def _bbox_pixels(box: dict[str, float], width: int, height: int) -> tuple[int, int, int, int]:
-    x1 = int(np_clip(box["x"], 0.0, 1.0) * width)
-    y1 = int(np_clip(box["y"], 0.0, 1.0) * height)
-    x2 = int(np_clip(box["x"] + box["width"], 0.0, 1.0) * width)
-    y2 = int(np_clip(box["y"] + box["height"], 0.0, 1.0) * height)
+    x1 = int(_clip(box["x"]) * width)
+    y1 = int(_clip(box["y"]) * height)
+    x2 = int(_clip(box["x"] + box["width"]) * width)
+    y2 = int(_clip(box["y"] + box["height"]) * height)
     return x1, y1, x2, y2
 
 
-def np_clip(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, float(value)))
+def _clip(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
