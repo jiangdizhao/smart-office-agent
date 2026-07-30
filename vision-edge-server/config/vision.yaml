@@ -1,6 +1,6 @@
 service_name: rtx-vision-edge-server
-version: 0.1.1
-phase: phase0_camera_probe_v2
+version: 0.2.0
+phase: phase1_camera_person_detection
 
 server:
   host: 0.0.0.0
@@ -12,7 +12,7 @@ server:
 
 camera:
   enabled: true
-  probe_on_startup: true
+  probe_on_startup: false
   device_index: 1
   requested_width: 3840
   requested_height: 2160
@@ -37,8 +37,54 @@ camera:
   ready_min_measured_fps: 10
   degraded_min_measured_fps: 3
   inter_attempt_delay_seconds: 0.25
+  runtime_backend: MSMF
+  runtime_fourcc: AUTO
+  runtime_fps: 30
+  reconnect_delay_seconds: 1
+  reopen_after_consecutive_failures: 10
+  stats_window_frames: 300
 
 gpu:
   probe_on_startup: true
   require_cuda: false
   nvidia_smi_timeout_seconds: 5
+
+vision:
+  enabled: true
+  start_on_startup: true
+  global_width: 960
+  global_height: 540
+
+detection:
+  enabled: true
+  model_path: models/yolox_nano.onnx
+  input_width: 416
+  input_height: 416
+  inference_hz: 12
+  score_threshold: 0.35
+  nms_threshold: 0.45
+  person_class_id: 0
+  max_detections: 20
+  providers:
+    - CUDAExecutionProvider
+    - CPUExecutionProvider
+  require_cuda: true
+
+presence:
+  enter_confirm_frames: 2
+  engage_confirm_frames: 3
+  left_timeout_seconds: 1.5
+  engagement_min_area_ratio: 0.08
+  engagement_zone:
+    - [0.05, 0.05]
+    - [0.95, 0.05]
+    - [0.95, 1.0]
+    - [0.05, 1.0]
+
+debug:
+  enabled: true
+  preview_width: 960
+  preview_height: 540
+  preview_fps: 5
+  jpeg_quality: 80
+  draw_zone: true
