@@ -195,30 +195,46 @@ class PrimarySettings(StrictModel):
 class FaceSettings(StrictModel):
     enabled: bool = True
     model_path: str = "models/face_detection_yunet_2023mar.onnx"
-    inference_hz: float = Field(default=5.0, gt=0, le=30)
-    score_threshold: float = Field(default=0.75, ge=0, le=1)
+    inference_hz: float = Field(default=7.5, gt=0, le=30)
+    score_threshold: float = Field(default=0.65, ge=0, le=1)
     nms_threshold: float = Field(default=0.30, ge=0, le=1)
     top_k: int = Field(default=5000, ge=1, le=10000)
     max_tracks_per_cycle: int = Field(default=4, ge=1, le=20)
     person_crop_margin: float = Field(default=0.04, ge=0, le=0.3)
-    max_face_center_y_ratio: float = Field(default=0.72, ge=0.3, le=1.0)
-    min_face_width_pixels: int = Field(default=80, ge=16, le=2048)
-    min_face_height_pixels: int = Field(default=80, ge=16, le=2048)
-    min_sharpness: float = Field(default=35.0, ge=0)
-    sharpness_full_scale: float = Field(default=180.0, gt=0)
-    min_brightness: float = Field(default=35.0, ge=0, le=255)
-    max_brightness: float = Field(default=225.0, ge=0, le=255)
-    max_abs_roll_degrees: float = Field(default=28.0, gt=0, le=90)
-    max_nose_offset_ratio: float = Field(default=0.38, gt=0, le=2)
-    min_frontal_score: float = Field(default=0.55, ge=0, le=1)
-    min_quality_score: float = Field(default=0.58, ge=0, le=1)
-    ready_stable_frames: int = Field(default=3, ge=1, le=30)
-    stale_seconds: float = Field(default=1.0, ge=0.1, le=10)
+    max_face_center_y_ratio: float = Field(default=0.76, ge=0.3, le=1.0)
+
+    # Recognition is deliberately permissive: these frames may be compared with an existing gallery.
+    recognition_min_face_width_pixels: int = Field(default=56, ge=16, le=2048)
+    recognition_min_face_height_pixels: int = Field(default=56, ge=16, le=2048)
+    recognition_min_sharpness: float = Field(default=12.0, ge=0)
+    recognition_min_brightness: float = Field(default=20.0, ge=0, le=255)
+    recognition_max_brightness: float = Field(default=240.0, ge=0, le=255)
+    recognition_min_frontal_score: float = Field(default=0.30, ge=0, le=1)
+    recognition_min_quality_score: float = Field(default=0.40, ge=0, le=1)
+    recognition_stable_frames: int = Field(default=1, ge=1, le=30)
+
+    # Enrollment remains stricter, but is evaluated across a multi-second capture window.
+    min_face_width_pixels: int = Field(default=64, ge=16, le=2048)
+    min_face_height_pixels: int = Field(default=64, ge=16, le=2048)
+    min_sharpness: float = Field(default=22.0, ge=0)
+    sharpness_full_scale: float = Field(default=160.0, gt=0)
+    min_brightness: float = Field(default=25.0, ge=0, le=255)
+    max_brightness: float = Field(default=235.0, ge=0, le=255)
+    max_abs_roll_degrees: float = Field(default=32.0, gt=0, le=90)
+    max_nose_offset_ratio: float = Field(default=0.45, gt=0, le=2)
+    min_frontal_score: float = Field(default=0.45, ge=0, le=1)
+    min_quality_score: float = Field(default=0.52, ge=0, le=1)
+    ready_stable_frames: int = Field(default=2, ge=1, le=30)
+    stale_seconds: float = Field(default=1.5, ge=0.1, le=10)
 
     @model_validator(mode="after")
     def validate_face_thresholds(self) -> FaceSettings:
         if self.min_brightness >= self.max_brightness:
             raise ValueError("face min_brightness must be below max_brightness")
+        if self.recognition_min_brightness >= self.recognition_max_brightness:
+            raise ValueError(
+                "recognition_min_brightness must be below recognition_max_brightness"
+            )
         return self
 
 
@@ -226,13 +242,71 @@ class IdentitySettings(StrictModel):
     enabled: bool = True
     model_path: str = "models/face_recognition_sface_2021dec.onnx"
     database_path: str = "data/identity/visitor_identities.sqlite3"
-    cosine_threshold: float = Field(default=0.50, ge=-1, le=1)
-    minimum_margin: float = Field(default=0.08, ge=0, le=2)
-    confirm_observations: int = Field(default=3, ge=1, le=20)
-    recognition_interval_seconds: float = Field(default=0.40, ge=0, le=10)
-    enrollment_min_quality: float = Field(default=0.65, ge=0, le=1)
-    max_samples_per_identity: int = Field(default=10, ge=1, le=100)
+
+    # Legacy/fallback decision settings. Adaptive confirmation can be enabled explicitly.
+    cosine_threshold: float = Field(default=0.45, ge=-1, le=1)
+    minimum_margin: float = Field(default=0.03, ge=0, le=2)
+    confirm_observations: int = Field(default=2, ge=1, le=20)
+    adaptive_confirmation_enabled: bool = False
+    high_similarity_threshold: float = Field(default=0.60, ge=-1, le=1)
+    medium_similarity_threshold: float = Field(default=0.45, ge=-1, le=1)
+    low_similarity_threshold: float = Field(default=0.38, ge=-1, le=1)
+    high_minimum_margin: float = Field(default=0.015, ge=0, le=2)
+    medium_minimum_margin: float = Field(default=0.03, ge=0, le=2)
+    low_minimum_margin: float = Field(default=0.05, ge=0, le=2)
+    high_confirm_observations: int = Field(default=1, ge=1, le=20)
+    medium_confirm_observations: int = Field(default=2, ge=1, le=20)
+    low_confirm_observations: int = Field(default=3, ge=1, le=20)
+    top_k_samples: int = Field(default=3, ge=1, le=20)
+    recognition_interval_seconds: float = Field(default=0.20, ge=0, le=10)
+
+    enrollment_min_quality: float = Field(default=0.52, ge=0, le=1)
+    enrollment_capture_seconds: float = Field(default=0.0, ge=0, le=15)
+    enrollment_prebuffer_seconds: float = Field(default=1.0, ge=0, le=10)
+    enrollment_target_samples: int = Field(default=8, ge=1, le=50)
+    enrollment_min_samples: int = Field(default=1, ge=1, le=20)
+    enrollment_max_selected_samples: int = Field(default=5, ge=1, le=20)
+    enrollment_duplicate_similarity: float = Field(default=0.995, ge=-1, le=1)
+    recent_samples_per_track: int = Field(default=40, ge=5, le=500)
+    max_samples_per_identity: int = Field(default=12, ge=1, le=100)
     require_explicit_consent: bool = True
+
+    @model_validator(mode="after")
+    def validate_identity_thresholds(self) -> IdentitySettings:
+        if not (
+            self.low_similarity_threshold
+            <= self.medium_similarity_threshold
+            <= self.high_similarity_threshold
+        ):
+            raise ValueError("identity similarity thresholds must satisfy low <= medium <= high")
+        if self.enrollment_min_samples > self.enrollment_target_samples:
+            raise ValueError("enrollment_min_samples cannot exceed enrollment_target_samples")
+        return self
+
+
+class VisitorSessionSettings(StrictModel):
+    enabled: bool = True
+    ttl_seconds: float = Field(default=60.0, ge=5, le=600)
+    max_face_embeddings: int = Field(default=8, ge=1, le=50)
+    max_body_embeddings: int = Field(default=8, ge=1, le=50)
+    face_high_similarity: float = Field(default=0.56, ge=-1, le=1)
+    face_medium_similarity: float = Field(default=0.44, ge=-1, le=1)
+    face_minimum_margin: float = Field(default=0.03, ge=0, le=2)
+    body_high_similarity: float = Field(default=0.82, ge=-1, le=1)
+    body_medium_similarity: float = Field(default=0.72, ge=-1, le=1)
+    body_minimum_margin: float = Field(default=0.04, ge=0, le=2)
+    medium_confirmations: int = Field(default=2, ge=1, le=10)
+    body_only_confirmations: int = Field(default=3, ge=1, le=10)
+    body_only_max_age_seconds: float = Field(default=12.0, ge=1, le=120)
+    max_center_distance: float = Field(default=0.65, ge=0, le=2)
+
+    @model_validator(mode="after")
+    def validate_session_thresholds(self) -> VisitorSessionSettings:
+        if self.face_medium_similarity > self.face_high_similarity:
+            raise ValueError("face_medium_similarity must not exceed face_high_similarity")
+        if self.body_medium_similarity > self.body_high_similarity:
+            raise ValueError("body_medium_similarity must not exceed body_high_similarity")
+        return self
 
 
 class DebugSettings(StrictModel):
@@ -248,12 +322,13 @@ class DebugSettings(StrictModel):
     draw_faces: bool = True
     draw_face_landmarks: bool = True
     draw_identity: bool = True
+    draw_visitor_session: bool = True
 
 
 class AppConfig(StrictModel):
     service_name: str = "rtx-vision-edge-server"
-    version: str = "0.5.0"
-    phase: str = "phase4_face_identity"
+    version: str = "0.6.0"
+    phase: str = "phase4_identity_session_fusion"
     server: ServerSettings = Field(default_factory=ServerSettings)
     camera: CameraSettings = Field(default_factory=CameraSettings)
     gpu: GpuSettings = Field(default_factory=GpuSettings)
@@ -265,6 +340,7 @@ class AppConfig(StrictModel):
     primary: PrimarySettings = Field(default_factory=PrimarySettings)
     face: FaceSettings = Field(default_factory=FaceSettings)
     identity: IdentitySettings = Field(default_factory=IdentitySettings)
+    visitor_session: VisitorSessionSettings = Field(default_factory=VisitorSessionSettings)
     debug: DebugSettings = Field(default_factory=DebugSettings)
 
 
