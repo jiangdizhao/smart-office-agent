@@ -17,6 +17,7 @@ Implemented:
 - Windows camera mode benchmark across configured backend, FOURCC, and FPS combinations;
 - requested-versus-actual camera resolution, reported FPS, measured FPS, FOURCC, backend, frame shape, and read-latency reporting;
 - automatic selection of the best realtime-capable camera mode;
+- five-minute sustained camera benchmark with latency percentiles and failure statistics;
 - JSON structured application logs;
 - PowerShell startup and hardware-probe scripts;
 - automated HTTP/WebSocket contract tests and a live smoke test.
@@ -137,6 +138,58 @@ measured_fps < 3    -> unusable_for_realtime
 
 The top-level `selected_mode`, `actual`, `sample`, and `performance` fields describe the chosen attempt. The complete `attempts` array remains available for diagnosis. Driver-reported FPS is never treated as proof of realtime performance.
 
+## Sustained camera benchmark
+
+The short probe is intended to select a viable capture mode. Use the sustained benchmark to verify that the selected MSMF 4K path remains stable over time.
+
+The default run lasts five minutes and uses camera index and resolution from `config/vision.yaml`, with `MSMF`, automatic media-format negotiation, and a requested 30 FPS:
+
+```powershell
+conda activate smartoffice
+cd D:\smart-office-agent\vision-edge-server
+.\scripts\run_camera_benchmark.ps1 `
+  -DurationSeconds 300 `
+  -PythonExe "D:\anaconda3\envs\smartoffice\python.exe"
+```
+
+A shorter one-minute validation is also available:
+
+```powershell
+.\scripts\run_camera_benchmark.ps1 -DurationSeconds 60
+```
+
+The benchmark prints progress every ten seconds and saves a JSON report under the ignored `vision-edge-server/logs/` directory. The report includes:
+
+- sustained measured read throughput;
+- attempted, successful, and failed reads;
+- success ratio;
+- mean, P50, P95, P99, and maximum blocking read latency;
+- counts of reads exceeding 100 ms and 200 ms;
+- maximum consecutive read failures;
+- resolution-change count;
+- actual backend, driver-reported FPS, raw FOURCC value, and sanitized FOURCC text;
+- final `ready`, `degraded`, `unusable_for_realtime`, or `interrupted` status.
+
+The default ready criteria are:
+
+```text
+measured FPS >= 10
+success ratio >= 99%
+maximum consecutive read failures <= 3
+```
+
+The default command deliberately uses `-Fourcc AUTO` because the successful MSMF mode negotiates its media format internally. To test another path explicitly:
+
+```powershell
+.\scripts\run_camera_benchmark.ps1 `
+  -Backend DSHOW `
+  -Fourcc YUY2 `
+  -Fps 15 `
+  -DurationSeconds 60
+```
+
+Pressing `Ctrl+C` saves a partial report with status `interrupted` before the camera is released.
+
 ## Start
 
 ```powershell
@@ -147,7 +200,7 @@ cd D:\smart-office-agent\vision-edge-server
 Or:
 
 ```powershell
-$env:VISION_CONFIG_PATH = "D:\smart-office-agent\vision-edge-server\config\vision.yaml"
+$env:VISION_CONFIG_PATH = "D:\somewhere\vision.yaml"
 python -m app
 ```
 
