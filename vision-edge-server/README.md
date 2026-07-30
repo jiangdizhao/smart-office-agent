@@ -14,8 +14,9 @@ Implemented:
 - `WS /ws/v1/events` with `server_ready`, `state_snapshot`, heartbeat, ping/pong, and reconnect snapshot behavior;
 - ONNX Runtime CUDA Execution Provider probe;
 - `nvidia-smi` GPU, driver, memory, temperature, and power-state probe;
-- Windows camera probe across DirectShow, Media Foundation, and automatic backends;
-- requested-versus-actual camera resolution, FPS, FOURCC, backend, frame shape, and read-latency reporting;
+- Windows camera mode benchmark across configured backend, FOURCC, and FPS combinations;
+- requested-versus-actual camera resolution, reported FPS, measured FPS, FOURCC, backend, frame shape, and read-latency reporting;
+- automatic selection of the best realtime-capable camera mode;
 - JSON structured application logs;
 - PowerShell startup and hardware-probe scripts;
 - automated HTTP/WebSocket contract tests and a live smoke test.
@@ -29,7 +30,7 @@ Not implemented in Phase 0:
 - debug video dashboard;
 - Smart Office client integration.
 
-The camera probe requests 3840×2160 because the current USB camera cannot be switched to 1080p. Later phases will retain only the latest source frame, create a low-resolution global-detection copy, and use high-resolution regions only for face processing. The probe reports the actual mode accepted by the driver.
+The USB camera is requested at 3840×2160. Later phases will retain only the latest source frame, create a low-resolution global-detection copy, and use high-resolution regions only for face processing.
 
 ## Environment
 
@@ -71,7 +72,7 @@ cd D:\smart-office-agent\vision-edge-server
 .\scripts\probe_hardware.ps1 -Mode all
 ```
 
-Nested PowerShell invocation is also supported because the script now resolves `$env:CONDA_PREFIX\python.exe`:
+Nested PowerShell invocation is also supported because the script resolves `$env:CONDA_PREFIX\python.exe`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\probe_hardware.ps1 -Mode all
@@ -97,7 +98,44 @@ Conda environment: smartoffice
 Python: D:\anaconda3\envs\smartoffice\python.exe
 ```
 
-The camera report must be read from its `actual` fields; requested settings are not treated as proof that the driver accepted them.
+## Camera probe version 2
+
+The default camera is `device_index: 1`. The probe benchmarks these modes in order, but evaluates all successful attempts before selecting the best one:
+
+```text
+DSHOW + MJPG + 3840×2160 @ 30 FPS
+DSHOW + MJPG + 3840×2160 @ 15 FPS
+DSHOW + YUY2 + 3840×2160 @ 15 FPS
+MSMF  + MJPG + 3840×2160 @ 30 FPS
+MSMF  + MJPG + 3840×2160 @ 15 FPS
+```
+
+Each attempt reports:
+
+- requested backend, FOURCC, resolution, and FPS;
+- whether each OpenCV property setter was accepted;
+- actual backend, FOURCC, resolution, and driver-reported FPS;
+- measured FPS based on successful frame reads and elapsed wall-clock time;
+- mean and maximum blocking read latency;
+- resolution match and realtime-capability status.
+
+The selection order is:
+
+1. `ready` before `degraded` before `unusable_for_realtime`;
+2. exact 3840×2160 resolution before a driver fallback resolution within the same status class;
+3. higher measured FPS;
+4. higher successful-read ratio;
+5. lower mean read latency.
+
+Default classification thresholds:
+
+```text
+measured_fps >= 10  -> ready
+measured_fps >= 3   -> degraded
+measured_fps < 3    -> unusable_for_realtime
+```
+
+The top-level `selected_mode`, `actual`, `sample`, and `performance` fields describe the chosen attempt. The complete `attempts` array remains available for diagnosis. Driver-reported FPS is never treated as proof of realtime performance.
 
 ## Start
 
