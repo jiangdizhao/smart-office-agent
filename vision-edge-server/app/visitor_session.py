@@ -11,6 +11,8 @@ import numpy as np
 
 from app.config import VisitorSessionSettings
 
+PROVISIONAL_REBIND_SECONDS = 5.0
+
 
 def _normalize(value: np.ndarray | None) -> np.ndarray | None:
     if value is None:
@@ -86,7 +88,6 @@ class VisitorSession:
         self.primary = bool(track.get("primary"))
         if track_id not in self.track_ids:
             self.track_ids.append(track_id)
-
         normalized_face = _normalize(face_embedding)
         if normalized_face is not None:
             self.face_embeddings.append(normalized_face)
@@ -120,11 +121,7 @@ class VisitorSession:
 
 
 class VisitorSessionRuntime:
-    """Memory-only bridge between short MOT tracks and a stable visitor session.
-
-    Anonymous face/body embeddings are retained only for the configured TTL. No images and no
-    anonymous embeddings are written to disk.
-    """
+    """Memory-only bridge between short MOT tracks and a stable visitor session."""
 
     def __init__(self, settings: VisitorSessionSettings) -> None:
         self.settings = settings
@@ -160,11 +157,12 @@ class VisitorSessionRuntime:
             return [dict(track) for track in tracks], events
 
         with self._lock:
+            # A visitor session is acquired only after MOT confirms the track. This avoids creating
+            # a new session during the tentative frames before SFace has produced an embedding.
             visible_tracks = [
                 dict(track)
                 for track in tracks
-                if bool(track.get("visible"))
-                and track.get("state") in {"confirmed", "tentative"}
+                if bool(track.get("visible")) and track.get("state") == "confirmed"
             ]
             visible_track_ids = {int(track["track_id"]) for track in visible_tracks}
             for session in self.sessions.values():
@@ -178,7 +176,6 @@ class VisitorSessionRuntime:
             visible_tracks.sort(
                 key=lambda item: (
                     not bool(item.get("primary")),
-                    item.get("state") != "confirmed",
                     -float(item.get("area_ratio", 0.0)),
                 )
             )
@@ -188,19 +185,57 @@ class VisitorSessionRuntime:
                 face = _normalize(face_embeddings.get(track_id))
                 body = _normalize(body_embeddings.get(track_id))
                 identity = identities.get(track_id)
-                session_id = self.track_to_session.get(track_id)
-                session = self.sessions.get(session_id or "")
-                recovery_reason: str | None = None
-                diagnostics: dict[str, Any] = {}
+                mapped_id = self.track_to_session.get(track_id)
+                session = self.sessions.get(mapped_id or "")
 
-                if session is None:
-                    session, recovery_reason, diagnostics = self._match_session(
+                # A track may have acquired a provisional session before good face evidence became
+                # available. Re-evaluate that young session and merge it into a previous session.
+                if session is not None and self._is_provisional(session, track_id, now):
+                    candidate, reason, diagnostics = self._match_session(
                         track=item,
                         face_embedding=face,
                         body_embedding=body,
                         identity=identity,
                         now=now,
                         assigned_sessions=assigned_sessions,
+                        excluded_session_ids={session.visitor_session_id},
+                    )
+                    if candidate is not None and reason in {
+                        "registered_identity",
+                        "face_high",
+                        "face_body_medium",
+                    }:
+                        provisional_id = session.visitor_session_id
+                        previous_track_id = candidate.last_track_id
+                        self._discard_session(provisional_id)
+                        session = candidate
+                        self.track_to_session[track_id] = session.visitor_session_id
+                        session.recovery_count += 1
+                        session.last_recovery_reason = reason
+                        self.recovery_count += 1
+                        events.append(
+                            (
+                                "visitor_session_recovered",
+                                {
+                                    "visitor_session_id": session.visitor_session_id,
+                                    "previous_track_id": previous_track_id,
+                                    "current_track_id": track_id,
+                                    "reason": reason,
+                                    "replaced_provisional_session_id": provisional_id,
+                                    **diagnostics,
+                                },
+                            )
+                        )
+
+                if session is None:
+                    session, reason, diagnostics = self._match_session(
+                        track=item,
+                        face_embedding=face,
+                        body_embedding=body,
+                        identity=identity,
+                        now=now,
+                        assigned_sessions=assigned_sessions,
+                        excluded_session_ids=set(),
                     )
                     if session is None:
                         session = self._create_session(item, now)
@@ -216,7 +251,7 @@ class VisitorSessionRuntime:
                     else:
                         previous_track_id = session.last_track_id
                         session.recovery_count += 1
-                        session.last_recovery_reason = recovery_reason
+                        session.last_recovery_reason = reason
                         self.recovery_count += 1
                         events.append(
                             (
@@ -225,7 +260,7 @@ class VisitorSessionRuntime:
                                     "visitor_session_id": session.visitor_session_id,
                                     "previous_track_id": previous_track_id,
                                     "current_track_id": track_id,
-                                    "reason": recovery_reason,
+                                    "reason": reason,
                                     **diagnostics,
                                 },
                             )
@@ -263,17 +298,17 @@ class VisitorSessionRuntime:
                     )
                 by_track[track_id] = self._enrich_track(item, session, now)
 
-            # Lost tracks retain their historical mapping but do not keep a session active.
+            # Lost and tentative tracks retain a historical mapping when one exists, but they do
+            # not keep a visitor session active and cannot block a returning confirmed track.
             for track_id, item in list(by_track.items()):
                 if track_id in visible_track_ids:
                     continue
-                session_id = self.track_to_session.get(track_id)
-                session = self.sessions.get(session_id or "")
+                mapped_id = self.track_to_session.get(track_id)
+                session = self.sessions.get(mapped_id or "")
                 if session is not None:
                     by_track[track_id] = self._enrich_track(item, session, now)
 
-            expired = self._expire(now)
-            for session in expired:
+            for session in self._expire(now):
                 events.append(
                     (
                         "visitor_session_expired",
@@ -290,11 +325,16 @@ class VisitorSessionRuntime:
                 )
             return [by_track[key] for key in sorted(by_track)], events
 
+    def _is_provisional(
+        self, session: VisitorSession, track_id: int, now: float
+    ) -> bool:
+        return bool(
+            session.track_ids == [track_id]
+            and now - session.created_at_monotonic <= PROVISIONAL_REBIND_SECONDS
+        )
+
     def _enrich_track(
-        self,
-        track: dict[str, Any],
-        session: VisitorSession,
-        now: float,
+        self, track: dict[str, Any], session: VisitorSession, now: float
     ) -> dict[str, Any]:
         item = dict(track)
         item["visitor_session_id"] = session.visitor_session_id
@@ -330,12 +370,14 @@ class VisitorSessionRuntime:
         identity: dict[str, Any] | None,
         now: float,
         assigned_sessions: set[str],
+        excluded_session_ids: set[str],
     ) -> tuple[VisitorSession | None, str | None, dict[str, Any]]:
         candidates = [
             session
             for session in self.sessions.values()
             if now - session.last_seen_monotonic <= self.settings.ttl_seconds
             and session.visitor_session_id not in assigned_sessions
+            and session.visitor_session_id not in excluded_session_ids
             and session.active_track_id is None
         ]
         identity_id = None if identity is None else identity.get("identity_id")
@@ -359,8 +401,7 @@ class VisitorSessionRuntime:
             body_score = session.best_body_similarity(body_embedding)
             center_distance = float(
                 np.linalg.norm(
-                    current_center
-                    - np.asarray(session.last_center, dtype=np.float32)
+                    current_center - np.asarray(session.last_center, dtype=np.float32)
                 )
             )
             scored.append((face_score, body_score, center_distance, session))
@@ -388,28 +429,30 @@ class VisitorSessionRuntime:
             and face_margin >= self.settings.face_minimum_margin
         ):
             return best_session, "face_high", diagnostics
-
-        medium_face = (
+        if (
             best_face >= self.settings.face_medium_similarity
             and face_margin >= self.settings.face_minimum_margin
             and (
                 best_body >= self.settings.body_medium_similarity
                 or center_distance <= self.settings.max_center_distance
             )
-        )
-        if medium_face:
+        ):
             return best_session, "face_body_medium", diagnostics
-
-        body_only = (
+        if (
             face_embedding is None
             and age <= self.settings.body_only_max_age_seconds
             and best_body >= self.settings.body_high_similarity
             and body_margin >= self.settings.body_minimum_margin
             and center_distance <= self.settings.max_center_distance
-        )
-        if body_only:
+        ):
             return best_session, "body_only", diagnostics
         return None, None, diagnostics
+
+    def _discard_session(self, session_id: str) -> None:
+        self.sessions.pop(session_id, None)
+        for track_id, mapped_id in list(self.track_to_session.items()):
+            if mapped_id == session_id:
+                self.track_to_session.pop(track_id, None)
 
     def _expire(self, now: float) -> list[VisitorSession]:
         expired: list[VisitorSession] = []
@@ -417,10 +460,7 @@ class VisitorSessionRuntime:
             if now - session.last_seen_monotonic <= self.settings.ttl_seconds:
                 continue
             expired.append(session)
-            self.sessions.pop(session_id, None)
-            for track_id, mapped_session in list(self.track_to_session.items()):
-                if mapped_session == session_id:
-                    self.track_to_session.pop(track_id, None)
+            self._discard_session(session_id)
         self.expired_count += len(expired)
         return expired
 
