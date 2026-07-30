@@ -1,4 +1,4 @@
-name: Vision Edge Phase 0 Check
+name: Vision Edge Service Check
 
 on:
   push:
@@ -13,7 +13,7 @@ on:
       - ".github/workflows/vision-edge-phase0-check.yml"
 
 jobs:
-  phase0-contract:
+  unit-and-contract:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -23,11 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install contract-test dependencies
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install fastapi uvicorn pydantic PyYAML httpx websockets pytest
-      - name: Compile Phase 0 service
-        run: python -m compileall app scripts/smoke_test_phase0.py
-      - name: Run Phase 0 contract tests
-        run: python -m pytest
+          python -m pip install "numpy>=1.26,<2" fastapi uvicorn pydantic PyYAML httpx websockets pytest
+      - name: Compile service and scripts
+        run: python -m compileall app scripts
+      - name: Run unit and contract tests
+        run: python -m pytest -q
