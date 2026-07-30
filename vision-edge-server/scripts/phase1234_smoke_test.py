@@ -8,7 +8,9 @@ import httpx
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify the complete live Phase 1-4 pipeline.")
+    parser = argparse.ArgumentParser(
+        description="Verify the complete detection, tracking, visitor-session and identity pipeline."
+    )
     parser.add_argument("--base-url", default="http://127.0.0.1:8015")
     parser.add_argument("--timeout-seconds", type=float, default=90.0)
     parser.add_argument("--require-face", action="store_true")
@@ -30,8 +32,9 @@ def main() -> int:
                 appearance = tracking.get("appearance") or {}
                 face = vision.get("face") or {}
                 identity = vision.get("identity") or {}
+                sessions = vision.get("visitor_sessions") or {}
                 face_condition = (
-                    int(face.get("ready_face_count") or 0) > 0
+                    int(face.get("recognition_usable_count") or 0) > 0
                     if args.require_face
                     else True
                 )
@@ -49,6 +52,7 @@ def main() -> int:
                     and int(face.get("detect_count") or 0) > 0
                     and identity.get("ready")
                     and identity.get("model_exists")
+                    and sessions.get("ready")
                     and face_condition
                 ):
                     break
@@ -56,7 +60,10 @@ def main() -> int:
                 pass
             time.sleep(1.0)
         else:
-            print("FAIL: Phase 1-4 did not become ready before timeout.", file=sys.stderr)
+            print(
+                "FAIL: Identity-fusion vision pipeline did not become ready before timeout.",
+                file=sys.stderr,
+            )
             print(last_status, file=sys.stderr)
             return 1
 
@@ -82,17 +89,28 @@ def main() -> int:
     tracks = tracks_response.json()
     faces = faces_response.json()
     identities = identities_response.json()
-    print("PASS: Complete Phase 1-4 vision pipeline is ready.")
+    sessions = tracks.get("visitor_sessions") or {}
+    print("PASS: Detection, tracking, visitor-session and face identity pipeline is ready.")
     print(f"Camera: {vision['camera']['actual']}")
     print(f"Detector providers: {vision['detector']['providers']}")
     print(f"Detector inference count: {vision['detector']['inference_count']}")
     print(f"Appearance backend: {(tracks.get('appearance') or {}).get('backend')}")
     print(f"Tracking updates: {tracks.get('update_count')}")
     print(f"Active tracks: {tracks.get('track_count')}")
-    print(f"Face detections: {faces.get('face_count')} (ready={faces.get('ready_face_count')})")
+    print(
+        "Face detections: "
+        f"{faces.get('face_count')} "
+        f"(recognition_usable={faces.get('recognition_usable_count')}, "
+        f"enrollment_usable={faces.get('enrollment_usable_count')})"
+    )
     print(f"Face cycles: {faces.get('detect_count')}")
-    print(f"Known identities: {identities.get('identity_count')}")
+    print(f"Known people: {identities.get('identity_count')}")
+    print(f"Database identity rows: {identities.get('database_identity_row_count')}")
     print(f"Recognized tracks: {len(identities.get('recognized_tracks') or [])}")
+    print(
+        f"Visitor sessions: {sessions.get('session_count')} "
+        f"(recovered={sessions.get('recovery_count')})"
+    )
     print(f"Latest timings: {vision.get('last_timings')}")
     print(f"Debug JPEG bytes: {len(frame_response.content)}")
     return 0
