@@ -29,9 +29,16 @@ def _nms(boxes: np.ndarray, scores: np.ndarray, threshold: float) -> list[int]:
         yy1 = np.maximum(y1[index], y1[order[1:]])
         xx2 = np.minimum(x2[index], x2[order[1:]])
         yy2 = np.minimum(y2[index], y2[order[1:]])
-        intersection = np.maximum(0.0, xx2 - xx1 + 1.0) * np.maximum(0.0, yy2 - yy1 + 1.0)
+        intersection = np.maximum(0.0, xx2 - xx1 + 1.0) * np.maximum(
+            0.0, yy2 - yy1 + 1.0
+        )
         union = areas[index] + areas[order[1:]] - intersection
-        overlap = np.divide(intersection, union, out=np.zeros_like(intersection), where=union > 0)
+        overlap = np.divide(
+            intersection,
+            union,
+            out=np.zeros_like(intersection),
+            where=union > 0,
+        )
         order = order[np.where(overlap <= threshold)[0] + 1]
     return keep
 
@@ -59,7 +66,11 @@ def _preprocess(image: np.ndarray, input_size: tuple[int, int]) -> tuple[np.ndar
 
     height, width = image.shape[:2]
     ratio = min(input_size[0] / height, input_size[1] / width)
-    resized = cv2.resize(image, (int(width * ratio), int(height * ratio)), interpolation=cv2.INTER_LINEAR).astype(np.uint8)
+    resized = cv2.resize(
+        image,
+        (int(width * ratio), int(height * ratio)),
+        interpolation=cv2.INTER_LINEAR,
+    ).astype(np.uint8)
     padded = np.full((input_size[0], input_size[1], 3), 114, dtype=np.uint8)
     padded[: resized.shape[0], : resized.shape[1]] = resized
     return np.ascontiguousarray(padded.transpose(2, 0, 1), dtype=np.float32), ratio
@@ -84,27 +95,51 @@ class YoloXPersonDetector:
 
     def load(self) -> None:
         if not self.model_path.exists():
-            raise DetectorUnavailableError(f"YOLOX model is missing: {self.model_path}. Run scripts/download_yolox_nano.ps1.")
+            raise DetectorUnavailableError(
+                f"YOLOX model is missing: {self.model_path}. "
+                "Run scripts/download_yolox_nano.ps1."
+            )
         try:
             import onnxruntime as ort
         except Exception as exc:
-            raise DetectorUnavailableError(f"ONNX Runtime import failed: {type(exc).__name__}: {exc}") from exc
+            raise DetectorUnavailableError(
+                f"ONNX Runtime import failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
         available = set(ort.get_available_providers())
         providers = [provider for provider in self.settings.providers if provider in available]
         if self.settings.require_cuda and "CUDAExecutionProvider" not in providers:
-            raise DetectorUnavailableError(f"CUDAExecutionProvider is required but unavailable. Available providers: {sorted(available)}")
+            raise DetectorUnavailableError(
+                "CUDAExecutionProvider is required but unavailable. "
+                f"Available providers: {sorted(available)}"
+            )
         if not providers:
-            raise DetectorUnavailableError(f"None of the configured providers are available: {self.settings.providers}")
+            raise DetectorUnavailableError(
+                f"None of the configured providers are available: {self.settings.providers}"
+            )
+
         try:
             self.session = ort.InferenceSession(str(self.model_path), providers=providers)
         except Exception as exc:
-            raise DetectorUnavailableError(f"Failed to load YOLOX model: {type(exc).__name__}: {exc}") from exc
+            raise DetectorUnavailableError(
+                f"Failed to load YOLOX model: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        session_providers = list(self.session.get_providers())
+        if self.settings.require_cuda and "CUDAExecutionProvider" not in session_providers:
+            self.session = None
+            raise DetectorUnavailableError(
+                "YOLOX session did not activate CUDAExecutionProvider. "
+                f"Session providers: {session_providers}"
+            )
+
         inputs = self.session.get_inputs()
         if len(inputs) != 1:
+            self.session = None
             raise DetectorUnavailableError(f"Expected one model input, found {len(inputs)}")
         self.input_name = inputs[0].name
         self.output_names = [output.name for output in self.session.get_outputs()]
-        self.providers = list(self.session.get_providers())
+        self.providers = session_providers
         self.last_error = None
 
     def close(self) -> None:
@@ -116,22 +151,32 @@ class YoloXPersonDetector:
     def detect(self, image: np.ndarray) -> tuple[list[dict[str, Any]], dict[str, float]]:
         if self.session is None or self.input_name is None:
             raise DetectorUnavailableError("Person detector is not loaded")
+
         input_size = (self.settings.input_height, self.settings.input_width)
         started = time.perf_counter()
         tensor, ratio = _preprocess(image, input_size)
         preprocess_ms = (time.perf_counter() - started) * 1000.0
+
         inference_started = time.perf_counter()
-        outputs = self.session.run(self.output_names or None, {self.input_name: tensor[None, :, :, :]})
+        outputs = self.session.run(
+            self.output_names or None,
+            {self.input_name: tensor[None, :, :, :]},
+        )
         inference_ms = (time.perf_counter() - inference_started) * 1000.0
+
         post_started = time.perf_counter()
         predictions = _demo_postprocess(outputs[0], input_size)[0]
         boxes = predictions[:, :4]
         class_scores = predictions[:, 5:]
         if self.settings.person_class_id >= class_scores.shape[1]:
-            raise DetectorUnavailableError(f"person_class_id={self.settings.person_class_id} is outside model class count {class_scores.shape[1]}")
+            raise DetectorUnavailableError(
+                f"person_class_id={self.settings.person_class_id} is outside "
+                f"model class count {class_scores.shape[1]}"
+            )
         scores = predictions[:, 4] * class_scores[:, self.settings.person_class_id]
         valid = scores >= self.settings.score_threshold
         boxes, scores = boxes[valid], scores[valid]
+
         detections: list[dict[str, Any]] = []
         if boxes.size:
             boxes_xyxy = np.empty_like(boxes)
@@ -140,23 +185,51 @@ class YoloXPersonDetector:
             boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2.0
             boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2.0
             boxes_xyxy /= ratio
+
             image_height, image_width = image.shape[:2]
-            boxes_xyxy[:, [0, 2]] = np.clip(boxes_xyxy[:, [0, 2]], 0, image_width - 1)
-            boxes_xyxy[:, [1, 3]] = np.clip(boxes_xyxy[:, [1, 3]], 0, image_height - 1)
-            keep = _nms(boxes_xyxy, scores, self.settings.nms_threshold)[: self.settings.max_detections]
+            boxes_xyxy[:, [0, 2]] = np.clip(
+                boxes_xyxy[:, [0, 2]], 0, image_width - 1
+            )
+            boxes_xyxy[:, [1, 3]] = np.clip(
+                boxes_xyxy[:, [1, 3]], 0, image_height - 1
+            )
+            keep = _nms(boxes_xyxy, scores, self.settings.nms_threshold)[
+                : self.settings.max_detections
+            ]
             for index in keep:
                 x1, y1, x2, y2 = (float(value) for value in boxes_xyxy[index])
-                width, height = max(0.0, x2 - x1), max(0.0, y2 - y1)
-                normalized = {"x": x1 / image_width, "y": y1 / image_height, "width": width / image_width, "height": height / image_height}
-                detections.append({
-                    "class_id": self.settings.person_class_id,
-                    "label": "person",
-                    "score": round(float(scores[index]), 6),
-                    "bbox": normalized,
-                    "bbox_pixels": {"x1": round(x1, 2), "y1": round(y1, 2), "x2": round(x2, 2), "y2": round(y2, 2)},
-                    "area_ratio": round(normalized["width"] * normalized["height"], 6),
-                    "bottom_center": {"x": round(normalized["x"] + normalized["width"] / 2.0, 6), "y": round(normalized["y"] + normalized["height"], 6)},
-                })
+                width = max(0.0, x2 - x1)
+                height = max(0.0, y2 - y1)
+                normalized = {
+                    "x": x1 / image_width,
+                    "y": y1 / image_height,
+                    "width": width / image_width,
+                    "height": height / image_height,
+                }
+                detections.append(
+                    {
+                        "class_id": self.settings.person_class_id,
+                        "label": "person",
+                        "score": round(float(scores[index]), 6),
+                        "bbox": normalized,
+                        "bbox_pixels": {
+                            "x1": round(x1, 2),
+                            "y1": round(y1, 2),
+                            "x2": round(x2, 2),
+                            "y2": round(y2, 2),
+                        },
+                        "area_ratio": round(
+                            normalized["width"] * normalized["height"], 6
+                        ),
+                        "bottom_center": {
+                            "x": round(
+                                normalized["x"] + normalized["width"] / 2.0, 6
+                            ),
+                            "y": round(normalized["y"] + normalized["height"], 6),
+                        },
+                    }
+                )
+
         postprocess_ms = (time.perf_counter() - post_started) * 1000.0
         timings = {
             "preprocess_ms": round(preprocess_ms, 3),
@@ -166,6 +239,7 @@ class YoloXPersonDetector:
         }
         self.inference_count += 1
         self.last_timings = timings
+        self.last_error = None
         return detections, timings
 
     def status(self) -> dict[str, Any]:
