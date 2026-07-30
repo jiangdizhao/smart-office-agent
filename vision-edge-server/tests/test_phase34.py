@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from app.config import FaceSettings, IdentitySettings
 from app.face_runtime import FaceRuntime, analyse_face_quality
@@ -117,7 +118,7 @@ def test_face_roi_resize_maps_box_back_to_4k_coordinates(tmp_path: Path) -> None
     assert np.isclose(observation["bbox"]["height"], 0.20, atol=1e-3)
 
 
-def test_identity_store_crud_and_prototype(tmp_path: Path) -> None:
+def test_identity_store_crud_prototype_and_sample_bound(tmp_path: Path) -> None:
     store = IdentityStore(
         tmp_path / "identities.sqlite3", max_samples_per_identity=3
     )
@@ -129,17 +130,18 @@ def test_identity_store_crud_and_prototype(tmp_path: Path) -> None:
         metadata={"test": True},
     )
     identity_id = first["identity_id"]
-    store.enroll(
-        identity_id=identity_id,
-        display_name="Rico",
-        embedding=np.asarray([0.95, 0.05, 0.0], dtype=np.float32),
-        quality_score=0.8,
-        consent_at_unix=10.0,
-    )
+    for offset in (0.01, 0.02, 0.03, 0.04):
+        store.enroll(
+            identity_id=identity_id,
+            display_name="Rico",
+            embedding=np.asarray([1.0 - offset, offset, 0.0], dtype=np.float32),
+            quality_score=0.8,
+            consent_at_unix=10.0,
+        )
     listed = store.list_identities()
     assert len(listed) == 1
     assert listed[0]["display_name"] == "Rico"
-    assert listed[0]["sample_count"] == 2
+    assert listed[0]["sample_count"] == 3
     prototypes = store.prototypes()
     assert identity_id in prototypes
     _, prototype = prototypes[identity_id]
@@ -208,3 +210,22 @@ def test_identity_confirmation_requires_repeated_match_and_margin(
     )
     assert result and result["identity_id"] == "person_a"
     assert event and event[0] == "visitor_identified"
+
+
+def test_identity_enrollment_requires_explicit_consent(tmp_path: Path) -> None:
+    settings = IdentitySettings(
+        enabled=False,
+        database_path=str(tmp_path / "identities.sqlite3"),
+        enrollment_min_quality=0.6,
+        require_explicit_consent=True,
+    )
+    runtime = IdentityRuntime(settings, tmp_path)
+    runtime._track_embeddings[4] = normalize_embedding(
+        np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+    )
+    runtime._track_embedding_quality[4] = 0.9
+    with pytest.raises(ValueError, match="explicit consent"):
+        runtime.enroll(track_id=4, display_name="Rico", consent=False)
+    enrolled = runtime.enroll(track_id=4, display_name="Rico", consent=True)
+    assert enrolled["display_name"] == "Rico"
+    assert enrolled["sample_count"] == 1
