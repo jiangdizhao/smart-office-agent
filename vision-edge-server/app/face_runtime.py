@@ -10,6 +10,8 @@ import numpy as np
 
 from app.config import FaceSettings
 
+MAX_DETECTOR_SIDE = 640
+
 
 class FaceRuntimeError(RuntimeError):
     pass
@@ -42,7 +44,6 @@ def analyse_face_quality(
     x2 = max(x1 + 1, min(frame_width, int(x + width)))
     y2 = max(y1 + 1, min(frame_height, int(y + height)))
     crop = frame[y1:y2, x1:x2]
-
     if crop.size:
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         brightness = float(np.mean(gray))
@@ -64,7 +65,6 @@ def analyse_face_quality(
         (nose[1] - eye_midpoint[1])
         / max(mouth_midpoint[1] - eye_midpoint[1], 1e-6)
     )
-
     roll_score = _clip(
         1.0 - abs(roll_degrees) / max(settings.max_abs_roll_degrees, 1e-6)
     )
@@ -73,7 +73,6 @@ def analyse_face_quality(
     )
     vertical_score = _clip(1.0 - abs(vertical_ratio - 0.48) / 0.35)
     frontal_score = 0.45 * yaw_score + 0.35 * roll_score + 0.20 * vertical_score
-
     size_score = min(
         width / settings.min_face_width_pixels,
         height / settings.min_face_height_pixels,
@@ -88,7 +87,6 @@ def analyse_face_quality(
         )
     else:
         brightness_score = 1.0
-
     quality_score = (
         0.25 * confidence
         + 0.25 * size_score
@@ -123,9 +121,7 @@ class FaceRuntime:
     def __init__(self, settings: FaceSettings, server_root: Path) -> None:
         self.settings = settings
         configured = Path(settings.model_path)
-        self.model_path = (
-            configured if configured.is_absolute() else server_root / configured
-        )
+        self.model_path = configured if configured.is_absolute() else server_root / configured
         self.detector: Any | None = None
         self.last_error: str | None = None
         self.detect_count = 0
@@ -152,9 +148,7 @@ class FaceRuntime:
             import cv2
 
             if not hasattr(cv2, "FaceDetectorYN"):
-                raise RuntimeError(
-                    f"OpenCV {cv2.__version__} does not provide FaceDetectorYN"
-                )
+                raise RuntimeError(f"OpenCV {cv2.__version__} does not provide FaceDetectorYN")
             self.detector = cv2.FaceDetectorYN.create(
                 str(self.model_path),
                 "",
@@ -180,10 +174,7 @@ class FaceRuntime:
     def should_run(self, now_monotonic: float) -> bool:
         if not self.settings.enabled or self.detector is None:
             return False
-        return (
-            now_monotonic - self._last_run_monotonic
-            >= 1.0 / self.settings.inference_hz
-        )
+        return now_monotonic - self._last_run_monotonic >= 1.0 / self.settings.inference_hz
 
     def process(
         self,
@@ -207,8 +198,7 @@ class FaceRuntime:
         candidates = [
             track
             for track in tracks
-            if track.get("visible")
-            and track.get("state") in {"confirmed", "tentative"}
+            if track.get("visible") and track.get("state") in {"confirmed", "tentative"}
         ]
         candidates.sort(
             key=lambda item: (
@@ -243,9 +233,7 @@ class FaceRuntime:
                 is_ready = bool(observation["ready"])
                 self._ready_state[track_id] = is_ready
                 if is_ready and not was_ready:
-                    events.append(
-                        ("visitor_face_ready", self._public_face(observation))
-                    )
+                    events.append(("visitor_face_ready", self._public_face(observation)))
 
             for track_id in list(self._faces):
                 if track_id not in active_ids:
@@ -259,18 +247,13 @@ class FaceRuntime:
                             events.append(
                                 (
                                     "visitor_face_lost",
-                                    {
-                                        "track_id": track_id,
-                                        "age_seconds": round(age, 3),
-                                    },
+                                    {"track_id": track_id, "age_seconds": round(age, 3)},
                                 )
                             )
                         self._remove_track(track_id)
 
         self.detect_count += 1
-        self.last_detection_ms = round(
-            (time.perf_counter() - started) * 1000.0, 3
-        )
+        self.last_detection_ms = round((time.perf_counter() - started) * 1000.0, 3)
         return self.snapshot()["faces"], events
 
     def _detect_track_face(
@@ -282,6 +265,8 @@ class FaceRuntime:
     ) -> tuple[dict[str, Any] | None, np.ndarray | None]:
         if self.detector is None:
             return None, None
+        import cv2
+
         frame_height, frame_width = source_frame.shape[:2]
         box = dict(track["bbox"])
         margin_x = box["width"] * self.settings.person_crop_margin
@@ -292,33 +277,43 @@ class FaceRuntime:
             "width": box["width"] + 2 * margin_x,
             "height": box["height"] + 2 * margin_y,
         }
-        x1, y1, x2, y2 = _bbox_pixels(
-            crop_box, frame_width, frame_height
-        )
+        x1, y1, x2, y2 = _bbox_pixels(crop_box, frame_width, frame_height)
         if x2 - x1 < 32 or y2 - y1 < 32:
             return None, None
         crop = source_frame[y1:y2, x1:x2]
-        self.detector.setInputSize((crop.shape[1], crop.shape[0]))
-        _, faces = self.detector.detect(crop)
+
+        # Bound YuNet cost for close visitors while retaining the 4K source coordinates.
+        scale = min(1.0, MAX_DETECTOR_SIDE / max(crop.shape[0], crop.shape[1]))
+        if scale < 1.0:
+            detector_input = cv2.resize(
+                crop,
+                (max(1, int(crop.shape[1] * scale)), max(1, int(crop.shape[0] * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            detector_input = crop
+        self.detector.setInputSize((detector_input.shape[1], detector_input.shape[0]))
+        _, faces = self.detector.detect(detector_input)
         if faces is None or len(faces) == 0:
             return None, None
 
         selected: np.ndarray | None = None
         selected_rank: tuple[float, float] | None = None
-        for row in np.asarray(faces, dtype=np.float32):
+        for raw_row in np.asarray(faces, dtype=np.float32):
+            row = raw_row.copy()
+            row[:14] /= max(scale, 1e-9)
             _, fy, fw, fh = [float(value) for value in row[:4]]
             center_y_ratio = (fy + fh / 2.0) / max(crop.shape[0], 1)
             if center_y_ratio > self.settings.max_face_center_y_ratio:
                 continue
             rank = (float(row[14]), fw * fh)
             if selected_rank is None or rank > selected_rank:
-                selected = row.copy()
+                selected = row
                 selected_rank = rank
         if selected is None:
             return None, None
 
         # YuNet row layout is [x, y, w, h, five landmark pairs, score].
-        # Offset only coordinate fields. Width and height remain unchanged.
         selected[[0, 4, 6, 8, 10, 12]] += x1
         selected[[1, 5, 7, 9, 11, 13]] += y1
         quality = analyse_face_quality(source_frame, selected, self.settings)
@@ -349,9 +344,7 @@ class FaceRuntime:
         }
         return observation, selected
 
-    def expire(
-        self, tracks: list[dict[str, Any]], now_monotonic: float
-    ) -> None:
+    def expire(self, tracks: list[dict[str, Any]], now_monotonic: float) -> None:
         active_ids = {
             int(track["track_id"])
             for track in tracks
@@ -362,8 +355,7 @@ class FaceRuntime:
                 observation = self._faces[track_id]
                 if (
                     track_id not in active_ids
-                    or now_monotonic
-                    - float(observation["last_seen_monotonic"])
+                    or now_monotonic - float(observation["last_seen_monotonic"])
                     > self.settings.stale_seconds
                 ):
                     self._remove_track(track_id)
@@ -381,11 +373,7 @@ class FaceRuntime:
     def face_observation(self, track_id: int) -> dict[str, Any] | None:
         with self._lock:
             observation = self._faces.get(int(track_id))
-            return (
-                None
-                if observation is None
-                else self._public_face(observation)
-            )
+            return None if observation is None else self._public_face(observation)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -396,6 +384,7 @@ class FaceRuntime:
             "ready": self.ready,
             "model_path": str(self.model_path),
             "model_exists": self.model_path.exists(),
+            "detector_max_side": MAX_DETECTOR_SIDE,
             "detect_count": self.detect_count,
             "last_detection_ms": self.last_detection_ms,
             "face_count": len(faces),
