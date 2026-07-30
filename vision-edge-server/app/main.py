@@ -5,7 +5,15 @@ import json
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -23,6 +31,15 @@ class IdentityEnrollmentRequest(BaseModel):
     external_id: str | None = Field(default=None, max_length=200)
     identity_id: str | None = Field(default=None, max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def _require_local_identity_operator(request: Request) -> None:
+    host = request.client.host if request.client is not None else ""
+    if host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Identity enrollment and deletion are restricted to the local RTX operator.",
+        )
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -45,16 +62,26 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         app.state.hub = hub
         app.state.runtime = runtime
         runtime.bind_event_loop(asyncio.get_running_loop())
-        tasks: list[asyncio.Task[Any]] = [asyncio.create_task(_heartbeat_loop(runtime))]
+        tasks: list[asyncio.Task[Any]] = [
+            asyncio.create_task(_heartbeat_loop(runtime))
+        ]
         if loaded_config.gpu.probe_on_startup:
             tasks.append(
-                asyncio.create_task(runtime.run_hardware_probes(include_gpu=True, include_camera=False))
+                asyncio.create_task(
+                    runtime.run_hardware_probes(
+                        include_gpu=True, include_camera=False
+                    )
+                )
             )
         if loaded_config.vision.enabled and loaded_config.vision.start_on_startup:
             await runtime.start_vision()
         elif loaded_config.camera.enabled and loaded_config.camera.probe_on_startup:
             tasks.append(
-                asyncio.create_task(runtime.run_hardware_probes(include_gpu=False, include_camera=True))
+                asyncio.create_task(
+                    runtime.run_hardware_probes(
+                        include_gpu=False, include_camera=True
+                    )
+                )
             )
         try:
             yield
@@ -98,7 +125,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/v1/config/public", tags=["system"])
     async def public_config() -> dict[str, Any]:
         return loaded_config.model_dump(
-            exclude={"camera": {"probe_on_startup"}, "gpu": {"probe_on_startup"}}
+            exclude={
+                "camera": {"probe_on_startup"},
+                "gpu": {"probe_on_startup"},
+            }
         )
 
     @app.post("/api/v1/probe", tags=["hardware"])
@@ -107,7 +137,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         include_camera: bool = Query(default=True),
     ) -> dict[str, Any]:
         if runtime.probe_running:
-            raise HTTPException(status_code=409, detail="A hardware probe is already running")
+            raise HTTPException(
+                status_code=409, detail="A hardware probe is already running"
+            )
         try:
             return await runtime.run_hardware_probes(
                 include_gpu=include_gpu,
@@ -145,16 +177,20 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return runtime.vision.identities_snapshot()
 
     @app.post("/api/v1/identities/enroll", tags=["identity"])
-    async def enroll_identity(request: IdentityEnrollmentRequest) -> dict[str, Any]:
+    async def enroll_identity(
+        request_body: IdentityEnrollmentRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        _require_local_identity_operator(request)
         try:
             return await asyncio.to_thread(
                 runtime.vision.enroll_identity,
-                track_id=request.track_id,
-                display_name=request.display_name,
-                consent=request.consent,
-                external_id=request.external_id,
-                metadata=request.metadata,
-                identity_id=request.identity_id,
+                track_id=request_body.track_id,
+                display_name=request_body.display_name,
+                consent=request_body.consent,
+                external_id=request_body.external_id,
+                metadata=request_body.metadata,
+                identity_id=request_body.identity_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -162,8 +198,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.delete("/api/v1/identities/{identity_id}", tags=["identity"])
-    async def delete_identity(identity_id: str) -> dict[str, Any]:
-        deleted = await asyncio.to_thread(runtime.vision.delete_identity, identity_id)
+    async def delete_identity(identity_id: str, request: Request) -> dict[str, Any]:
+        _require_local_identity_operator(request)
+        deleted = await asyncio.to_thread(
+            runtime.vision.delete_identity, identity_id
+        )
         if not deleted:
             raise HTTPException(status_code=404, detail="Identity was not found")
         return {"deleted": True, "identity_id": identity_id}
@@ -172,7 +211,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def debug_frame() -> Response:
         data = runtime.vision.latest_preview()
         if data is None:
-            raise HTTPException(status_code=503, detail="No debug frame is available yet")
+            raise HTTPException(
+                status_code=503, detail="No debug frame is available yet"
+            )
         return Response(
             content=data,
             media_type="image/jpeg",
@@ -186,11 +227,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             while True:
                 data = runtime.vision.latest_preview()
                 if data is not None:
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
+                    yield (
+                        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                        + data
+                        + b"\r\n"
+                    )
                 await asyncio.sleep(delay)
 
         return StreamingResponse(
-            generate(), media_type="multipart/x-mixed-replace; boundary=frame"
+            generate(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
         )
 
     @app.websocket("/ws/v1/events")
@@ -216,17 +262,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
                     await websocket.send_json(
-                        event_factory.build("client_error", {"detail": "Expected a JSON object"})
+                        event_factory.build(
+                            "client_error",
+                            {"detail": "Expected a JSON object"},
+                        )
                     )
                     continue
                 message_type = str(message.get("type", "")).strip()
                 if message_type == "ping":
                     await websocket.send_json(
-                        event_factory.build("pong", {"client_time": message.get("client_time")})
+                        event_factory.build(
+                            "pong",
+                            {"client_time": message.get("client_time")},
+                        )
                     )
                 elif message_type == "get_state":
                     await websocket.send_json(
-                        event_factory.build("state_snapshot", runtime.public_status())
+                        event_factory.build(
+                            "state_snapshot", runtime.public_status()
+                        )
                     )
                 else:
                     await websocket.send_json(
