@@ -192,6 +192,49 @@ class PrimarySettings(StrictModel):
     target_y: float = Field(default=0.85, ge=0, le=1)
 
 
+class FaceSettings(StrictModel):
+    enabled: bool = True
+    model_path: str = "models/face_detection_yunet_2023mar.onnx"
+    inference_hz: float = Field(default=5.0, gt=0, le=30)
+    score_threshold: float = Field(default=0.75, ge=0, le=1)
+    nms_threshold: float = Field(default=0.30, ge=0, le=1)
+    top_k: int = Field(default=5000, ge=1, le=10000)
+    max_tracks_per_cycle: int = Field(default=4, ge=1, le=20)
+    person_crop_margin: float = Field(default=0.04, ge=0, le=0.3)
+    max_face_center_y_ratio: float = Field(default=0.72, ge=0.3, le=1.0)
+    min_face_width_pixels: int = Field(default=80, ge=16, le=2048)
+    min_face_height_pixels: int = Field(default=80, ge=16, le=2048)
+    min_sharpness: float = Field(default=35.0, ge=0)
+    sharpness_full_scale: float = Field(default=180.0, gt=0)
+    min_brightness: float = Field(default=35.0, ge=0, le=255)
+    max_brightness: float = Field(default=225.0, ge=0, le=255)
+    max_abs_roll_degrees: float = Field(default=28.0, gt=0, le=90)
+    max_nose_offset_ratio: float = Field(default=0.38, gt=0, le=2)
+    min_frontal_score: float = Field(default=0.55, ge=0, le=1)
+    min_quality_score: float = Field(default=0.58, ge=0, le=1)
+    ready_stable_frames: int = Field(default=3, ge=1, le=30)
+    stale_seconds: float = Field(default=1.0, ge=0.1, le=10)
+
+    @model_validator(mode="after")
+    def validate_face_thresholds(self) -> FaceSettings:
+        if self.min_brightness >= self.max_brightness:
+            raise ValueError("face min_brightness must be below max_brightness")
+        return self
+
+
+class IdentitySettings(StrictModel):
+    enabled: bool = True
+    model_path: str = "models/face_recognition_sface_2021dec.onnx"
+    database_path: str = "data/identity/visitor_identities.sqlite3"
+    cosine_threshold: float = Field(default=0.50, ge=-1, le=1)
+    minimum_margin: float = Field(default=0.08, ge=0, le=2)
+    confirm_observations: int = Field(default=3, ge=1, le=20)
+    recognition_interval_seconds: float = Field(default=0.40, ge=0, le=10)
+    enrollment_min_quality: float = Field(default=0.65, ge=0, le=1)
+    max_samples_per_identity: int = Field(default=10, ge=1, le=100)
+    require_explicit_consent: bool = True
+
+
 class DebugSettings(StrictModel):
     enabled: bool = True
     preview_width: int = Field(default=960, ge=160, le=3840)
@@ -202,12 +245,15 @@ class DebugSettings(StrictModel):
     draw_raw_detections: bool = False
     draw_track_trails: bool = True
     draw_lost_tracks: bool = True
+    draw_faces: bool = True
+    draw_face_landmarks: bool = True
+    draw_identity: bool = True
 
 
 class AppConfig(StrictModel):
     service_name: str = "rtx-vision-edge-server"
-    version: str = "0.3.0"
-    phase: str = "phase2_multi_object_tracking"
+    version: str = "0.5.0"
+    phase: str = "phase4_face_identity"
     server: ServerSettings = Field(default_factory=ServerSettings)
     camera: CameraSettings = Field(default_factory=CameraSettings)
     gpu: GpuSettings = Field(default_factory=GpuSettings)
@@ -217,6 +263,8 @@ class AppConfig(StrictModel):
     tracking: TrackingSettings = Field(default_factory=TrackingSettings)
     presence: PresenceSettings = Field(default_factory=PresenceSettings)
     primary: PrimarySettings = Field(default_factory=PrimarySettings)
+    face: FaceSettings = Field(default_factory=FaceSettings)
+    identity: IdentitySettings = Field(default_factory=IdentitySettings)
     debug: DebugSettings = Field(default_factory=DebugSettings)
 
 
