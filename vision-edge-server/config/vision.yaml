@@ -13,7 +13,7 @@ server:
 camera:
   enabled: true
   probe_on_startup: true
-  device_index: 0
+  device_index: 1
   requested_width: 3840
   requested_height: 2160
   requested_fps: 30
