@@ -53,9 +53,8 @@ def main() -> None:
     assert greeting_payload["greeting"] == "Welcome to our office."
     assert greeting_payload["conversation_phase"] == "standby"
 
-    # The Backend completes each visual attention cycle immediately. The browser
-    # monitor owns continuous-unqualified rearm and therefore prevents this direct
-    # duplicate request during real UI operation. A direct API request is accepted.
+    # The Backend completes each visual attention cycle immediately. The active
+    # client source owns visitor-session or absence rearm and prevents duplicates.
     duplicate = client.post(
         f"/api/conversations/{conversation_id}/proximity-greeting",
         json={**detection, "stable_frames": 5},
@@ -109,6 +108,7 @@ def main() -> None:
     host = read("ui/smart-office-ui/src/virtual-host/VirtualHostApp.tsx")
     avatar = read("ui/smart-office-ui/src/virtual-host/VirtualHostAvatar.tsx")
     detector = read("ui/smart-office-ui/src/vision/proximityFaceMonitor.ts")
+    remote_client = read("ui/smart-office-ui/src/vision/remoteVisionClient.ts")
     proximity_hook = read("ui/smart-office-ui/src/vision/useProximityGreeting.ts")
     drawer = read("ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx")
 
@@ -128,6 +128,7 @@ def main() -> None:
     ):
         assert needle in host, f"Missing host state contract: {needle}"
 
+    # Browser MediaPipe remains available as an explicit fallback.
     for needle in (
         "body_area_ratio",
         "face_inside_body",
@@ -138,13 +139,24 @@ def main() -> None:
         "suppressUntilAbsent",
         "mediapipe-person+face",
     ):
-        assert needle in detector, f"Missing person-face proximity detector contract: {needle}"
+        assert needle in detector, f"Missing MediaPipe fallback contract: {needle}"
+
+    for needle in (
+        "RemoteVisionClient",
+        "client_state_snapshot",
+        "get_client_state",
+        "visitor_session_id",
+        "greeting_eligible",
+    ):
+        assert needle in remote_client, f"Missing remote vision client contract: {needle}"
 
     for needle in (
         "smartoffice:host-intro-start",
         "Welcome to our office.",
+        "VITE_VISION_SOURCE",
+        "greetedSessionsRef",
     ):
-        assert needle in proximity_hook, f"Missing video introduction trigger contract: {needle}"
+        assert needle in proximity_hook, f"Missing Phase 5 greeting trigger contract: {needle}"
 
     for needle in (
         "idle-primary.mp4",
@@ -157,12 +169,12 @@ def main() -> None:
     ):
         assert needle in avatar, f"Missing segmented video avatar contract: {needle}"
 
-    assert "空闲近距主动问候" in drawer
-    assert "人体占画面达到阈值且人体框内检测到人脸" in drawer
+    assert "空闲访客主动问候" in drawer
+    assert "RTX 视觉服务器" in drawer
     assert "body_area_ratio" in drawer
 
-    print("PASS: conversation memory, video introduction, and segmented video-avatar contracts are present.")
-    print("NOTE: Real camera geometry, local video assets, and GPT Realtime playback require local browser acceptance.")
+    print("PASS: conversation memory, Phase 5 remote vision greeting, fallback, and video-avatar contracts are present.")
+    print("NOTE: Real LAN, RTX vision, camera geometry, local video assets, and GPT Realtime playback require local acceptance.")
 
 
 if __name__ == "__main__":
