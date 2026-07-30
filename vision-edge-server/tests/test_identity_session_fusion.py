@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -69,7 +70,10 @@ def test_recognition_gate_is_looser_than_enrollment_gate() -> None:
     quality = analyse_face_quality(frame, face_row(), settings)
     assert quality["recognition_candidate"] is True
     assert quality["enrollment_candidate"] is False
-    assert any("sharpness" in reason for reason in quality["enrollment_rejection_reasons"])
+    assert any(
+        "sharpness" in reason
+        for reason in quality["enrollment_rejection_reasons"]
+    )
 
 
 def test_adaptive_high_confidence_identity_is_immediate(tmp_path: Path) -> None:
@@ -92,7 +96,9 @@ def test_adaptive_high_confidence_identity_is_immediate(tmp_path: Path) -> None:
                 "external_id": None,
                 "consent_at_unix": 1.0,
             },
-            normalize_embedding(np.asarray([1.0, 0.0, 0.0], dtype=np.float32)),
+            normalize_embedding(
+                np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+            ),
         ),
         "alice": (
             {
@@ -101,7 +107,9 @@ def test_adaptive_high_confidence_identity_is_immediate(tmp_path: Path) -> None:
                 "external_id": None,
                 "consent_at_unix": 1.0,
             },
-            normalize_embedding(np.asarray([0.0, 1.0, 0.0], dtype=np.float32)),
+            normalize_embedding(
+                np.asarray([0.0, 1.0, 0.0], dtype=np.float32)
+            ),
         ),
     }
     result, event = runtime.match_embedding(
@@ -116,7 +124,9 @@ def test_adaptive_high_confidence_identity_is_immediate(tmp_path: Path) -> None:
     assert event and event[0] == "visitor_identified"
 
 
-def test_duplicate_display_names_are_pooled_not_competitors(tmp_path: Path) -> None:
+def test_duplicate_display_names_are_pooled_not_competitors(
+    tmp_path: Path,
+) -> None:
     settings = IdentitySettings(
         enabled=False,
         database_path=str(tmp_path / "identity.sqlite3"),
@@ -161,17 +171,21 @@ def test_duplicate_display_names_are_pooled_not_competitors(tmp_path: Path) -> N
     assert result and result["display_name"].casefold() == "rico"
 
 
-def test_enrollment_reuses_name_and_saves_multiple_samples(tmp_path: Path) -> None:
+def test_enrollment_reuses_name_and_saves_multiple_samples(
+    tmp_path: Path,
+) -> None:
     settings = IdentitySettings(
         enabled=False,
         database_path=str(tmp_path / "identity.sqlite3"),
         enrollment_capture_seconds=0,
+        enrollment_prebuffer_seconds=5,
         enrollment_min_samples=3,
         enrollment_target_samples=3,
         enrollment_max_selected_samples=3,
         enrollment_min_quality=0.5,
     )
     runtime = IdentityRuntime(settings, tmp_path)
+    base = time.monotonic()
     for index, vector in enumerate(
         (
             [1.0, 0.0, 0.0],
@@ -184,7 +198,7 @@ def test_enrollment_reuses_name_and_saves_multiple_samples(tmp_path: Path) -> No
             embedding=np.asarray(vector, dtype=np.float32),
             quality_score=0.9 - index * 0.05,
             enrollment_candidate=True,
-            now_monotonic=1.0 + index * 0.1,
+            now_monotonic=base + index * 0.01,
         )
     first = runtime.enroll(track_id=4, display_name="Rico", consent=True)
     assert first["samples_added"] == 3
@@ -195,12 +209,11 @@ def test_enrollment_reuses_name_and_saves_multiple_samples(tmp_path: Path) -> No
         embedding=np.asarray([0.97, 0.03, 0.0], dtype=np.float32),
         quality_score=0.85,
         enrollment_candidate=True,
-        now_monotonic=2.0,
+        now_monotonic=time.monotonic(),
     )
-    second_settings = settings.model_copy(
+    runtime.settings = settings.model_copy(
         update={"enrollment_min_samples": 1, "enrollment_target_samples": 1}
     )
-    runtime.settings = second_settings
     second = runtime.enroll(track_id=5, display_name="rico", consent=True)
     assert second["identity_id"] == identity_id
     assert second["reused_existing_identity"] is True
@@ -214,8 +227,12 @@ def test_face_memory_recovers_same_visitor_session_for_new_track() -> None:
             face_minimum_margin=0.01,
         )
     )
-    face = normalize_embedding(np.asarray([1.0, 0.0, 0.0], dtype=np.float32))
-    body = normalize_embedding(np.asarray([0.0, 1.0, 0.0], dtype=np.float32))
+    face = normalize_embedding(
+        np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+    )
+    body = normalize_embedding(
+        np.asarray([0.0, 1.0, 0.0], dtype=np.float32)
+    )
     first_tracks, _ = runtime.update(
         [track(1)],
         face_embeddings={1: face},
@@ -239,7 +256,9 @@ def test_face_memory_recovers_same_visitor_session_for_new_track() -> None:
         now=4.0,
     )
     assert recovered_tracks[0]["visitor_session_id"] == session_id
-    recovered = [event for event in events if event[0] == "visitor_session_recovered"]
+    recovered = [
+        event for event in events if event[0] == "visitor_session_recovered"
+    ]
     assert recovered and recovered[0][1]["previous_track_id"] == 1
 
 
@@ -251,7 +270,9 @@ def test_registered_identity_is_propagated_across_track_change() -> None:
         "similarity": 0.9,
         "consent_at_unix": 1.0,
     }
-    face = normalize_embedding(np.asarray([1.0, 0.0, 0.0], dtype=np.float32))
+    face = normalize_embedding(
+        np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+    )
     first, _ = runtime.update(
         [track(1)],
         face_embeddings={1: face},
