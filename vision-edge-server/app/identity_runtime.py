@@ -97,8 +97,7 @@ class IdentityStore:
         )
         with self._lock, self._connect() as connection:
             existing = connection.execute(
-                "SELECT identity_id FROM identities WHERE identity_id = ?",
-                (identity_id,),
+                "SELECT * FROM identities WHERE identity_id = ?", (identity_id,)
             ).fetchone()
             if existing is None:
                 connection.execute(
@@ -128,10 +127,10 @@ class IdentityStore:
                     """,
                     (
                         clean_name,
-                        external_id,
+                        external_id if external_id is not None else existing["external_id"],
                         consent_at_unix,
                         now,
-                        metadata_json,
+                        metadata_json if metadata is not None else existing["metadata_json"],
                         identity_id,
                     ),
                 )
@@ -193,10 +192,10 @@ class IdentityStore:
 
     def find_by_display_name(self, display_name: str) -> dict[str, Any] | None:
         clean = display_name.strip().casefold()
-        if not clean:
-            return None
         matches = [
-            item for item in self.list_identities() if item["display_name"].casefold() == clean
+            item
+            for item in self.list_identities()
+            if item["display_name"].casefold() == clean
         ]
         if not matches:
             return None
@@ -277,15 +276,11 @@ class IdentityRuntime:
         database = Path(settings.database_path)
         self.model_path = model if model.is_absolute() else server_root / model
         self.database_path = database if database.is_absolute() else server_root / database
-        self.store = IdentityStore(
-            self.database_path, settings.max_samples_per_identity
-        )
+        self.store = IdentityStore(self.database_path, settings.max_samples_per_identity)
         self.recognizer: Any | None = None
         self.last_error: str | None = None
         self.embedding_count = 0
         self.last_embedding_ms: float | None = None
-
-        # _gallery is grouped by case-folded display name so duplicate Rico rows do not compete.
         self._gallery: dict[str, dict[str, Any]] = {}
         self._duplicate_groups: list[dict[str, Any]] = []
         self._prototypes: dict[str, tuple[dict[str, Any], np.ndarray]] = {}
@@ -330,34 +325,32 @@ class IdentityRuntime:
     def close(self) -> None:
         with self._condition:
             self.recognizer = None
-            self._track_results.clear()
-            self._track_embeddings.clear()
-            self._track_embedding_quality.clear()
-            self._track_diagnostics.clear()
-            self._recent_samples.clear()
-            self._candidates.clear()
-            self._last_attempt.clear()
+            for mapping in (
+                self._track_results,
+                self._track_embeddings,
+                self._track_embedding_quality,
+                self._track_diagnostics,
+                self._recent_samples,
+                self._candidates,
+                self._last_attempt,
+            ):
+                mapping.clear()
             self._condition.notify_all()
 
     def reload_gallery(self) -> None:
         raw = self.store.gallery_samples()
-        identities = self.store.list_identities()
         grouped: dict[str, dict[str, Any]] = {}
-        duplicate_groups: list[dict[str, Any]] = []
-        for identity in identities:
+        for identity in self.store.list_identities():
             key = identity["display_name"].strip().casefold()
             group = grouped.setdefault(
-                key,
-                {
-                    "identities": [],
-                    "samples": [],
-                    "canonical": None,
-                },
+                key, {"identities": [], "samples": [], "canonical": None}
             )
             group["identities"].append(identity)
-            identity_samples = raw.get(identity["identity_id"], (identity, []))[1]
-            group["samples"].extend(identity_samples)
-        for key, group in grouped.items():
+            group["samples"].extend(
+                raw.get(identity["identity_id"], (identity, []))[1]
+            )
+        duplicate_groups: list[dict[str, Any]] = []
+        for group in grouped.values():
             group["identities"].sort(
                 key=lambda item: (item["created_at_unix"], item["identity_id"])
             )
@@ -387,8 +380,9 @@ class IdentityRuntime:
         aligned = self.recognizer.alignCrop(
             source_frame, np.asarray(face_row[:14], dtype=np.float32)
         )
-        feature = self.recognizer.feature(aligned)
-        embedding = normalize_embedding(np.asarray(feature, dtype=np.float32))
+        embedding = normalize_embedding(
+            np.asarray(self.recognizer.feature(aligned), dtype=np.float32)
+        )
         self.embedding_count += 1
         self.last_embedding_ms = round((time.perf_counter() - started) * 1000.0, 3)
         return embedding
@@ -464,29 +458,29 @@ class IdentityRuntime:
         scored: list[tuple[float, str, dict[str, Any], list[float]]] = []
         if self._gallery:
             for key, group in self._gallery.items():
-                sample_scores: list[tuple[float, float]] = []
-                for sample, quality in group["samples"]:
-                    if sample.size == vector.size:
-                        sample_scores.append(
-                            (cosine_similarity(vector, sample), float(quality))
-                        )
+                sample_scores = [
+                    (cosine_similarity(vector, sample), float(quality))
+                    for sample, quality in group["samples"]
+                    if sample.size == vector.size
+                ]
                 if not sample_scores:
                     continue
                 sample_scores.sort(reverse=True, key=lambda item: item[0])
                 top = sample_scores[: self.settings.top_k_samples]
-                weights = [0.5 + 0.5 * max(0.0, min(1.0, quality)) for _, quality in top]
-                weighted = sum(score * weight for (score, _), weight in zip(top, weights))
-                combined = weighted / max(sum(weights), 1e-9)
+                weights = [0.5 + 0.5 * np.clip(quality, 0.0, 1.0) for _, quality in top]
+                score = sum(
+                    similarity * weight
+                    for (similarity, _), weight in zip(top, weights)
+                ) / max(sum(weights), 1e-9)
                 scored.append(
                     (
-                        float(combined),
+                        float(score),
                         key,
                         dict(group["canonical"]),
                         [round(item[0], 6) for item in top],
                     )
                 )
-        elif self._prototypes:
-            # Backward-compatible path used by focused unit tests.
+        else:
             for identity_id, (identity, prototype) in self._prototypes.items():
                 if prototype.size == vector.size:
                     score = cosine_similarity(vector, prototype)
@@ -496,11 +490,12 @@ class IdentityRuntime:
 
     def _decision(self, best_score: float, margin: float) -> tuple[bool, str, int]:
         if not self.settings.adaptive_confirmation_enabled:
-            eligible = (
+            return (
                 best_score >= self.settings.cosine_threshold
-                and margin >= self.settings.minimum_margin
+                and margin >= self.settings.minimum_margin,
+                "fixed",
+                self.settings.confirm_observations,
             )
-            return eligible, "fixed", self.settings.confirm_observations
         if (
             best_score >= self.settings.high_similarity_threshold
             and margin >= self.settings.high_minimum_margin
@@ -529,7 +524,7 @@ class IdentityRuntime:
         vector = normalize_embedding(embedding)
         with self._lock:
             scored = self._score_gallery(vector)
-            best_score, best_key, best_identity, best_sample_scores = (
+            best_score, _, best_identity, sample_scores = (
                 scored[0] if scored else (-1.0, "", {}, [])
             )
             second_score = scored[1][0] if len(scored) > 1 else -1.0
@@ -539,20 +534,20 @@ class IdentityRuntime:
             previous_candidate, count = self._candidates.get(track_id, (None, 0))
             count = count + 1 if previous_candidate == candidate_id else 1
             self._candidates[track_id] = (candidate_id, count)
-
             previous_result = self._track_results.get(track_id)
             if candidate_id is None or count < required:
-                if previous_result is None:
-                    return None, None
-                return dict(previous_result), None
-
+                return (
+                    (None, None)
+                    if previous_result is None
+                    else (dict(previous_result), None)
+                )
             result = {
                 "track_id": int(track_id),
                 "identity_id": candidate_id,
                 "display_name": best_identity["display_name"],
                 "external_id": best_identity.get("external_id"),
                 "similarity": round(best_score, 6),
-                "sample_similarities": best_sample_scores,
+                "sample_similarities": sample_scores,
                 "second_best_similarity": round(second_score, 6),
                 "margin": round(margin, 6),
                 "quality_score": round(float(quality_score), 6),
@@ -568,9 +563,11 @@ class IdentityRuntime:
                 or previous_result.get("identity_id") != candidate_id
             )
             self._track_results[track_id] = result
-            if not changed:
-                return dict(result), None
-            return dict(result), ("visitor_identified", dict(result))
+            return (
+                (dict(result), ("visitor_identified", dict(result)))
+                if changed
+                else (dict(result), None)
+            )
 
     def bind_identity_to_track(
         self,
@@ -597,10 +594,9 @@ class IdentityRuntime:
     def _eligible_enrollment_samples(
         self, track_id: int, earliest: float
     ) -> list[dict[str, Any]]:
-        queue = self._recent_samples.get(int(track_id), deque())
         return [
             item
-            for item in queue
+            for item in self._recent_samples.get(int(track_id), deque())
             if item["captured_at_monotonic"] >= earliest
             and item["enrollment_candidate"]
             and item["quality_score"] >= self.settings.enrollment_min_quality
@@ -614,7 +610,8 @@ class IdentityRuntime:
         for item in ranked:
             vector = item["embedding"]
             if selected and max(
-                cosine_similarity(vector, existing["embedding"]) for existing in selected
+                cosine_similarity(vector, existing["embedding"])
+                for existing in selected
             ) >= self.settings.enrollment_duplicate_similarity:
                 continue
             selected.append(item)
@@ -622,7 +619,7 @@ class IdentityRuntime:
                 break
         if len(selected) < self.settings.enrollment_min_samples:
             for item in ranked:
-                if item in selected:
+                if any(item is existing for existing in selected):
                     continue
                 selected.append(item)
                 if len(selected) >= min(
@@ -644,28 +641,24 @@ class IdentityRuntime:
     ) -> dict[str, Any]:
         if self.settings.require_explicit_consent and not consent:
             raise ValueError("explicit consent is required for identity enrollment")
-
         capture_started = time.monotonic()
         earliest = capture_started - self.settings.enrollment_prebuffer_seconds
         deadline = capture_started + self.settings.enrollment_capture_seconds
         with self._condition:
             while self.settings.enrollment_capture_seconds > 0:
-                eligible = self._eligible_enrollment_samples(track_id, earliest)
-                if len(eligible) >= self.settings.enrollment_target_samples:
+                if len(self._eligible_enrollment_samples(track_id, earliest)) >= (
+                    self.settings.enrollment_target_samples
+                ):
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 self._condition.wait(timeout=min(0.25, remaining))
             samples = self._eligible_enrollment_samples(track_id, earliest)
-            if not samples:
+            if not samples and self.settings.enrollment_capture_seconds <= 0:
                 cached = self._track_embeddings.get(track_id)
                 quality = self._track_embedding_quality.get(track_id, 0.0)
-                if (
-                    cached is not None
-                    and quality >= self.settings.enrollment_min_quality
-                    and self.settings.enrollment_capture_seconds <= 0
-                ):
+                if cached is not None and quality >= self.settings.enrollment_min_quality:
                     samples = [
                         {
                             "embedding": cached.copy(),
@@ -675,14 +668,14 @@ class IdentityRuntime:
                         }
                     ]
             diagnostic = dict(self._track_diagnostics.get(track_id, {}))
-
         selected = self._select_enrollment_samples(samples)
         if len(selected) < self.settings.enrollment_min_samples:
             reasons = diagnostic.get("enrollment_rejection_reasons") or []
-            reason_text = "; ".join(str(reason) for reason in reasons) or "no qualifying samples"
+            detail = "; ".join(str(reason) for reason in reasons)
             raise ValueError(
                 "enrollment capture did not collect enough usable faces: "
-                f"{len(selected)}/{self.settings.enrollment_min_samples}; {reason_text}"
+                f"{len(selected)}/{self.settings.enrollment_min_samples}; "
+                f"{detail or 'no qualifying samples'}"
             )
 
         existing_result = self.result_for_track(track_id)
@@ -695,8 +688,8 @@ class IdentityRuntime:
                 resolved_identity_id = existing_name["identity_id"]
         reused_existing = resolved_identity_id is not None
 
-        consent_at = time.time()
         identity: dict[str, Any] = {}
+        consent_at = time.time()
         for sample in selected:
             identity = self.store.enroll(
                 display_name=display_name,
@@ -776,19 +769,18 @@ class IdentityRuntime:
             embedding = self._track_embeddings.get(int(track_id))
             return None if embedding is None else embedding.copy()
 
-    def enrich_tracks(
-        self, tracks: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        enriched: list[dict[str, Any]] = []
+    def enrich_tracks(self, tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         with self._lock:
+            result: list[dict[str, Any]] = []
             for track in tracks:
                 item = dict(track)
                 identity = self._track_results.get(int(track["track_id"]))
                 item["identity"] = None if identity is None else dict(identity)
-                enriched.append(item)
-        return enriched
+                result.append(item)
+            return result
 
     def snapshot(self) -> dict[str, Any]:
+        identities = self.store.list_identities()
         with self._lock:
             recognized = [dict(result) for result in self._track_results.values()]
             gallery_count = len(self._gallery)
@@ -801,8 +793,8 @@ class IdentityRuntime:
             "model_exists": self.model_path.exists(),
             "database_path": str(self.database_path),
             "identity_count": gallery_count,
-            "database_identity_row_count": len(self.store.list_identities()),
-            "identities": self.store.list_identities(),
+            "database_identity_row_count": len(identities),
+            "identities": identities,
             "duplicate_name_groups": duplicate_groups,
             "recognized_tracks": recognized,
             "embedding_count": self.embedding_count,
