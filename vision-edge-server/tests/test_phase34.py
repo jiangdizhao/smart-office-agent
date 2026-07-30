@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from app.config import FaceSettings, IdentitySettings
-from app.face_runtime import analyse_face_quality
+from app.face_runtime import FaceRuntime, analyse_face_quality
 from app.identity_runtime import IdentityRuntime, IdentityStore, normalize_embedding
 
 
@@ -48,6 +48,73 @@ def test_face_quality_accepts_large_sharp_frontal_face() -> None:
     assert quality["ready"] is True
     assert quality["frontal_score"] > 0.4
     assert quality["sharpness"] > 5
+
+
+def test_face_roi_resize_maps_box_back_to_4k_coordinates(tmp_path: Path) -> None:
+    class FakeDetector:
+        def __init__(self) -> None:
+            self.input_size: tuple[int, int] | None = None
+
+        def setInputSize(self, size: tuple[int, int]) -> None:
+            self.input_size = size
+
+        def detect(self, image: np.ndarray) -> tuple[int, np.ndarray]:
+            assert image.shape[:2] == (640, 640)
+            row = np.asarray(
+                [
+                    64,
+                    64,
+                    128,
+                    128,
+                    96,
+                    104,
+                    160,
+                    104,
+                    128,
+                    132,
+                    104,
+                    164,
+                    152,
+                    164,
+                    0.95,
+                ],
+                dtype=np.float32,
+            )
+            return 1, row[None, :]
+
+    runtime = FaceRuntime(
+        FaceSettings(
+            person_crop_margin=0.0,
+            min_face_width_pixels=10,
+            min_face_height_pixels=10,
+            min_sharpness=0,
+            min_brightness=0,
+            max_brightness=254,
+            min_frontal_score=0,
+            min_quality_score=0,
+        ),
+        tmp_path,
+    )
+    detector = FakeDetector()
+    runtime.detector = detector
+    frame = np.full((1000, 1000, 3), 128, dtype=np.uint8)
+    track = {
+        "track_id": 3,
+        "bbox": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+        "primary": True,
+    }
+    observation, row = runtime._detect_track_face(
+        frame,
+        track,
+        frame_id=10,
+        now_monotonic=1.0,
+    )
+    assert detector.input_size == (640, 640)
+    assert observation is not None and row is not None
+    assert np.isclose(observation["bbox"]["x"], 0.10, atol=1e-3)
+    assert np.isclose(observation["bbox"]["y"], 0.10, atol=1e-3)
+    assert np.isclose(observation["bbox"]["width"], 0.20, atol=1e-3)
+    assert np.isclose(observation["bbox"]["height"], 0.20, atol=1e-3)
 
 
 def test_identity_store_crud_and_prototype(tmp_path: Path) -> None:
