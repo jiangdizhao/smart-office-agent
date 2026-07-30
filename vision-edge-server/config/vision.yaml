@@ -1,6 +1,6 @@
 service_name: rtx-vision-edge-server
-version: 0.3.0
-phase: phase2_multi_object_tracking
+version: 0.5.0
+phase: phase4_face_identity
 
 server:
   host: 0.0.0.0
@@ -131,6 +131,41 @@ primary:
   target_x: 0.5
   target_y: 0.85
 
+face:
+  enabled: true
+  model_path: models/face_detection_yunet_2023mar.onnx
+  inference_hz: 5
+  score_threshold: 0.75
+  nms_threshold: 0.30
+  top_k: 5000
+  max_tracks_per_cycle: 4
+  person_crop_margin: 0.04
+  max_face_center_y_ratio: 0.72
+  min_face_width_pixels: 80
+  min_face_height_pixels: 80
+  min_sharpness: 35
+  sharpness_full_scale: 180
+  min_brightness: 35
+  max_brightness: 225
+  max_abs_roll_degrees: 28
+  max_nose_offset_ratio: 0.38
+  min_frontal_score: 0.55
+  min_quality_score: 0.58
+  ready_stable_frames: 3
+  stale_seconds: 1.0
+
+identity:
+  enabled: true
+  model_path: models/face_recognition_sface_2021dec.onnx
+  database_path: data/identity/visitor_identities.sqlite3
+  cosine_threshold: 0.50
+  minimum_margin: 0.08
+  confirm_observations: 3
+  recognition_interval_seconds: 0.40
+  enrollment_min_quality: 0.65
+  max_samples_per_identity: 10
+  require_explicit_consent: true
+
 debug:
   enabled: true
   preview_width: 960
@@ -138,6 +173,9 @@ debug:
   preview_fps: 10
   jpeg_quality: 80
   draw_zone: true
-  draw_raw_detections: true
+  draw_raw_detections: false
   draw_track_trails: true
   draw_lost_tracks: true
+  draw_faces: true
+  draw_face_landmarks: true
+  draw_identity: true
