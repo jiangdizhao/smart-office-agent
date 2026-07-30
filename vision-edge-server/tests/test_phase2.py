@@ -4,28 +4,35 @@ import numpy as np
 
 from app.config import PresenceSettings, PrimarySettings, TrackingSettings
 from app.tracking_runtime import (
+    BLOCKED_COST,
     MultiObjectTracker,
     PrimarySelector,
     Track,
-    bbox_to_xywh,
     hungarian_assign,
     point_in_polygon,
 )
-from app.tracking_runtime import KalmanXYWH
 
 
 class FakeAppearance:
     ready = True
 
     def extract(self, source_frame: np.ndarray, bbox: dict[str, float]) -> np.ndarray:
-        feature = np.asarray([bbox["x"], bbox["y"], bbox["width"], bbox["height"], 1.0], dtype=np.float32)
+        feature = np.asarray(
+            [bbox["x"], bbox["y"], bbox["width"], bbox["height"], 1.0],
+            dtype=np.float32,
+        )
         return feature / np.linalg.norm(feature)
 
     def status(self) -> dict:
         return {"ready": True, "backend": "fake", "embedding_count": 0}
 
 
-def detection(x: float, score: float = 0.9, width: float = 0.20, height: float = 0.50) -> dict:
+def detection(
+    x: float,
+    score: float = 0.9,
+    width: float = 0.20,
+    height: float = 0.50,
+) -> dict:
     return {
         "score": score,
         "bbox": {"x": x, "y": 0.30, "width": width, "height": height},
@@ -53,9 +60,30 @@ def tracker() -> MultiObjectTracker:
     )
 
 
+def confirmed_track(
+    track_id: int,
+    item: dict,
+    *,
+    now: float,
+    hits: int,
+) -> Track:
+    track = Track.create(track_id, item, now, gallery_size=10)
+    track.state = "confirmed"
+    track.hits = hits
+    return track
+
+
 def test_hungarian_rectangular_assignment() -> None:
-    costs = np.asarray([[0.1, 0.9, 0.8], [0.7, 0.2, 0.6]], dtype=np.float64)
+    costs = np.asarray(
+        [[0.1, 0.9, 0.8], [0.7, 0.2, 0.6]],
+        dtype=np.float64,
+    )
     assert sorted(hungarian_assign(costs, max_cost=0.5)) == [(0, 0), (1, 1)]
+
+
+def test_hungarian_returns_when_every_pair_is_blocked() -> None:
+    costs = np.full((2, 3), BLOCKED_COST, dtype=np.float64)
+    assert hungarian_assign(costs, max_cost=0.8) == []
 
 
 def test_point_in_polygon() -> None:
@@ -83,8 +111,13 @@ def test_track_confirms_and_recovers_after_short_occlusion() -> None:
     tracks, events = runtime.update([detection(0.22)], frame, now=1.8)
     assert tracks[0]["track_id"] == 1
     assert tracks[0]["state"] == "confirmed"
-    recovered = [payload for event_type, payload in events if event_type == "track_recovered"]
+    recovered = [
+        payload
+        for event_type, payload in events
+        if event_type == "track_recovered"
+    ]
     assert recovered and recovered[0]["lost_seconds"] >= 0.5
+    assert tracks[0]["recovered_count"] == 1
 
 
 def test_track_removed_after_occlusion_timeout() -> None:
@@ -100,32 +133,23 @@ def test_track_removed_after_occlusion_timeout() -> None:
 def test_primary_selector_uses_hysteresis() -> None:
     presence = PresenceSettings()
     selector = PrimarySelector(
-        PrimarySettings(acquire_stable_seconds=0.2, challenger_margin=0.2, challenger_hold_seconds=0.3),
+        PrimarySettings(
+            acquire_stable_seconds=0.2,
+            challenger_margin=0.2,
+            challenger_hold_seconds=0.3,
+        ),
         presence,
     )
-    first = Track(
-        track_id=1,
-        kalman=KalmanXYWH(bbox_to_xywh(detection(0.35)["bbox"])),
-        score=0.9,
-        created_at=1.0,
-        last_seen_at=1.0,
-        last_prediction_at=1.0,
-        state="confirmed",
-        hits=20,
-    )
+    first = confirmed_track(1, detection(0.35), now=1.0, hits=20)
     selector.update([first], 1.0)
     primary_id, event = selector.update([first], 1.25)
     assert primary_id == 1
     assert event and event["current_track_id"] == 1
 
-    second = Track(
-        track_id=2,
-        kalman=KalmanXYWH(bbox_to_xywh(detection(0.30, width=0.45, height=0.65)["bbox"])),
-        score=0.95,
-        created_at=1.0,
-        last_seen_at=1.3,
-        last_prediction_at=1.3,
-        state="confirmed",
+    second = confirmed_track(
+        2,
+        detection(0.30, width=0.45, height=0.65),
+        now=1.3,
         hits=30,
     )
     primary_id, _ = selector.update([first, second], 1.3)
