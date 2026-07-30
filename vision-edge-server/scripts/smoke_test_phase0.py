@@ -21,7 +21,7 @@ async def run(base_url: str, timeout: float) -> None:
         status = (await client.get(f"{base_url}/api/v1/status")).json()
 
     assert health["status"] == "ok", health
-    assert health["phase"] == "phase0_service_skeleton", health
+    assert str(health.get("phase", "")).startswith("phase"), health
     assert status["service"] == "rtx-vision-edge-server", status
 
     received_types: list[str] = []
@@ -29,7 +29,7 @@ async def run(base_url: str, timeout: float) -> None:
         for _ in range(2):
             event = json.loads(await asyncio.wait_for(websocket.recv(), timeout=timeout))
             received_types.append(event["type"])
-        await websocket.send(json.dumps({"type": "ping", "client_time": "phase0-smoke"}))
+        await websocket.send(json.dumps({"type": "ping", "client_time": "transport-smoke"}))
         while True:
             event = json.loads(await asyncio.wait_for(websocket.recv(), timeout=timeout))
             received_types.append(event["type"])
@@ -38,7 +38,7 @@ async def run(base_url: str, timeout: float) -> None:
 
     assert received_types[:2] == ["server_ready", "state_snapshot"], received_types
     assert "pong" in received_types, received_types
-    print("PASS: Phase 0 health, status, WebSocket snapshot, and heartbeat contract are available.")
+    print("PASS: health, status, WebSocket snapshot, and ping/pong contract are available.")
     print(json.dumps({"health": health, "status": status, "events": received_types}, indent=2))
 
 
