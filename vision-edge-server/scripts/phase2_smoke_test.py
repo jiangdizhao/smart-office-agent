@@ -11,6 +11,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the live Phase 1 + Phase 2 pipeline.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8015")
     parser.add_argument("--timeout-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--require-osnet",
+        action="store_true",
+        help="Fail unless the neural OSNet ONNX appearance backend is active.",
+    )
     args = parser.parse_args()
     base_url = args.base_url.rstrip("/")
     deadline = time.monotonic() + args.timeout_seconds
@@ -27,6 +32,9 @@ def main() -> int:
                 detector = vision.get("detector") or {}
                 tracking = vision.get("tracking") or {}
                 appearance = tracking.get("appearance") or {}
+                appearance_ok = appearance.get("ready") and (
+                    not args.require_osnet or appearance.get("backend") == "osnet_onnx"
+                )
                 if (
                     vision.get("status") == "ready"
                     and camera.get("running")
@@ -34,14 +42,18 @@ def main() -> int:
                     and detector.get("ready")
                     and int(detector.get("inference_count") or 0) > 0
                     and int(tracking.get("update_count") or 0) > 0
-                    and appearance.get("ready")
+                    and appearance_ok
                 ):
                     break
             except Exception:
                 pass
             time.sleep(1.0)
         else:
-            print("FAIL: Phase 1 + Phase 2 did not become ready before timeout.", file=sys.stderr)
+            requirement = " with OSNet" if args.require_osnet else ""
+            print(
+                f"FAIL: Phase 1 + Phase 2{requirement} did not become ready before timeout.",
+                file=sys.stderr,
+            )
             print(last_status, file=sys.stderr)
             return 1
 
