@@ -8,11 +8,21 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from app.config import AppConfig, load_config
 from app.events import EventFactory, WebSocketHub
 from app.logging_json import configure_logging
 from app.runtime import VisionRuntime
+
+
+class IdentityEnrollmentRequest(BaseModel):
+    track_id: int = Field(ge=1)
+    display_name: str = Field(min_length=1, max_length=120)
+    consent: bool
+    external_id: str | None = Field(default=None, max_length=200)
+    identity_id: str | None = Field(default=None, max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -65,7 +75,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=loaded_config.server.cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -125,6 +135,38 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/v1/tracks", tags=["vision"])
     async def tracks() -> dict[str, Any]:
         return runtime.vision.tracks_snapshot()
+
+    @app.get("/api/v1/faces", tags=["face"])
+    async def faces() -> dict[str, Any]:
+        return runtime.vision.faces_snapshot()
+
+    @app.get("/api/v1/identities", tags=["identity"])
+    async def identities() -> dict[str, Any]:
+        return runtime.vision.identities_snapshot()
+
+    @app.post("/api/v1/identities/enroll", tags=["identity"])
+    async def enroll_identity(request: IdentityEnrollmentRequest) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                runtime.vision.enroll_identity,
+                track_id=request.track_id,
+                display_name=request.display_name,
+                consent=request.consent,
+                external_id=request.external_id,
+                metadata=request.metadata,
+                identity_id=request.identity_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.delete("/api/v1/identities/{identity_id}", tags=["identity"])
+    async def delete_identity(identity_id: str) -> dict[str, Any]:
+        deleted = await asyncio.to_thread(runtime.vision.delete_identity, identity_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Identity was not found")
+        return {"deleted": True, "identity_id": identity_id}
 
     @app.get("/api/v1/debug/frame.jpg", tags=["debug"])
     async def debug_frame() -> Response:
