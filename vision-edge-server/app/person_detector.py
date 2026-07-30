@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from app.config import DetectionSettings
+from app.ort_cuda import prepare_cuda_runtime
 
 
 class DetectorUnavailableError(RuntimeError):
@@ -88,6 +89,7 @@ class YoloXPersonDetector:
         self.last_error: str | None = None
         self.inference_count = 0
         self.last_timings: dict[str, float] | None = None
+        self.cuda_runtime: dict[str, Any] | None = None
 
     @property
     def ready(self) -> bool:
@@ -106,12 +108,20 @@ class YoloXPersonDetector:
                 f"ONNX Runtime import failed: {type(exc).__name__}: {exc}"
             ) from exc
 
+        self.cuda_runtime = prepare_cuda_runtime(ort)
         available = set(ort.get_available_providers())
         providers = [provider for provider in self.settings.providers if provider in available]
         if self.settings.require_cuda and "CUDAExecutionProvider" not in providers:
             raise DetectorUnavailableError(
                 "CUDAExecutionProvider is required but unavailable. "
                 f"Available providers: {sorted(available)}"
+            )
+        if self.settings.require_cuda and not self.cuda_runtime.get("ready"):
+            detail = self.cuda_runtime.get("provider_library", {}).get("error")
+            raise DetectorUnavailableError(
+                "CUDAExecutionProvider is advertised by ONNX Runtime, but its runtime DLLs "
+                "cannot be loaded. Run scripts/install_ort_cuda_runtime.ps1. "
+                f"Provider library error: {detail}"
             )
         if not providers:
             raise DetectorUnavailableError(
@@ -122,7 +132,8 @@ class YoloXPersonDetector:
             self.session = ort.InferenceSession(str(self.model_path), providers=providers)
         except Exception as exc:
             raise DetectorUnavailableError(
-                f"Failed to load YOLOX model: {type(exc).__name__}: {exc}"
+                "Failed to load YOLOX model. Run scripts/install_ort_cuda_runtime.ps1 and "
+                f"scripts/verify_ort_cuda.py. Original error: {type(exc).__name__}: {exc}"
             ) from exc
 
         session_providers = list(self.session.get_providers())
@@ -130,7 +141,8 @@ class YoloXPersonDetector:
             self.session = None
             raise DetectorUnavailableError(
                 "YOLOX session did not activate CUDAExecutionProvider. "
-                f"Session providers: {session_providers}"
+                f"Session providers: {session_providers}. "
+                "Run scripts/install_ort_cuda_runtime.ps1."
             )
 
         inputs = self.session.get_inputs()
@@ -249,6 +261,7 @@ class YoloXPersonDetector:
             "model_exists": self.model_path.exists(),
             "providers": self.providers,
             "configured_providers": self.settings.providers,
+            "cuda_runtime": self.cuda_runtime,
             "input_size": [self.settings.input_height, self.settings.input_width],
             "inference_hz": self.settings.inference_hz,
             "score_threshold": self.settings.score_threshold,
