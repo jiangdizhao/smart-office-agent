@@ -8,7 +8,8 @@ from typing import Any
 
 from app.config import AppConfig
 from app.events import EventFactory, WebSocketHub
-from app.hardware import probe_camera, probe_gpu
+from app.gpu_probe import probe_gpu
+from app.hardware import probe_camera
 from app.vision_pipeline import VisionPipeline
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,9 @@ class VisionRuntime:
         if self.config.vision.enabled:
             vision_status = self.vision.status()
             if vision_status.get("status") != "ready":
-                reasons.append(f"vision pipeline is not ready (status={vision_status.get('status')})")
+                reasons.append(
+                    f"vision pipeline is not ready (status={vision_status.get('status')})"
+                )
         elif self.config.camera.enabled and self.camera is not None and not self.camera.get("ok"):
             camera_status = str(self.camera.get("status") or "unknown")
             reasons.append(f"camera is not realtime-ready (status={camera_status})")
