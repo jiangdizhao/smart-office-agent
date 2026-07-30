@@ -1,7 +1,8 @@
 param(
     [string]$PythonExe = "",
     [string]$BaseUrl = "http://127.0.0.1:8015",
-    [int]$TimeoutSeconds = 60
+    [int]$TimeoutSeconds = 60,
+    [switch]$RequireOsnet
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,12 +28,20 @@ Write-Host "Phase 1 + Phase 2 automated smoke test"
 Write-Host "Conda environment: $env:CONDA_DEFAULT_ENV"
 Write-Host "Python: $ActualPython"
 Write-Host "Server: $BaseUrl"
+Write-Host "Require OSNet: $RequireOsnet"
+
+$Arguments = @(
+    ".\scripts\phase2_smoke_test.py",
+    "--base-url", $BaseUrl,
+    "--timeout-seconds", $TimeoutSeconds
+)
+if ($RequireOsnet) {
+    $Arguments += "--require-osnet"
+}
 
 Push-Location $ServerRoot
 try {
-    & $ResolvedPython .\scripts\phase2_smoke_test.py `
-        --base-url $BaseUrl `
-        --timeout-seconds $TimeoutSeconds
+    & $ResolvedPython @Arguments
     exit $LASTEXITCODE
 }
 finally {
