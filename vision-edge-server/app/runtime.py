@@ -31,7 +31,8 @@ class VisionRuntime:
         if self.config.gpu.require_cuda and not bool((self.gpu or {}).get("ok")):
             reasons.append("required CUDA provider is not ready")
         if self.config.camera.enabled and self.camera is not None and not self.camera.get("ok"):
-            reasons.append("camera probe did not produce a frame")
+            camera_status = str(self.camera.get("status") or "unknown")
+            reasons.append(f"camera is not realtime-ready (status={camera_status})")
         return not reasons, reasons
 
     def public_status(self) -> dict[str, Any]:
