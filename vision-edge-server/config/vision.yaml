@@ -140,7 +140,6 @@ face:
   top_k: 5000
   max_tracks_per_cycle: 4
   person_crop_margin: 0.04
-<<<<<<< HEAD
   max_face_center_y_ratio: 0.76
 
   recognition_min_face_width_pixels: 56
@@ -164,21 +163,6 @@ face:
   min_quality_score: 0.52
   ready_stable_frames: 2
   stale_seconds: 1.5
-=======
-  max_face_center_y_ratio: 0.72
-  min_face_width_pixels: 80
-  min_face_height_pixels: 80
-  min_sharpness: 30
-  sharpness_full_scale: 180
-  min_brightness: 35
-  max_brightness: 225
-  max_abs_roll_degrees: 28
-  max_nose_offset_ratio: 0.38
-  min_frontal_score: 0.55
-  min_quality_score: 0.58
-  ready_stable_frames: 3
-  stale_seconds: 1.0
->>>>>>> a66fbe8 (vision.yaml)
 
 identity:
   enabled: true
