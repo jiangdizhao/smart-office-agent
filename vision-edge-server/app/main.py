@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.client_protocol import build_client_state
 from app.config import AppConfig, load_config
 from app.events import EventFactory, WebSocketHub
 from app.logging_json import configure_logging
@@ -40,6 +41,19 @@ def _require_local_identity_operator(request: Request) -> None:
             status_code=403,
             detail="Identity enrollment and deletion are restricted to the local RTX operator.",
         )
+
+
+def _client_state(runtime: VisionRuntime) -> dict[str, Any]:
+    ready, reasons = runtime.readiness()
+    return build_client_state(
+        service=runtime.config.service_name,
+        version=runtime.config.version,
+        phase=runtime.config.phase,
+        ready=ready,
+        degraded_reasons=reasons,
+        tracks_snapshot=runtime.vision.tracks_snapshot(),
+        uptime_seconds=runtime.uptime_seconds(),
+    )
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -121,6 +135,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/v1/status", tags=["system"])
     async def status() -> dict[str, Any]:
         return runtime.public_status()
+
+    @app.get("/api/v1/client/state", tags=["client"])
+    async def client_state() -> dict[str, Any]:
+        return _client_state(runtime)
 
     @app.get("/api/v1/config/public", tags=["system"])
     async def public_config() -> dict[str, Any]:
@@ -250,11 +268,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                         "service": loaded_config.service_name,
                         "version": loaded_config.version,
                         "phase": loaded_config.phase,
+                        "client_schema_version": "phase5.1",
                     },
                 )
             )
             await websocket.send_json(
                 event_factory.build("state_snapshot", runtime.public_status())
+            )
+            await websocket.send_json(
+                event_factory.build("client_state_snapshot", _client_state(runtime))
             )
             while True:
                 raw = await websocket.receive_text()
@@ -280,6 +302,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     await websocket.send_json(
                         event_factory.build(
                             "state_snapshot", runtime.public_status()
+                        )
+                    )
+                elif message_type == "get_client_state":
+                    await websocket.send_json(
+                        event_factory.build(
+                            "client_state_snapshot", _client_state(runtime)
                         )
                     )
                 else:
@@ -310,7 +338,7 @@ async def _heartbeat_loop(runtime: VisionRuntime) -> None:
                     "uptime_seconds": runtime.uptime_seconds(),
                     "ready": runtime.readiness()[0],
                     "websocket_clients": runtime.hub.client_count,
-                    "vision": runtime.vision.status(),
+                    "client_schema_version": "phase5.1",
                 },
             )
         )
