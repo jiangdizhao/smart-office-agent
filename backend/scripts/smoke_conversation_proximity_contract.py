@@ -62,6 +62,7 @@ def main() -> None:
     assert "Would you like to try a quick demonstration?" in greeting_payload["greeting"]
     assert greeting_payload["conversation_phase"] == "awaiting_user"
     assert greeting_payload["proactive_reception"] is True
+    assert greeting_payload["registered_return"] is False
 
     duplicate = client.post(
         f"/api/conversations/{conversation_id}/proximity-greeting",
@@ -84,8 +85,10 @@ def main() -> None:
         },
     )
     returning.raise_for_status()
-    assert returning.json()["greeting"].startswith("Welcome back.")
-    assert returning.json()["conversation_phase"] == "awaiting_user"
+    returning_payload = returning.json()
+    assert returning_payload["greeting"].startswith("Welcome back.")
+    assert "I am Sara" in returning_payload["greeting"]
+    assert returning_payload["conversation_phase"] == "awaiting_user"
 
     registered = client.post(
         "/api/conversations/conversation-registered/proximity-greeting",
@@ -100,7 +103,30 @@ def main() -> None:
         },
     )
     registered.raise_for_status()
-    assert registered.json()["greeting"].startswith("Welcome back, Rico.")
+    registered_payload = registered.json()
+    assert registered_payload["greeting"] == "Welcome back, Rico."
+    assert "I am Sara" not in registered_payload["greeting"]
+    assert "PowerPoint" not in registered_payload["greeting"]
+    assert registered_payload["registered_return"] is True
+    assert registered_payload["conversation_phase"] == "awaiting_user"
+
+    registered_zh = client.post(
+        "/api/conversations/conversation-registered-zh/proximity-greeting",
+        json={
+            **detection,
+            "language": "zh",
+            "visitor_session_id": "visitor_rico_zh",
+            "returning_visitor": True,
+            "greeting_kind": "registered_identity",
+            "identity_id": "person_rico",
+            "display_name": "Rico",
+            "identity_similarity": 0.81,
+        },
+    )
+    registered_zh.raise_for_status()
+    registered_zh_payload = registered_zh.json()
+    assert registered_zh_payload["greeting"] == "欢迎回来，Rico。"
+    assert "我是 Sara" not in registered_zh_payload["greeting"]
 
     started = client.post(
         f"/api/conversations/{conversation_id}/turn-start",
@@ -151,7 +177,6 @@ def main() -> None:
     detector = read("ui/smart-office-ui/src/vision/proximityFaceMonitor.ts")
     remote_client = read("ui/smart-office-ui/src/vision/remoteVisionClient.ts")
     proximity_hook = read("ui/smart-office-ui/src/vision/useProximityGreeting.ts")
-    listening_gate = read("ui/smart-office-ui/src/vision/proactiveListeningGate.ts")
     proactive_loop = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
     stage1_css = read("ui/smart-office-ui/src/virtual-host/ProactiveReceptionStage1.css")
     main_tsx = read("ui/smart-office-ui/src/main.tsx")
@@ -198,38 +223,29 @@ def main() -> None:
         assert needle in remote_client, f"Missing remote vision client contract: {needle}"
 
     for needle in (
+        "PRIMARY_ABSENCE_GRACE_MS = 2_000",
+        "primaryBoxVisibleRef",
+        "visitorSessionActiveRef",
+        "schedulePrimaryAbsence",
+        "primary-box-absence-grace-started",
+        "primary-box-absence-cancelled",
+        "voiceOutputManager.speak",
+        "欢迎下次再来。",
+        "Welcome to visit again next time.",
+        "captureAutomaticRealtimeTurn",
+        "proactive-reception-started",
+        "remote_primary_box_absent",
+    ):
+        assert needle in proximity_hook, f"Missing primary-box session contract: {needle}"
+
+    for removed in (
         "ProactiveListeningGate",
-        "enterBodyRatio",
-        "exitBodyRatio",
-        "enterStableMs",
-        "exitGraceMs",
-        "face_missing",
-        "visitor_too_far",
-        "primary_absent",
+        "VITE_PROACTIVE_LISTEN_ENTER_BODY_RATIO",
+        "VITE_PROACTIVE_LISTEN_EXIT_BODY_RATIO",
         "face_missing_grace",
         "visitor_too_far_grace",
     ):
-        assert needle in listening_gate, f"Missing listening-gate hysteresis contract: {needle}"
-
-    for needle in (
-        "smartoffice:host-intro-start",
-        "Welcome to our office.",
-        "Welcome back",
-        "VITE_VISION_SOURCE",
-        "greetedVisitRef",
-        "captureAutomaticRealtimeTurn",
-        "proactive-reception-started",
-        "proactive-reception-listening-suspended",
-        "proactive-listening-gate",
-        "VITE_PROACTIVE_LISTEN_ENTER_BODY_RATIO",
-        "VITE_PROACTIVE_LISTEN_EXIT_BODY_RATIO",
-        "VITE_PROACTIVE_LISTEN_MIN_FACE_CONFIDENCE",
-        "VITE_PROACTIVE_LISTEN_ENTER_STABLE_MS",
-        "VITE_PROACTIVE_LISTEN_EXIT_GRACE_MS",
-        "VITE_PROACTIVE_SESSION_ABSENCE_SECONDS",
-        "scheduleVisitorAbsence",
-    ):
-        assert needle in proximity_hook, f"Missing presence/listening separation contract: {needle}"
+        assert removed not in proximity_hook, f"Obsolete listening gate remains: {removed}"
 
     for needle in (
         "END_SILENCE_MS = 900",
@@ -237,10 +253,11 @@ def main() -> None:
         "controller().beginListening()",
         "controller().endListening()",
         "realtimeAgent.abortCapture()",
-        "listeningGate",
-        "kind: 'gated'",
     ):
-        assert needle in proactive_loop, f"Missing gated automatic Realtime voice-turn contract: {needle}"
+        assert needle in proactive_loop, f"Missing automatic Realtime voice-turn contract: {needle}"
+
+    assert "kind: 'gated'" not in proactive_loop
+    assert "listeningGate" not in proactive_loop
 
     assert ".voice-primary-row" in stage1_css
     assert ".conversation-record-button" in stage1_css
@@ -263,8 +280,8 @@ def main() -> None:
     assert "RTX 视觉服务器" in drawer
     assert "body_area_ratio" in drawer
 
-    print("PASS: proactive reception keeps the visitor session while face/distance hysteresis gates the real GPT Realtime microphone.")
-    print("NOTE: Real LAN, camera geometry, room-noise VAD thresholds, local video assets, and GPT Realtime playback require local acceptance.")
+    print("PASS: primary-box presence keeps session/listening alive; 2-second absence ends it with a bilingual farewell; registered visitors get concise greetings.")
+    print("NOTE: Real LAN, red-box continuity, room-noise VAD thresholds, local video assets, and GPT Realtime playback require local acceptance.")
 
 
 if __name__ == "__main__":
