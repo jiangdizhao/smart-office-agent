@@ -89,6 +89,14 @@ export default function LiveCaption({
     state === 'speaking' || state === 'executing' || (state === 'idle' && showAssistant)
 
   if (isUserCaption) {
+    const waitingForSpeech = state === 'listening' && !userText.trim()
+    const role = waitingForSpeech
+      ? language === 'zh'
+        ? '麦克风已开启'
+        : 'Microphone on'
+      : language === 'zh'
+        ? '您说'
+        : 'You said'
     const text =
       userText ||
       (language === 'zh'
@@ -101,7 +109,7 @@ export default function LiveCaption({
 
     return (
       <div className={`live-caption user-live-caption caption-${state}`} aria-live="polite">
-        <span className="caption-role">{language === 'zh' ? '您说' : 'You said'}</span>
+        <span className="caption-role">{role}</span>
         <p className="user-caption-text">“{text}”</p>
       </div>
     )
@@ -126,7 +134,7 @@ export default function LiveCaption({
 
   return (
     <div className="live-caption welcome-caption" aria-live="polite">
-      <span className="caption-role">{language === 'zh' ? 'Smart Office' : 'Smart Office'}</span>
+      <span className="caption-role">Smart Office</span>
       <p>{welcomeText}</p>
     </div>
   )
