@@ -120,7 +120,11 @@ class WebSocketHub:
                     )
                 finally:
                     queue.task_done()
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # The finally block removes the stale client. One failed client can
+            # never delay another client or the Vision producer thread.
             pass
         finally:
             async with self._lock:
