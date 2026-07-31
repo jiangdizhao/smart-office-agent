@@ -48,11 +48,28 @@ class InMemoryStateStore:
             owner_visit_id=owner_visit_id,
             owner_actor_type=owner_actor_type,
         )
-
         with self._lock:
             self._tasks[task_id] = task
-
         return task
+
+    def bind_task_owner(
+        self,
+        task_id: str,
+        *,
+        conversation_id: str,
+        visit_id: str | None,
+        actor_type: str | None,
+    ) -> TaskSession | None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            task.owner_conversation_id = conversation_id
+            task.owner_visit_id = visit_id
+            task.owner_actor_type = actor_type
+            task.detached_from_visit = False
+            task.updated_at = utc_now()
+            return task
 
     def get_task(self, task_id: str) -> TaskSession | None:
         with self._lock:
@@ -118,7 +135,6 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             updated = utc_now()
             task.status = status
             task.updated_at = updated
@@ -156,12 +172,10 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             updated = utc_now()
             for step in task.steps:
                 if step.step_id != step_id:
                     continue
-
                 step.status = status
                 step.message = message
                 if result is not None:
@@ -172,7 +186,6 @@ class InMemoryStateStore:
                     step.finished_at = updated
                 task.updated_at = updated
                 return task
-
             return task
 
     def update_pending_steps(
@@ -186,7 +199,6 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             updated = utc_now()
             for step in task.steps:
                 if step.status in {"pending", "running", "waiting_approval", "verifying"}:
@@ -202,7 +214,6 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             task.events.append(event)
             task.updated_at = utc_now()
             return task
