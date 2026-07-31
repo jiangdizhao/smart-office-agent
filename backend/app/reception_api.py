@@ -200,7 +200,8 @@ def proximity_greeting(
     )
 
     spoken_text = greeting
-    if triggered:
+    registered_return = request.greeting_kind == "registered_identity"
+    if triggered and not registered_return:
         intro = _proactive_reception_intro(request.language)
         state = conversation_store.complete_assistant_turn(
             conversation_id,
@@ -218,6 +219,7 @@ def proximity_greeting(
         "reason": reason,
         "conversation_phase": state.conversation_phase,
         "proactive_reception": triggered,
+        "registered_return": registered_return,
     }
 
 
