@@ -73,14 +73,18 @@ def test_camera_selection_prefers_realtime_then_resolution_match() -> None:
     assert selected["requested"]["fps"] == 15
 
 
-def test_event_sequence_is_monotonic() -> None:
+def test_event_sequence_is_monotonic_and_boot_scoped() -> None:
     factory = EventFactory("test")
     first = factory.build("one")
     second = factory.build("two")
-    assert first["protocol_version"] == "1.0"
+    assert first["protocol_version"] == "2.0"
+    assert first["server_instance_id"].startswith("boot_")
+    assert first["server_instance_id"] == second["server_instance_id"]
     assert first["sequence"] == 1
     assert second["sequence"] == 2
     assert first["event_id"] != second["event_id"]
+    assert factory.next_snapshot_revision() == 1
+    assert factory.next_snapshot_revision() == 2
 
 
 def test_http_and_websocket_contract() -> None:
@@ -98,6 +102,8 @@ def test_http_and_websocket_contract() -> None:
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json()["status"] == "ok"
+        assert health.json()["server_instance_id"].startswith("boot_")
+        assert health.json()["client_schema_version"] == "phase6.0"
 
         status = client.get("/api/v1/status")
         assert status.status_code == 200
@@ -105,14 +111,22 @@ def test_http_and_websocket_contract() -> None:
 
         client_state = client.get("/api/v1/client/state")
         assert client_state.status_code == 200
-        assert client_state.json()["schema_version"] == "phase6.0"
+        state_payload = client_state.json()
+        assert state_payload["schema_version"] == "phase6.0"
+        assert state_payload["server_instance_id"].startswith("boot_")
+        assert state_payload["snapshot_revision"] >= 1
 
         with client.websocket_connect("/ws/v1/events") as websocket:
-            assert websocket.receive_json()["type"] == "server_ready"
+            ready = websocket.receive_json()
+            assert ready["type"] == "server_ready"
+            assert ready["protocol_version"] == "2.0"
+            assert ready["server_instance_id"].startswith("boot_")
+
             assert websocket.receive_json()["type"] == "state_snapshot"
             initial_client_state = websocket.receive_json()
             assert initial_client_state["type"] == "client_state_snapshot"
             assert initial_client_state["payload"]["schema_version"] == "phase6.0"
+            assert initial_client_state["payload"]["snapshot_revision"] >= 1
 
             websocket.send_json({"type": "ping", "client_time": "test"})
             pong = websocket.receive_json()
@@ -123,3 +137,7 @@ def test_http_and_websocket_contract() -> None:
             refreshed = websocket.receive_json()
             assert refreshed["type"] == "client_state_snapshot"
             assert refreshed["payload"]["schema_version"] == "phase6.0"
+            assert (
+                refreshed["payload"]["snapshot_revision"]
+                > initial_client_state["payload"]["snapshot_revision"]
+            )
