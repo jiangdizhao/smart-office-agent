@@ -7,9 +7,20 @@ export type RemoteVisionStatus =
   | 'offline'
   | 'stopped'
 
+export type VisitorGreetingKind =
+  | 'new_anonymous'
+  | 'returning_anonymous'
+  | 'registered_identity'
+
 export type RemoteVisionDetection = ProximityDetection & {
   track_id: number
   visitor_session_id: string
+  provisional_session_id?: string | null
+  session_stable: boolean
+  session_age_seconds: number
+  session_recovery_count: number
+  returning_visitor: boolean
+  greeting_kind: VisitorGreetingKind
   track_state?: string | null
   visible: boolean
   primary: boolean
@@ -56,6 +67,12 @@ type RemoteIdentity = {
 type RemoteVisitor = {
   track_id?: number
   visitor_session_id?: string | null
+  provisional_session_id?: string | null
+  session_stable?: boolean
+  session_age_seconds?: number
+  session_recovery_count?: number
+  returning_visitor?: boolean
+  greeting_kind?: VisitorGreetingKind
   state?: string | null
   visible?: boolean
   primary?: boolean
@@ -110,6 +127,12 @@ function optionalNumber(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null
 }
 
+function greetingKind(value: unknown): VisitorGreetingKind {
+  if (value === 'registered_identity') return 'registered_identity'
+  if (value === 'returning_anonymous') return 'returning_anonymous'
+  return 'new_anonymous'
+}
+
 export function remoteVisionUrl(): string {
   const configured = String(import.meta.env.VITE_VISION_SERVER_WS ?? '').trim()
   if (configured) return configured
@@ -146,6 +169,12 @@ function toDetection(
     detector: 'rtx-vision-phase5',
     track_id: trackId,
     visitor_session_id: sessionId,
+    provisional_session_id: visitor.provisional_session_id ?? null,
+    session_stable: Boolean(visitor.session_stable),
+    session_age_seconds: Math.max(0, Number(visitor.session_age_seconds) || 0),
+    session_recovery_count: Math.max(0, Number(visitor.session_recovery_count) || 0),
+    returning_visitor: Boolean(visitor.returning_visitor),
+    greeting_kind: greetingKind(visitor.greeting_kind),
     track_state: visitor.state ?? null,
     visible: Boolean(visitor.visible),
     primary: Boolean(visitor.primary),
