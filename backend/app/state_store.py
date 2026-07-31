@@ -29,6 +29,9 @@ class InMemoryStateStore:
         user_request: str,
         execute: bool,
         task_graph: TaskGraph,
+        owner_conversation_id: str | None = None,
+        owner_visit_id: str | None = None,
+        owner_actor_type: str | None = None,
     ) -> TaskSession:
         task_id = str(uuid4())
         now = task_graph.created_at
@@ -41,6 +44,9 @@ class InMemoryStateStore:
             created_at=now,
             updated_at=now,
             summary=f"Task graph created with {len(task_graph.steps)} planned step(s).",
+            owner_conversation_id=owner_conversation_id,
+            owner_visit_id=owner_visit_id,
+            owner_actor_type=owner_actor_type,
         )
 
         with self._lock:
@@ -55,6 +61,51 @@ class InMemoryStateStore:
     def list_tasks(self) -> list[TaskSession]:
         with self._lock:
             return list(self._tasks.values())
+
+    def tasks_for_visit(
+        self,
+        *,
+        conversation_id: str,
+        visit_id: str | None,
+    ) -> list[TaskSession]:
+        with self._lock:
+            return [
+                task
+                for task in self._tasks.values()
+                if task.owner_conversation_id == conversation_id
+                and (visit_id is None or task.owner_visit_id == visit_id)
+            ]
+
+    def cancel_tasks_for_visit(
+        self,
+        *,
+        conversation_id: str,
+        visit_id: str | None,
+        reason: str,
+    ) -> list[str]:
+        cancelled: list[str] = []
+        with self._lock:
+            now = utc_now()
+            for task in self._tasks.values():
+                if task.owner_conversation_id != conversation_id:
+                    continue
+                if visit_id is not None and task.owner_visit_id != visit_id:
+                    continue
+                if task.status in {"completed", "failed", "cancelled"}:
+                    continue
+                task.status = "cancelled"
+                task.summary = reason
+                task.updated_at = now
+                task.completed_at = now
+                task.approval_deadline_at = None
+                for step in task.steps:
+                    if step.status in {"pending", "running", "waiting_approval", "verifying"}:
+                        step.status = "cancelled"
+                        step.message = reason
+                        step.finished_at = now
+                    self._approvals.pop((task.task_id, step.step_id), None)
+                cancelled.append(task.task_id)
+        return cancelled
 
     def set_status(
         self,
@@ -73,8 +124,23 @@ class InMemoryStateStore:
             task.updated_at = updated
             if summary is not None:
                 task.summary = summary
+            if status != "waiting_approval":
+                task.approval_deadline_at = None
             if status in {"completed", "failed", "cancelled"}:
                 task.completed_at = updated
+            return task
+
+    def set_approval_deadline(
+        self,
+        task_id: str,
+        deadline: datetime | None,
+    ) -> TaskSession | None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            task.approval_deadline_at = deadline
+            task.updated_at = utc_now()
             return task
 
     def update_step(
@@ -127,6 +193,7 @@ class InMemoryStateStore:
                     step.status = status
                     step.message = message
                     step.finished_at = updated
+                    self._approvals.pop((task_id, step.step_id), None)
             task.updated_at = updated
             return task
 
@@ -147,6 +214,9 @@ class InMemoryStateStore:
         approval: ApprovalRequest,
     ) -> None:
         with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status != "waiting_approval":
+                return
             self._approvals[(task_id, step_id)] = approval
 
     def consume_approval(self, task_id: str, step_id: str) -> ApprovalRequest | None:
