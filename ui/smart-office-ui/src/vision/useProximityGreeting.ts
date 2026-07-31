@@ -9,6 +9,11 @@ import {
   type ProximityDetection,
   type ProximityDetectorStatus,
 } from './proximityFaceMonitor'
+import {
+  ProactiveListeningGate,
+  type ProactiveListeningGateConfig,
+  type ProactiveListeningGateSnapshot,
+} from './proactiveListeningGate'
 import { captureAutomaticRealtimeTurn } from './proactiveReceptionVoiceLoop'
 import {
   RemoteVisionClient,
@@ -20,10 +25,15 @@ import {
 const ENABLED_KEY = 'smartoffice_proximity_greeting_enabled'
 const REMOTE_FALLBACK_DELAY_MS = 8_000
 const REMOTE_ATTEMPT_COOLDOWN_MS = 2_000
-const REMOTE_REARM_ABSENCE_MS = 1_000
 const PROACTIVE_LOOP_POLL_MS = 200
 const PROACTIVE_SILENCE_RETRY_MS = 750
 const PROACTIVE_ERROR_RETRY_MS = 1_500
+const DEFAULT_SESSION_ABSENCE_SECONDS = 5
+const DEFAULT_LISTEN_ENTER_BODY_RATIO = 0.11
+const DEFAULT_LISTEN_EXIT_BODY_RATIO = 0.075
+const DEFAULT_LISTEN_MIN_FACE_CONFIDENCE = 0.2
+const DEFAULT_LISTEN_ENTER_STABLE_MS = 600
+const DEFAULT_LISTEN_EXIT_GRACE_MS = 1_200
 
 type VisionSourceMode = 'remote' | 'remote-with-fallback' | 'mediapipe' | 'disabled'
 export type ProximitySource = 'remote' | 'mediapipe' | 'disabled'
@@ -33,8 +43,61 @@ export type ProximityStatus =
   | 'fallback'
   | 'disabled'
 
+type ListeningPolicy = {
+  gateConfig: ProactiveListeningGateConfig
+  minimumFaceConfidence: number
+  sessionAbsenceMs: number
+}
+
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+}
+
+function envNumber(name: string, fallback: number): number {
+  const env = import.meta.env as unknown as Record<string, unknown>
+  const value = Number(env[name])
+  return Number.isFinite(value) ? value : fallback
+}
+
+function clamp(value: number): number {
+  return Math.max(0, Math.min(1, value))
+}
+
+function configuredListeningPolicy(): ListeningPolicy {
+  const enterBodyRatio = clamp(
+    envNumber('VITE_PROACTIVE_LISTEN_ENTER_BODY_RATIO', DEFAULT_LISTEN_ENTER_BODY_RATIO),
+  )
+  const exitBodyRatio = clamp(
+    envNumber('VITE_PROACTIVE_LISTEN_EXIT_BODY_RATIO', DEFAULT_LISTEN_EXIT_BODY_RATIO),
+  )
+  return {
+    gateConfig: {
+      enterBodyRatio,
+      exitBodyRatio: Math.min(enterBodyRatio, exitBodyRatio),
+      enterStableMs: Math.max(
+        0,
+        envNumber('VITE_PROACTIVE_LISTEN_ENTER_STABLE_MS', DEFAULT_LISTEN_ENTER_STABLE_MS),
+      ),
+      exitGraceMs: Math.max(
+        0,
+        envNumber('VITE_PROACTIVE_LISTEN_EXIT_GRACE_MS', DEFAULT_LISTEN_EXIT_GRACE_MS),
+      ),
+    },
+    minimumFaceConfidence: clamp(
+      envNumber(
+        'VITE_PROACTIVE_LISTEN_MIN_FACE_CONFIDENCE',
+        DEFAULT_LISTEN_MIN_FACE_CONFIDENCE,
+      ),
+    ),
+    sessionAbsenceMs:
+      Math.max(
+        1,
+        envNumber(
+          'VITE_PROACTIVE_SESSION_ABSENCE_SECONDS',
+          DEFAULT_SESSION_ABSENCE_SECONDS,
+        ),
+      ) * 1_000,
+  }
 }
 
 function greetFeatureEnabled(): boolean {
@@ -121,11 +184,14 @@ export function useProximityGreeting(
   const remoteRef = useRef<RemoteVisionClient | null>(null)
   const greetedVisitRef = useRef<string | null>(null)
   const activeRemoteSessionRef = useRef<string | null>(null)
-  const remoteAbsenceTimerRef = useRef<number | null>(null)
+  const visitorAbsenceTimerRef = useRef<number | null>(null)
   const pendingSessionsRef = useRef(new Set<string>())
   const lastAttemptAtRef = useRef(new Map<string, number>())
   const localGreetingInFlightRef = useRef(false)
   const visitorPresentRef = useRef(false)
+  const latestPrimaryDetectionRef = useRef<
+    ProximityDetection | RemoteVisionDetection | null
+  >(null)
   const proactiveSessionRef = useRef<string | null>(null)
   const proactiveLoopGenerationRef = useRef(0)
   const proactiveTurnAbortRef = useRef<AbortController | null>(null)
@@ -152,13 +218,14 @@ export function useProximityGreeting(
         featureAvailable ? '' : 'disabled by configuration; camera and remote vision are not started',
       )
       setLastDetection(null)
+      latestPrimaryDetectionRef.current = null
       monitorRef.current?.stop()
       monitorRef.current = null
       remoteRef.current?.stop()
       remoteRef.current = null
-      if (remoteAbsenceTimerRef.current !== null) {
-        window.clearTimeout(remoteAbsenceTimerRef.current)
-        remoteAbsenceTimerRef.current = null
+      if (visitorAbsenceTimerRef.current !== null) {
+        window.clearTimeout(visitorAbsenceTimerRef.current)
+        visitorAbsenceTimerRef.current = null
       }
       proactiveLoopGenerationRef.current += 1
       proactiveTurnAbortRef.current?.abort()
@@ -173,6 +240,46 @@ export function useProximityGreeting(
 
     let disposed = false
     let fallbackTimer: number | null = null
+    const listeningPolicy = configuredListeningPolicy()
+    const listeningGate = new ProactiveListeningGate(listeningPolicy.gateConfig)
+    let lastListeningGateSignature = ''
+
+    const evaluateListeningGate = (): ProactiveListeningGateSnapshot => {
+      const detection = latestPrimaryDetectionRef.current
+      const faceVisible = Boolean(
+        detection?.face_inside_body &&
+          Number(detection.face_confidence) >= listeningPolicy.minimumFaceConfidence,
+      )
+      const snapshot = listeningGate.update({
+        primaryPresent: visitorPresentRef.current,
+        faceVisible,
+        bodyAreaRatio: Number(detection?.body_area_ratio) || 0,
+      })
+      const signature = `${snapshot.eligible}:${snapshot.reason}`
+      if (signature !== lastListeningGateSignature) {
+        lastListeningGateSignature = signature
+        console.info('[ProximityDebug] proactive-listening-gate', {
+          visitorSessionId: proactiveSessionRef.current,
+          eligible: snapshot.eligible,
+          reason: snapshot.reason,
+          primaryPresent: snapshot.primaryPresent,
+          faceVisible: snapshot.faceVisible,
+          faceConfidence: Number(detection?.face_confidence) || 0,
+          minimumFaceConfidence: listeningPolicy.minimumFaceConfidence,
+          bodyAreaRatio: snapshot.bodyAreaRatio,
+          enterBodyRatio: snapshot.enterBodyRatio,
+          exitBodyRatio: snapshot.exitBodyRatio,
+          transitionAgeMs: Math.round(snapshot.transitionAgeMs),
+        })
+      }
+      return snapshot
+    }
+
+    const clearVisitorAbsenceTimer = (): void => {
+      if (visitorAbsenceTimerRef.current === null) return
+      window.clearTimeout(visitorAbsenceTimerRef.current)
+      visitorAbsenceTimerRef.current = null
+    }
 
     const markStandby = async (reason: string): Promise<void> => {
       const current = controllerRef.current
@@ -199,6 +306,7 @@ export function useProximityGreeting(
       proactiveTurnAbortRef.current = null
       const stoppedSession = proactiveSessionRef.current
       proactiveSessionRef.current = null
+      listeningGate.reset()
       await realtimeAgent.abortCapture().catch(() => undefined)
       await controllerRef.current.stopSpeaking().catch(() => undefined)
       if (restoreStandby) await markStandby(reason)
@@ -206,6 +314,29 @@ export function useProximityGreeting(
         reason,
         visitorSessionId: stoppedSession,
       })
+    }
+
+    const scheduleVisitorAbsence = (reason: string): void => {
+      if (visitorAbsenceTimerRef.current !== null) return
+      console.info('[ProximityDebug] proactive-session-absence-grace-started', {
+        reason,
+        visitorSessionId: activeRemoteSessionRef.current ?? proactiveSessionRef.current,
+        graceMs: listeningPolicy.sessionAbsenceMs,
+      })
+      visitorAbsenceTimerRef.current = window.setTimeout(() => {
+        visitorAbsenceTimerRef.current = null
+        visitorPresentRef.current = false
+        latestPrimaryDetectionRef.current = null
+        listeningGate.reset()
+        const absentSession = activeRemoteSessionRef.current
+        if (absentSession && greetedVisitRef.current === absentSession) {
+          greetedVisitRef.current = null
+        }
+        activeRemoteSessionRef.current = null
+        if (proactiveSessionRef.current) {
+          void stopProactiveReception(`${reason}_confirmed`, true)
+        }
+      }, listeningPolicy.sessionAbsenceMs)
     }
 
     const runProactiveReception = async (visitorSessionId: string): Promise<void> => {
@@ -223,6 +354,7 @@ export function useProximityGreeting(
         visitorPresentRef.current
       ) {
         const current = controllerRef.current
+        const gate = evaluateListeningGate()
         const readyForUser =
           current.conversationPhase === 'awaiting_user' &&
           current.panel === 'idle' &&
@@ -232,7 +364,7 @@ export function useProximityGreeting(
           !current.recordingActive &&
           !current.recordingSaving
 
-        if (!readyForUser) {
+        if (!readyForUser || !gate.eligible) {
           await wait(PROACTIVE_LOOP_POLL_MS)
           continue
         }
@@ -242,6 +374,7 @@ export function useProximityGreeting(
         const result = await captureAutomaticRealtimeTurn(
           () => controllerRef.current,
           turnAbort.signal,
+          evaluateListeningGate,
         )
         if (proactiveTurnAbortRef.current === turnAbort) {
           proactiveTurnAbortRef.current = null
@@ -265,6 +398,15 @@ export function useProximityGreeting(
             await stopProactiveReception('visitor_declined', true)
             break
           }
+          await wait(PROACTIVE_LOOP_POLL_MS)
+          continue
+        }
+
+        if (result.kind === 'gated') {
+          console.info('[ProximityDebug] proactive-reception-listening-suspended', {
+            visitorSessionId,
+            reason: result.reason,
+          })
           await wait(PROACTIVE_LOOP_POLL_MS)
           continue
         }
@@ -343,6 +485,10 @@ export function useProximityGreeting(
         localGreetingInFlightRef.current = true
       }
       lastAttemptAtRef.current.set(attemptKey, now)
+      latestPrimaryDetectionRef.current = detection
+      visitorPresentRef.current = true
+      clearVisitorAbsenceTimer()
+      evaluateListeningGate()
       const welcomeText = greetingText(detection, controllerRef.current.language)
       window.dispatchEvent(
         new CustomEvent('smartoffice:host-intro-start', {
@@ -354,7 +500,6 @@ export function useProximityGreeting(
         if (triggered) {
           const proactiveSessionId = visitorSessionId || '__local__'
           if (visitorSessionId) greetedVisitRef.current = visitorSessionId
-          visitorPresentRef.current = true
           void runProactiveReception(proactiveSessionId)
         } else {
           window.dispatchEvent(new CustomEvent('smartoffice:host-intro-cancel'))
@@ -384,10 +529,15 @@ export function useProximityGreeting(
         },
         (detection) => {
           setLastDetection(detection)
-          visitorPresentRef.current = Boolean(detection)
-          if (!detection && proactiveSessionRef.current) {
-            void stopProactiveReception('local_visitor_absent', true)
+          latestPrimaryDetectionRef.current = detection
+          if (detection) {
+            visitorPresentRef.current = true
+            clearVisitorAbsenceTimer()
+            evaluateListeningGate()
+            return
           }
+          evaluateListeningGate()
+          scheduleVisitorAbsence('local_visitor_absent')
         },
       )
       monitorRef.current = monitor
@@ -420,39 +570,34 @@ export function useProximityGreeting(
         },
         onDetection: (detection) => {
           setLastDetection(detection)
+          latestPrimaryDetectionRef.current = detection
           if (detection) {
             visitorPresentRef.current = true
-            if (remoteAbsenceTimerRef.current !== null) {
-              window.clearTimeout(remoteAbsenceTimerRef.current)
-              remoteAbsenceTimerRef.current = null
+            clearVisitorAbsenceTimer()
+            if (detection.visitor_session_id) {
+              activeRemoteSessionRef.current = detection.visitor_session_id
             }
-            activeRemoteSessionRef.current = detection.visitor_session_id
+            evaluateListeningGate()
             return
           }
-          if (remoteAbsenceTimerRef.current !== null) return
-          remoteAbsenceTimerRef.current = window.setTimeout(() => {
-            remoteAbsenceTimerRef.current = null
-            visitorPresentRef.current = false
-            const absentSession = activeRemoteSessionRef.current
-            if (absentSession && greetedVisitRef.current === absentSession) {
-              greetedVisitRef.current = null
-            }
-            activeRemoteSessionRef.current = null
-            if (proactiveSessionRef.current) {
-              void stopProactiveReception('remote_visitor_absent', true)
-            }
-          }, REMOTE_REARM_ABSENCE_MS)
+          evaluateListeningGate()
+          scheduleVisitorAbsence('remote_visitor_absent')
         },
         onGreetingCandidate: (detection: RemoteVisionDetection) => {
           void attemptGreeting(detection, detection.visitor_session_id)
         },
         onSessionExpired: (visitorSessionId) => {
           if (greetedVisitRef.current === visitorSessionId) greetedVisitRef.current = null
-          if (activeRemoteSessionRef.current === visitorSessionId) activeRemoteSessionRef.current = null
+          if (activeRemoteSessionRef.current === visitorSessionId) {
+            activeRemoteSessionRef.current = null
+          }
           pendingSessionsRef.current.delete(visitorSessionId)
           lastAttemptAtRef.current.delete(visitorSessionId)
           if (proactiveSessionRef.current === visitorSessionId) {
             visitorPresentRef.current = false
+            latestPrimaryDetectionRef.current = null
+            listeningGate.reset()
+            clearVisitorAbsenceTimer()
             void stopProactiveReception('remote_session_expired', true)
           }
         },
@@ -468,12 +613,11 @@ export function useProximityGreeting(
       proactiveTurnAbortRef.current = null
       proactiveSessionRef.current = null
       visitorPresentRef.current = false
+      latestPrimaryDetectionRef.current = null
+      listeningGate.reset()
       void realtimeAgent.abortCapture().catch(() => undefined)
       if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
-      if (remoteAbsenceTimerRef.current !== null) {
-        window.clearTimeout(remoteAbsenceTimerRef.current)
-        remoteAbsenceTimerRef.current = null
-      }
+      clearVisitorAbsenceTimer()
       monitorRef.current?.stop()
       monitorRef.current = null
       remoteRef.current?.stop()
