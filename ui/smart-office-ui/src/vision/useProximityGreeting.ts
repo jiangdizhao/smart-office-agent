@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import type { OfficeVoiceController } from '../voice/useOfficeVoiceController'
+import {
+  OFFICE_API_BASE,
+  type OfficeVoiceController,
+} from '../voice/useOfficeVoiceController'
+import { realtimeAgent } from '../voice/realtimeAgentRuntime'
 import {
   ProximityFaceMonitor,
   type ProximityDetection,
   type ProximityDetectorStatus,
 } from './proximityFaceMonitor'
+import { captureAutomaticRealtimeTurn } from './proactiveReceptionVoiceLoop'
 import {
   RemoteVisionClient,
   remoteVisionUrl,
@@ -16,6 +21,9 @@ const ENABLED_KEY = 'smartoffice_proximity_greeting_enabled'
 const REMOTE_FALLBACK_DELAY_MS = 8_000
 const REMOTE_ATTEMPT_COOLDOWN_MS = 2_000
 const REMOTE_REARM_ABSENCE_MS = 1_000
+const PROACTIVE_LOOP_POLL_MS = 200
+const PROACTIVE_SILENCE_RETRY_MS = 750
+const PROACTIVE_ERROR_RETRY_MS = 1_500
 
 type VisionSourceMode = 'remote' | 'remote-with-fallback' | 'mediapipe' | 'disabled'
 export type ProximitySource = 'remote' | 'mediapipe' | 'disabled'
@@ -24,6 +32,10 @@ export type ProximityStatus =
   | RemoteVisionStatus
   | 'fallback'
   | 'disabled'
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+}
 
 function greetFeatureEnabled(): boolean {
   const configured = String(import.meta.env.enable_greet ?? 'true').trim().toLowerCase()
@@ -54,6 +66,22 @@ function greetingText(
     }
   }
   return language === 'zh' ? '欢迎来到我们的办公室。' : 'Welcome to our office.'
+}
+
+function isDecline(text: string): boolean {
+  const clean = text
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[。！？!?，,；;:：]+$/g, '')
+  if (!clean) return false
+  return (
+    /^(不用|不需要|不了|不要|不想|暂时不用|先不用|没兴趣|不体验|拒绝|算了|谢谢(?:了)?(?:，|,|\s)*(?:不用|不了)?)$/.test(
+      clean,
+    ) ||
+    /^(no|no thanks|not now|maybe later|i(?:'m| am) not interested|i(?:'d| would) rather not|do not|don't|decline)$/.test(
+      clean,
+    )
+  )
 }
 
 const GREET_FEATURE_ENABLED = greetFeatureEnabled()
@@ -97,6 +125,10 @@ export function useProximityGreeting(
   const pendingSessionsRef = useRef(new Set<string>())
   const lastAttemptAtRef = useRef(new Map<string, number>())
   const localGreetingInFlightRef = useRef(false)
+  const visitorPresentRef = useRef(false)
+  const proactiveSessionRef = useRef<string | null>(null)
+  const proactiveLoopGenerationRef = useRef(0)
+  const proactiveTurnAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     controllerRef.current = controller
@@ -128,6 +160,12 @@ export function useProximityGreeting(
         window.clearTimeout(remoteAbsenceTimerRef.current)
         remoteAbsenceTimerRef.current = null
       }
+      proactiveLoopGenerationRef.current += 1
+      proactiveTurnAbortRef.current?.abort()
+      proactiveTurnAbortRef.current = null
+      proactiveSessionRef.current = null
+      visitorPresentRef.current = false
+      void realtimeAgent.abortCapture().catch(() => undefined)
       greetedVisitRef.current = null
       activeRemoteSessionRef.current = null
       return
@@ -135,6 +173,122 @@ export function useProximityGreeting(
 
     let disposed = false
     let fallbackTimer: number | null = null
+
+    const markStandby = async (reason: string): Promise<void> => {
+      const current = controllerRef.current
+      try {
+        await fetch(
+          `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(current.conversationId)}/standby`,
+          { method: 'POST' },
+        )
+      } catch {
+        // Local UI state and visitor-session rearm must not depend on this best-effort sync.
+      }
+      console.info('[ProximityDebug] proactive-reception-standby', {
+        reason,
+        visitorSessionId: proactiveSessionRef.current,
+      })
+    }
+
+    const stopProactiveReception = async (
+      reason: string,
+      restoreStandby: boolean,
+    ): Promise<void> => {
+      proactiveLoopGenerationRef.current += 1
+      proactiveTurnAbortRef.current?.abort()
+      proactiveTurnAbortRef.current = null
+      const stoppedSession = proactiveSessionRef.current
+      proactiveSessionRef.current = null
+      await realtimeAgent.abortCapture().catch(() => undefined)
+      await controllerRef.current.stopSpeaking().catch(() => undefined)
+      if (restoreStandby) await markStandby(reason)
+      console.info('[ProximityDebug] proactive-reception-stopped', {
+        reason,
+        visitorSessionId: stoppedSession,
+      })
+    }
+
+    const runProactiveReception = async (visitorSessionId: string): Promise<void> => {
+      proactiveLoopGenerationRef.current += 1
+      const generation = proactiveLoopGenerationRef.current
+      proactiveSessionRef.current = visitorSessionId
+      console.info('[ProximityDebug] proactive-reception-started', {
+        visitorSessionId,
+      })
+
+      while (
+        !disposed &&
+        generation === proactiveLoopGenerationRef.current &&
+        proactiveSessionRef.current === visitorSessionId &&
+        visitorPresentRef.current
+      ) {
+        const current = controllerRef.current
+        const readyForUser =
+          current.conversationPhase === 'awaiting_user' &&
+          current.panel === 'idle' &&
+          !current.active &&
+          !current.listening &&
+          !current.runtime.outputActive &&
+          !current.recordingActive &&
+          !current.recordingSaving
+
+        if (!readyForUser) {
+          await wait(PROACTIVE_LOOP_POLL_MS)
+          continue
+        }
+
+        const turnAbort = new AbortController()
+        proactiveTurnAbortRef.current = turnAbort
+        const result = await captureAutomaticRealtimeTurn(
+          () => controllerRef.current,
+          turnAbort.signal,
+        )
+        if (proactiveTurnAbortRef.current === turnAbort) {
+          proactiveTurnAbortRef.current = null
+        }
+
+        if (
+          disposed ||
+          generation !== proactiveLoopGenerationRef.current ||
+          proactiveSessionRef.current !== visitorSessionId ||
+          !visitorPresentRef.current
+        ) {
+          break
+        }
+
+        if (result.kind === 'heard') {
+          console.info('[ProximityDebug] proactive-reception-user-turn', {
+            visitorSessionId,
+            transcript: result.transcript,
+          })
+          if (isDecline(result.transcript)) {
+            await stopProactiveReception('visitor_declined', true)
+            break
+          }
+          await wait(PROACTIVE_LOOP_POLL_MS)
+          continue
+        }
+
+        if (result.kind === 'silence') {
+          console.info('[ProximityDebug] proactive-reception-silence', {
+            visitorSessionId,
+          })
+          await wait(PROACTIVE_SILENCE_RETRY_MS)
+          continue
+        }
+
+        if (result.kind === 'error') {
+          console.error('[ProximityDebug] proactive-reception-turn-error', {
+            visitorSessionId,
+            message: result.message,
+          })
+          await wait(PROACTIVE_ERROR_RETRY_MS)
+          continue
+        }
+
+        break
+      }
+    }
 
     const eligibleNow = (): boolean => {
       const current = controllerRef.current
@@ -197,8 +351,14 @@ export function useProximityGreeting(
       )
       try {
         const triggered = await controllerRef.current.triggerProximityGreeting(detection)
-        if (triggered && visitorSessionId) greetedVisitRef.current = visitorSessionId
-        if (!triggered) window.dispatchEvent(new CustomEvent('smartoffice:host-intro-cancel'))
+        if (triggered) {
+          const proactiveSessionId = visitorSessionId || '__local__'
+          if (visitorSessionId) greetedVisitRef.current = visitorSessionId
+          visitorPresentRef.current = true
+          void runProactiveReception(proactiveSessionId)
+        } else {
+          window.dispatchEvent(new CustomEvent('smartoffice:host-intro-cancel'))
+        }
         return triggered
       } finally {
         if (visitorSessionId) pendingSessionsRef.current.delete(visitorSessionId)
@@ -222,7 +382,13 @@ export function useProximityGreeting(
             setDetail(nextDetail)
           }
         },
-        setLastDetection,
+        (detection) => {
+          setLastDetection(detection)
+          visitorPresentRef.current = Boolean(detection)
+          if (!detection && proactiveSessionRef.current) {
+            void stopProactiveReception('local_visitor_absent', true)
+          }
+        },
       )
       monitorRef.current = monitor
       void monitor.start()
@@ -255,6 +421,7 @@ export function useProximityGreeting(
         onDetection: (detection) => {
           setLastDetection(detection)
           if (detection) {
+            visitorPresentRef.current = true
             if (remoteAbsenceTimerRef.current !== null) {
               window.clearTimeout(remoteAbsenceTimerRef.current)
               remoteAbsenceTimerRef.current = null
@@ -265,11 +432,15 @@ export function useProximityGreeting(
           if (remoteAbsenceTimerRef.current !== null) return
           remoteAbsenceTimerRef.current = window.setTimeout(() => {
             remoteAbsenceTimerRef.current = null
+            visitorPresentRef.current = false
             const absentSession = activeRemoteSessionRef.current
             if (absentSession && greetedVisitRef.current === absentSession) {
               greetedVisitRef.current = null
             }
             activeRemoteSessionRef.current = null
+            if (proactiveSessionRef.current) {
+              void stopProactiveReception('remote_visitor_absent', true)
+            }
           }, REMOTE_REARM_ABSENCE_MS)
         },
         onGreetingCandidate: (detection: RemoteVisionDetection) => {
@@ -280,6 +451,10 @@ export function useProximityGreeting(
           if (activeRemoteSessionRef.current === visitorSessionId) activeRemoteSessionRef.current = null
           pendingSessionsRef.current.delete(visitorSessionId)
           lastAttemptAtRef.current.delete(visitorSessionId)
+          if (proactiveSessionRef.current === visitorSessionId) {
+            visitorPresentRef.current = false
+            void stopProactiveReception('remote_session_expired', true)
+          }
         },
       })
       remoteRef.current = remote
@@ -288,6 +463,12 @@ export function useProximityGreeting(
 
     return () => {
       disposed = true
+      proactiveLoopGenerationRef.current += 1
+      proactiveTurnAbortRef.current?.abort()
+      proactiveTurnAbortRef.current = null
+      proactiveSessionRef.current = null
+      visitorPresentRef.current = false
+      void realtimeAgent.abortCapture().catch(() => undefined)
       if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
       if (remoteAbsenceTimerRef.current !== null) {
         window.clearTimeout(remoteAbsenceTimerRef.current)
