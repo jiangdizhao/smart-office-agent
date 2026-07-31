@@ -1,6 +1,6 @@
 service_name: rtx-vision-edge-server
-version: 0.6.0
-phase: phase4_identity_session_fusion
+version: 0.7.0
+phase: phase6_visit_lifecycle_identity_isolation
 
 server:
   host: 0.0.0.0
@@ -149,7 +149,7 @@ face:
   recognition_max_brightness: 240
   recognition_min_frontal_score: 0.30
   recognition_min_quality_score: 0.40
-  recognition_stable_frames: 1
+  recognition_stable_frames: 2
 
   min_face_width_pixels: 64
   min_face_height_pixels: 64
@@ -168,19 +168,19 @@ identity:
   enabled: true
   model_path: models/face_recognition_sface_2021dec.onnx
   database_path: data/identity/visitor_identities.sqlite3
-  cosine_threshold: 0.45
-  minimum_margin: 0.03
-  confirm_observations: 2
-  adaptive_confirmation_enabled: true
-  high_similarity_threshold: 0.60
-  medium_similarity_threshold: 0.45
-  low_similarity_threshold: 0.38
-  high_minimum_margin: 0.015
-  medium_minimum_margin: 0.03
-  low_minimum_margin: 0.05
-  high_confirm_observations: 1
-  medium_confirm_observations: 2
-  low_confirm_observations: 3
+  cosine_threshold: 0.62
+  minimum_margin: 0.0
+  confirm_observations: 3
+  adaptive_confirmation_enabled: false
+  high_similarity_threshold: 0.68
+  medium_similarity_threshold: 0.60
+  low_similarity_threshold: 0.52
+  high_minimum_margin: 0.03
+  medium_minimum_margin: 0.05
+  low_minimum_margin: 0.08
+  high_confirm_observations: 2
+  medium_confirm_observations: 3
+  low_confirm_observations: 4
   top_k_samples: 3
   recognition_interval_seconds: 0.20
   enrollment_min_quality: 0.52
@@ -196,19 +196,19 @@ identity:
 
 visitor_session:
   enabled: true
-  ttl_seconds: 60
+  ttl_seconds: 2.0
   max_face_embeddings: 8
   max_body_embeddings: 8
-  face_high_similarity: 0.56
-  face_medium_similarity: 0.44
-  face_minimum_margin: 0.03
-  body_high_similarity: 0.82
-  body_medium_similarity: 0.72
-  body_minimum_margin: 0.04
-  medium_confirmations: 2
-  body_only_confirmations: 3
-  body_only_max_age_seconds: 12
-  max_center_distance: 0.65
+  face_high_similarity: 0.65
+  face_medium_similarity: 0.55
+  face_minimum_margin: 0.06
+  body_high_similarity: 0.92
+  body_medium_similarity: 0.85
+  body_minimum_margin: 0.08
+  medium_confirmations: 3
+  body_only_confirmations: 4
+  body_only_max_age_seconds: 1.5
+  max_center_distance: 0.35
 
 debug:
   enabled: true
