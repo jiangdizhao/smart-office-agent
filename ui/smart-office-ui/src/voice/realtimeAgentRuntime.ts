@@ -49,6 +49,9 @@ type PendingResponse = {
   responseDone: boolean
   audioStarted: boolean
   audioStopped: boolean
+  audioStartedAtMs: number | null
+  completionEstimateTextLength: number
+  completionTimeoutMs: number
   startTimer: number | null
   completionTimer: number | null
   resolve: (value: string) => void
@@ -318,8 +321,6 @@ export class PersistentRealtimeAgent {
     this.connectPromise = null
     this.rejectPending(abortError('GPT Realtime session was revoked.'))
 
-    // Fence and detach real-time resources synchronously before the first await,
-    // so a replacement Visit cannot accidentally reuse the old connection.
     const microphone = this.microphoneStream
     this.microphoneStream = null
     stopStream(microphone)
@@ -604,6 +605,9 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
     return new Promise((resolve, reject) => {
       const requestId = `${purpose}-${generation}-${Date.now()}-${Math.random().toString(16).slice(2)}`
       const audio = modalities.includes('audio')
+      const completionTimeoutMs = audio
+        ? estimateAudioCompletionMs(completionEstimateText)
+        : TEXT_RESPONSE_TIMEOUT_MS
       const pending: PendingResponse = {
         requestId,
         generation,
@@ -614,11 +618,22 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
         responseDone: false,
         audioStarted: false,
         audioStopped: !audio,
+        audioStartedAtMs: null,
+        completionEstimateTextLength: completionEstimateText.length,
+        completionTimeoutMs,
         startTimer: null,
         completionTimer: null,
         resolve,
         reject,
       }
+      console.info('[RealtimeDiagnostics] response-created', {
+        requestId,
+        purpose,
+        generation,
+        modalities,
+        completionEstimateTextLength: pending.completionEstimateTextLength,
+        completionTimeoutMs: pending.completionTimeoutMs,
+      })
       const onAbort = () => {
         if (this.pendingResponse?.requestId !== requestId) return
         this.safeSend({ type: 'response.cancel' })
@@ -641,6 +656,13 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
         pending.startTimer = window.setTimeout(() => {
           if (this.pendingResponse?.requestId !== requestId) return
           this.safeSend({ type: 'response.cancel' })
+          console.error('[RealtimeDiagnostics] audio-start-timeout', {
+            requestId,
+            purpose,
+            generation,
+            completionEstimateTextLength: pending.completionEstimateTextLength,
+            startTimeoutMs: AUDIO_START_TIMEOUT_MS,
+          })
           this.finishResponseError(
             pending,
             new RealtimeSpeechError('GPT Realtime audio did not start in time.', false),
@@ -664,9 +686,7 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
             purpose: String(purpose),
             request_id: String(requestId),
             generation: String(generation),
-            completion_timeout_ms: String(
-              audio ? estimateAudioCompletionMs(completionEstimateText) : TEXT_RESPONSE_TIMEOUT_MS,
-            ),
+            completion_timeout_ms: String(pending.completionTimeoutMs),
           },
           instructions,
         },
@@ -676,8 +696,30 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
 
   private startAudioCompletionTimer(pending: PendingResponse): void {
     if (pending.completionTimer !== null) return
+    pending.audioStartedAtMs = performance.now()
+    console.info('[RealtimeDiagnostics] audio-completion-timer-started', {
+      requestId: pending.requestId,
+      purpose: pending.purpose,
+      generation: pending.generation,
+      completionEstimateTextLength: pending.completionEstimateTextLength,
+      completionTimeoutMs: pending.completionTimeoutMs,
+    })
     pending.completionTimer = window.setTimeout(() => {
       if (this.pendingResponse?.requestId !== pending.requestId) return
+      const elapsedMs = Math.round(
+        performance.now() - (pending.audioStartedAtMs ?? performance.now()),
+      )
+      console.error('[RealtimeDiagnostics] audio-completion-timeout', {
+        requestId: pending.requestId,
+        purpose: pending.purpose,
+        generation: pending.generation,
+        completionEstimateTextLength: pending.completionEstimateTextLength,
+        completionTimeoutMs: pending.completionTimeoutMs,
+        elapsedMs,
+        transcriptLength: pending.transcript.length,
+        textLength: pending.text.length,
+        responseDone: pending.responseDone,
+      })
       this.safeSend({ type: 'response.cancel' })
       this.safeSend({ type: 'output_audio_buffer.clear' })
       this.finishResponseError(
@@ -687,11 +729,26 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
           pending.audioStarted,
         ),
       )
-    }, estimateAudioCompletionMs(pending.transcript || pending.text || pending.purpose))
+    }, pending.completionTimeoutMs)
   }
 
   private resolveResponse(pending: PendingResponse): void {
     if (this.pendingResponse?.requestId !== pending.requestId) return
+    const elapsedMs = pending.audioStartedAtMs === null
+      ? null
+      : Math.round(performance.now() - pending.audioStartedAtMs)
+    console.info('[RealtimeDiagnostics] response-resolved', {
+      requestId: pending.requestId,
+      purpose: pending.purpose,
+      generation: pending.generation,
+      audioStarted: pending.audioStarted,
+      audioStopped: pending.audioStopped,
+      responseDone: pending.responseDone,
+      elapsedMs,
+      completionTimeoutMs: pending.completionTimeoutMs,
+      transcriptLength: pending.transcript.length,
+      textLength: pending.text.length,
+    })
     this.clearPendingTimers(pending)
     this.pendingResponse = null
     pending.resolve((pending.transcript || pending.text).trim())
