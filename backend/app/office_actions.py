@@ -52,17 +52,8 @@ def _log_office_failure(
     verification: VerificationResult,
     status: ToolResult,
 ) -> None:
-    """Print complete failed-action diagnostics to the Backend terminal.
-
-    Office/device providers often return useful nested failure details instead of
-    raising an exception. Logging the structured result here ensures that failures
-    such as unsupported DDC/CI, missing WMI instances, provider import errors, and
-    observed-state mismatches are visible in the Uvicorn terminal.
-    """
-
     if result.ok and verification.ok:
         return
-
     payload = {
         "event": "office_action_failed",
         "tool": name,
@@ -122,11 +113,6 @@ def get_office_status() -> ToolResult:
     system = get_system_control_status()
     artifacts = office_artifact_status()
     outlook = outlook_draft_status()
-
-    # Put the small, authoritative recipient catalog first. The Realtime planner
-    # intentionally receives a bounded JSON prefix; verbose presentation/device
-    # diagnostics must never push allowlisted contacts such as Rico beyond that
-    # prefix and cause a false "recipient not found" clarification.
     data = {
         "outlook_draft_configured": outlook.get("outlook_draft_configured"),
         "sender_account_email": outlook.get("sender_account_email"),
@@ -163,10 +149,8 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
             result=result,
             observed=dict(status.data),
         )
-
     requested = dict(result.data.get("requested_state") or {})
     observed = dict(status.data)
-
     if result.tool_name == "system_get_status":
         return _verification(
             ok=True,
@@ -174,7 +158,6 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
             result=result,
             observed=observed,
         )
-
     if result.tool_name in {"system_set_volume", "system_adjust_volume"}:
         expected = requested.get("volume_percent")
         actual = observed.get("volume_percent")
@@ -189,7 +172,6 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
             result=result,
             observed=observed,
         )
-
     if result.tool_name in {"system_set_brightness", "system_adjust_brightness"}:
         expected = requested.get("brightness_percent")
         actual = observed.get("brightness_percent")
@@ -204,7 +186,6 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
             result=result,
             observed=observed,
         )
-
     if result.tool_name == "office_generate_presentation_summary":
         summary_path = result.data.get("summary_path")
         path = Path(str(summary_path)).resolve() if summary_path else None
@@ -223,7 +204,6 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
                 "summary_exists": bool(path and path.is_file()),
             },
         )
-
     if result.tool_name == "outlook_create_summary_draft":
         entry_id = result.data.get("outlook_draft_entry_id")
         recipient_key = result.data.get("recipient_key")
@@ -260,7 +240,6 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
                 "unrestricted_email_send_enabled": False,
             },
         )
-
     if result.tool_name == "outlook_send_approved_draft":
         recipient_key = result.data.get("recipient_key")
         ok = bool(
@@ -295,7 +274,6 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
                 "unrestricted_email_send_enabled": False,
             },
         )
-
     return _verification(
         ok=False,
         message=f"No office verifier is registered for {result.tool_name}.",
@@ -316,15 +294,6 @@ def _draft_with_summary_prerequisite(
     clean: dict[str, Any],
     internal_task_id: Any,
 ) -> ToolResult:
-    """Create a summary draft without allowing a missing artifact to break the flow.
-
-    GPT Realtime should normally emit an explicit summary step before the draft.
-    The Backend nevertheless owns the dependency invariant: on a clean installation
-    with no summary artifact yet, it generates the current presentation summary
-    before invoking Outlook. This prevents a one-step model plan from failing at
-    ``summary_lookup`` and keeps recipient lookup separate from artifact lookup.
-    """
-
     language = "en" if clean.get("language") == "en" else "zh"
     summary_result: ToolResult | None = None
     current_summary = latest_summary_path()
@@ -362,7 +331,6 @@ def _draft_with_summary_prerequisite(
                     "summary_prerequisite_generated": False,
                 },
             )
-
     result = create_outlook_summary_draft(
         language=language,
         subject=(str(clean.get("subject")) if clean.get("subject") else None),
@@ -373,7 +341,6 @@ def _draft_with_summary_prerequisite(
     )
     if summary_result is None:
         return result
-
     return result.model_copy(
         update={
             "artifacts": list(dict.fromkeys([*summary_result.artifacts, *result.artifacts])),
@@ -390,13 +357,12 @@ def _draft_with_summary_prerequisite(
     )
 
 
-def execute_office_tool_call(
+def execute_office_tool_call_direct(
     name: str,
     arguments: dict[str, Any] | None = None,
 ) -> tuple[ToolResult, VerificationResult, ToolResult]:
     clean = dict(arguments or {})
     internal_task_id = clean.pop("_task_id", None)
-
     if name in PRESENTATION_TOOL_NAMES:
         result, verification, status = execute_presentation_tool_call(name, clean)
         _log_office_failure(
@@ -408,7 +374,6 @@ def execute_office_tool_call(
             status=status,
         )
         return result, verification, status
-
     if name not in OFFICE_TOOL_NAMES:
         result = ToolResult(
             tool_name=name,
@@ -432,7 +397,6 @@ def execute_office_tool_call(
             status=status,
         )
         return result, verification, status
-
     if name == "system_get_status":
         result = get_system_control_status()
     elif name == "system_set_volume":
@@ -459,7 +423,6 @@ def execute_office_tool_call(
                 str(clean.get("recipient_key")) if clean.get("recipient_key") else None
             )
         )
-
     status = get_office_status()
     status_data = dict(status.data)
     status_data.update(
@@ -510,3 +473,12 @@ def execute_office_tool_call(
         status=status,
     )
     return result, verification, status
+
+
+def execute_office_tool_call(
+    name: str,
+    arguments: dict[str, Any] | None = None,
+) -> tuple[ToolResult, VerificationResult, ToolResult]:
+    from app.office_worker_process import execute_office_tool_isolated
+
+    return execute_office_tool_isolated(name, dict(arguments or {}))
