@@ -11,7 +11,7 @@ import numpy as np
 
 from app.config import VisitorSessionSettings
 
-ANONYMOUS_REBIND_GRACE_SECONDS = 5.0
+VISIT_ABSENCE_SECONDS = 2.0
 
 
 def _normalize(value: np.ndarray | None) -> np.ndarray | None:
@@ -58,18 +58,12 @@ class VisitorSession:
     def best_face_similarity(self, query: np.ndarray | None) -> float:
         if query is None:
             return -1.0
-        return max(
-            (_similarity(query, item) for item in self.face_embeddings),
-            default=-1.0,
-        )
+        return max((_similarity(query, item) for item in self.face_embeddings), default=-1.0)
 
     def best_body_similarity(self, query: np.ndarray | None) -> float:
         if query is None:
             return -1.0
-        return max(
-            (_similarity(query, item) for item in self.body_embeddings),
-            default=-1.0,
-        )
+        return max((_similarity(query, item) for item in self.body_embeddings), default=-1.0)
 
     def update_visible(
         self,
@@ -100,19 +94,18 @@ class VisitorSession:
             self.body_embeddings.append(normalized_body)
             while len(self.body_embeddings) > settings.max_body_embeddings:
                 self.body_embeddings.popleft()
-        if identity is not None:
+        if identity is not None and identity.get("identity_id"):
             self.identity = dict(identity)
 
     def public(self, now: float) -> dict[str, Any]:
         return {
             "visitor_session_id": self.visitor_session_id,
+            "visit_id": self.visitor_session_id,
             "active_track_id": self.active_track_id,
             "last_track_id": self.last_track_id,
             "track_ids": list(self.track_ids),
             "age_seconds": round(max(now - self.created_at_monotonic, 0.0), 3),
-            "last_seen_age_seconds": round(
-                max(now - self.last_seen_monotonic, 0.0), 3
-            ),
+            "last_seen_age_seconds": round(max(now - self.last_seen_monotonic, 0.0), 3),
             "face_embedding_count": len(self.face_embeddings),
             "body_embedding_count": len(self.body_embeddings),
             "identity": None if self.identity is None else dict(self.identity),
@@ -124,14 +117,18 @@ class VisitorSession:
 
 
 class VisitorSessionRuntime:
-    """Memory-only bridge between short MOT tracks and a stable visitor session."""
+    """One physical visit per visible track, with conservative registered recovery.
+
+    Anonymous tracks never inherit another track's Visit. A registered Visit may
+    survive a short tracker-ID change only when the new track has independently
+    confirmed the same identity_id. Every Visit expires from a monotonic watchdog
+    after two seconds without a visible confirmed track.
+    """
 
     def __init__(self, settings: VisitorSessionSettings) -> None:
         self.settings = settings
         self.sessions: dict[str, VisitorSession] = {}
         self.track_to_session: dict[int, str] = {}
-        self._pending_matches: dict[int, tuple[str | None, int, str | None]] = {}
-        self._unassigned_since: dict[int, float] = {}
         self._lock = threading.RLock()
         self.recovery_count = 0
         self.expired_count = 0
@@ -144,8 +141,6 @@ class VisitorSessionRuntime:
         with self._lock:
             self.sessions.clear()
             self.track_to_session.clear()
-            self._pending_matches.clear()
-            self._unassigned_since.clear()
             self.recovery_count = 0
             self.expired_count = 0
 
@@ -169,19 +164,13 @@ class VisitorSessionRuntime:
                 for track in tracks
                 if bool(track.get("visible")) and track.get("state") == "confirmed"
             ]
-            visible_track_ids = {int(track["track_id"]) for track in visible_tracks}
+            visible_ids = {int(track["track_id"]) for track in visible_tracks}
             for session in self.sessions.values():
-                if session.active_track_id not in visible_track_ids:
+                if session.active_track_id not in visible_ids:
                     session.active_track_id = None
-            for track_id in list(self._unassigned_since):
-                if track_id not in visible_track_ids:
-                    self._unassigned_since.pop(track_id, None)
-                    self._pending_matches.pop(track_id, None)
 
+            by_track = {int(track["track_id"]): dict(track) for track in tracks}
             assigned_sessions: set[str] = set()
-            by_track: dict[int, dict[str, Any]] = {
-                int(track["track_id"]): dict(track) for track in tracks
-            }
             visible_tracks.sort(
                 key=lambda item: (
                     not bool(item.get("primary")),
@@ -191,85 +180,69 @@ class VisitorSessionRuntime:
 
             for item in visible_tracks:
                 track_id = int(item["track_id"])
-                face = _normalize(face_embeddings.get(track_id))
-                body = _normalize(body_embeddings.get(track_id))
                 identity = identities.get(track_id)
+                identity_id = None if identity is None else identity.get("identity_id")
                 mapped_id = self.track_to_session.get(track_id)
                 session = self.sessions.get(mapped_id or "")
+                recovery_reason: str | None = None
 
-                if session is None:
-                    session, reason, diagnostics = self._match_session(
-                        track=item,
-                        face_embedding=face,
-                        body_embedding=body,
-                        identity=identity,
+                if session is None and identity_id:
+                    session = self._registered_recovery(
+                        identity_id=str(identity_id),
                         now=now,
                         assigned_sessions=assigned_sessions,
-                        excluded_session_ids=set(),
                     )
-                    if session is None and self._should_defer_new_session(
-                        track_id=track_id,
-                        identity=identity,
-                        now=now,
-                        assigned_sessions=assigned_sessions,
-                    ):
-                        by_track[track_id] = self._enrich_pending_track(item, track_id, now)
-                        continue
-                    if session is None:
-                        session = self._create_session(item, now)
-                        events.append(
-                            (
-                                "visitor_session_started",
-                                {
-                                    "visitor_session_id": session.visitor_session_id,
-                                    "track_id": track_id,
-                                },
-                            )
-                        )
-                    else:
-                        previous_track_id = session.last_track_id
+                    if session is not None:
+                        recovery_reason = "independently_confirmed_registered_identity"
                         session.recovery_count += 1
-                        session.last_recovery_reason = reason
+                        session.last_recovery_reason = recovery_reason
                         self.recovery_count += 1
                         events.append(
                             (
                                 "visitor_session_recovered",
                                 {
                                     "visitor_session_id": session.visitor_session_id,
-                                    "previous_track_id": previous_track_id,
+                                    "previous_track_id": session.last_track_id,
                                     "current_track_id": track_id,
-                                    "reason": reason,
-                                    **diagnostics,
+                                    "reason": recovery_reason,
+                                    "identity_id": identity_id,
                                 },
                             )
                         )
-                    self._unassigned_since.pop(track_id, None)
-                    self._pending_matches.pop(track_id, None)
-                    self.track_to_session[track_id] = session.visitor_session_id
 
+                if session is None:
+                    session = self._create_session(item, now)
+                    events.append(
+                        (
+                            "visitor_session_started",
+                            {
+                                "visitor_session_id": session.visitor_session_id,
+                                "visit_id": session.visitor_session_id,
+                                "track_id": track_id,
+                            },
+                        )
+                    )
+
+                self.track_to_session[track_id] = session.visitor_session_id
                 previous_identity_id = (
-                    None
-                    if session.identity is None
-                    else session.identity.get("identity_id")
+                    None if session.identity is None else session.identity.get("identity_id")
                 )
                 session.update_visible(
                     track=item,
-                    face_embedding=face,
-                    body_embedding=body,
+                    face_embedding=face_embeddings.get(track_id),
+                    body_embedding=body_embeddings.get(track_id),
                     identity=identity,
                     now=now,
                     settings=self.settings,
                 )
                 assigned_sessions.add(session.visitor_session_id)
-                if (
-                    session.identity is not None
-                    and session.identity.get("identity_id") != previous_identity_id
-                ):
+                if session.identity is not None and session.identity.get("identity_id") != previous_identity_id:
                     events.append(
                         (
                             "visitor_session_identified",
                             {
                                 "visitor_session_id": session.visitor_session_id,
+                                "visit_id": session.visitor_session_id,
                                 "track_id": track_id,
                                 "identity_id": session.identity.get("identity_id"),
                                 "display_name": session.identity.get("display_name"),
@@ -279,91 +252,62 @@ class VisitorSessionRuntime:
                 by_track[track_id] = self._enrich_track(item, session, now)
 
             for track_id, item in list(by_track.items()):
-                if track_id in visible_track_ids:
+                if track_id in visible_ids:
                     continue
-                mapped_id = self.track_to_session.get(track_id)
-                session = self.sessions.get(mapped_id or "")
+                session = self.sessions.get(self.track_to_session.get(track_id, ""))
                 if session is not None:
                     by_track[track_id] = self._enrich_track(item, session, now)
 
-            for session in self._expire(now):
-                events.append(
-                    (
-                        "visitor_session_expired",
-                        {
-                            "visitor_session_id": session.visitor_session_id,
-                            "last_track_id": session.last_track_id,
-                            "identity_id": (
-                                None
-                                if session.identity is None
-                                else session.identity.get("identity_id")
-                            ),
-                        },
-                    )
-                )
+            for session in self._expire_locked(now):
+                events.append(("visitor_session_expired", self._expired_payload(session)))
+
             return [by_track[key] for key in sorted(by_track)], events
 
-    def _inactive_candidates(
+    def expire_due(
+        self,
+        now: float | None = None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        now = time.monotonic() if now is None else float(now)
+        with self._lock:
+            return [
+                ("visitor_session_expired", self._expired_payload(session))
+                for session in self._expire_locked(now)
+            ]
+
+    def _registered_recovery(
         self,
         *,
+        identity_id: str,
         now: float,
         assigned_sessions: set[str],
-        excluded_session_ids: set[str],
-    ) -> list[VisitorSession]:
-        return [
+    ) -> VisitorSession | None:
+        candidates = [
             session
             for session in self.sessions.values()
-            if now - session.last_seen_monotonic <= self.settings.ttl_seconds
+            if session.active_track_id is None
             and session.visitor_session_id not in assigned_sessions
-            and session.visitor_session_id not in excluded_session_ids
-            and session.active_track_id is None
+            and now - session.last_seen_monotonic <= VISIT_ABSENCE_SECONDS
+            and session.identity is not None
+            and session.identity.get("identity_id") == identity_id
         ]
-
-    def _should_defer_new_session(
-        self,
-        *,
-        track_id: int,
-        identity: dict[str, Any] | None,
-        now: float,
-        assigned_sessions: set[str],
-    ) -> bool:
-        if identity is not None and identity.get("identity_id"):
-            return False
-        candidates = self._inactive_candidates(
-            now=now,
-            assigned_sessions=assigned_sessions,
-            excluded_session_ids=set(),
-        )
         if not candidates:
-            self._unassigned_since.pop(track_id, None)
-            return False
-        first_seen = self._unassigned_since.setdefault(track_id, now)
-        return now - first_seen < ANONYMOUS_REBIND_GRACE_SECONDS
-
-    def _enrich_pending_track(
-        self, track: dict[str, Any], track_id: int, now: float
-    ) -> dict[str, Any]:
-        item = dict(track)
-        first_seen = self._unassigned_since.setdefault(track_id, now)
-        item.pop("visitor_session_id", None)
-        item.pop("visitor_session", None)
-        item["visitor_session_pending"] = True
-        item["visitor_session_pending_age_seconds"] = round(
-            max(now - first_seen, 0.0), 3
-        )
-        item["visitor_session_pending_reason"] = "anonymous_rebind_grace"
-        return item
+            return None
+        return max(candidates, key=lambda item: item.last_seen_monotonic)
 
     def _enrich_track(
-        self, track: dict[str, Any], session: VisitorSession, now: float
+        self,
+        track: dict[str, Any],
+        session: VisitorSession,
+        now: float,
     ) -> dict[str, Any]:
         item = dict(track)
         item["visitor_session_id"] = session.visitor_session_id
+        item["visit_id"] = session.visitor_session_id
         item["visitor_session"] = session.public(now)
         item["visitor_session_pending"] = False
-        if item.get("identity") is None and session.identity is not None:
-            item["identity"] = dict(session.identity)
-            item["identity_source"] = "visitor_session_memory"
+        # Never copy a session identity into an unverified track. The current
+        # track must independently earn its identity from IdentityRuntime.
+        item.pop("identity_source", None)
         return item
 
     def _create_session(self, track: dict[str, Any], now: float) -> VisitorSession:
@@ -384,145 +328,26 @@ class VisitorSessionRuntime:
         self.sessions[session.visitor_session_id] = session
         return session
 
-    def _confirm_candidate(
-        self,
-        *,
-        track_id: int,
-        session: VisitorSession,
-        reason: str,
-        required: int,
-    ) -> VisitorSession | None:
-        previous_id, count, previous_reason = self._pending_matches.get(
-            track_id, (None, 0, None)
-        )
-        same = previous_id == session.visitor_session_id and previous_reason == reason
-        count = count + 1 if same else 1
-        self._pending_matches[track_id] = (
-            session.visitor_session_id,
-            count,
-            reason,
-        )
-        if count < required:
-            return None
-        self._pending_matches.pop(track_id, None)
-        return session
-
-    def _match_session(
-        self,
-        *,
-        track: dict[str, Any],
-        face_embedding: np.ndarray | None,
-        body_embedding: np.ndarray | None,
-        identity: dict[str, Any] | None,
-        now: float,
-        assigned_sessions: set[str],
-        excluded_session_ids: set[str],
-    ) -> tuple[VisitorSession | None, str | None, dict[str, Any]]:
-        track_id = int(track["track_id"])
-        candidates = self._inactive_candidates(
-            now=now,
-            assigned_sessions=assigned_sessions,
-            excluded_session_ids=excluded_session_ids,
-        )
-        identity_id = None if identity is None else identity.get("identity_id")
-        if identity_id:
-            identity_matches = [
-                session
-                for session in candidates
-                if session.identity is not None
-                and session.identity.get("identity_id") == identity_id
-            ]
-            if identity_matches:
-                selected = max(
-                    identity_matches, key=lambda item: item.last_seen_monotonic
-                )
-                self._pending_matches.pop(track_id, None)
-                return selected, "registered_identity", {"identity_id": identity_id}
-
-        scored: list[tuple[float, float, float, VisitorSession]] = []
-        current_center = np.asarray(_center(track), dtype=np.float32)
-        for session in candidates:
-            face_score = session.best_face_similarity(face_embedding)
-            body_score = session.best_body_similarity(body_embedding)
-            center_distance = float(
-                np.linalg.norm(
-                    current_center - np.asarray(session.last_center, dtype=np.float32)
-                )
-            )
-            scored.append((face_score, body_score, center_distance, session))
-        scored.sort(key=lambda row: (row[0], row[1], -row[2]), reverse=True)
-        if not scored:
-            self._pending_matches.pop(track_id, None)
-            return None, None, {}
-
-        best_face, best_body, center_distance, best_session = scored[0]
-        second_face = scored[1][0] if len(scored) > 1 else -1.0
-        second_body = scored[1][1] if len(scored) > 1 else -1.0
-        face_margin = best_face - second_face
-        body_margin = best_body - second_body
-        age = now - best_session.last_seen_monotonic
-        diagnostics = {
-            "face_similarity": round(best_face, 6),
-            "face_margin": round(face_margin, 6),
-            "body_similarity": round(best_body, 6),
-            "body_margin": round(body_margin, 6),
-            "age_seconds": round(age, 3),
-            "center_distance": round(center_distance, 6),
+    def _expired_payload(self, session: VisitorSession) -> dict[str, Any]:
+        return {
+            "visitor_session_id": session.visitor_session_id,
+            "visit_id": session.visitor_session_id,
+            "last_track_id": session.last_track_id,
+            "identity_id": None if session.identity is None else session.identity.get("identity_id"),
+            "display_name": None if session.identity is None else session.identity.get("display_name"),
+            "absence_seconds": VISIT_ABSENCE_SECONDS,
         }
-
-        if (
-            best_face >= self.settings.face_high_similarity
-            and face_margin >= self.settings.face_minimum_margin
-        ):
-            self._pending_matches.pop(track_id, None)
-            return best_session, "face_high", diagnostics
-
-        if (
-            best_face >= self.settings.face_medium_similarity
-            and face_margin >= self.settings.face_minimum_margin
-            and (
-                best_body >= self.settings.body_medium_similarity
-                or center_distance <= self.settings.max_center_distance
-            )
-        ):
-            confirmed = self._confirm_candidate(
-                track_id=track_id,
-                session=best_session,
-                reason="face_body_medium",
-                required=self.settings.medium_confirmations,
-            )
-            return confirmed, "face_body_medium", diagnostics
-
-        if (
-            face_embedding is None
-            and age <= self.settings.body_only_max_age_seconds
-            and best_body >= self.settings.body_high_similarity
-            and body_margin >= self.settings.body_minimum_margin
-            and center_distance <= self.settings.max_center_distance
-        ):
-            confirmed = self._confirm_candidate(
-                track_id=track_id,
-                session=best_session,
-                reason="body_only",
-                required=self.settings.body_only_confirmations,
-            )
-            return confirmed, "body_only", diagnostics
-
-        self._pending_matches.pop(track_id, None)
-        return None, None, diagnostics
 
     def _discard_session(self, session_id: str) -> None:
         self.sessions.pop(session_id, None)
         for track_id, mapped_id in list(self.track_to_session.items()):
             if mapped_id == session_id:
                 self.track_to_session.pop(track_id, None)
-                self._pending_matches.pop(track_id, None)
-                self._unassigned_since.pop(track_id, None)
 
-    def _expire(self, now: float) -> list[VisitorSession]:
+    def _expire_locked(self, now: float) -> list[VisitorSession]:
         expired: list[VisitorSession] = []
         for session_id, session in list(self.sessions.items()):
-            if now - session.last_seen_monotonic <= self.settings.ttl_seconds:
+            if now - session.last_seen_monotonic <= VISIT_ABSENCE_SECONDS:
                 continue
             expired.append(session)
             self._discard_session(session_id)
@@ -551,16 +376,19 @@ class VisitorSessionRuntime:
             return {
                 "enabled": self.settings.enabled,
                 "ready": self.ready,
-                "ttl_seconds": self.settings.ttl_seconds,
+                "ttl_seconds": VISIT_ABSENCE_SECONDS,
+                "visit_absence_seconds": VISIT_ABSENCE_SECONDS,
                 "session_count": len(sessions),
                 "active_session_count": sum(
                     1 for item in sessions if item["active_track_id"] is not None
                 ),
                 "recovery_count": self.recovery_count,
                 "expired_count": self.expired_count,
-                "pending_match_count": len(self._pending_matches),
-                "unassigned_track_count": len(self._unassigned_since),
-                "anonymous_rebind_grace_seconds": ANONYMOUS_REBIND_GRACE_SECONDS,
+                "pending_match_count": 0,
+                "unassigned_track_count": 0,
+                "anonymous_rebind_grace_seconds": 0.0,
+                "registered_identity_inheritance": False,
+                "registered_recovery_requires_independent_identity": True,
                 "sessions": sessions,
                 "privacy": {
                     "stores_images": False,
