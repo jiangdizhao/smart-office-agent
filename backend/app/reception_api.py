@@ -8,7 +8,10 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.conversation_store import ActorType, Language, conversation_store
+from app.event_bus import event_bus
 from app.reception_knowledge import reception_knowledge
+from app.state_store import state_store
+from app.visitor_memory_queue import visitor_memory_queue
 from app.visitor_memory_store import visitor_memory_store
 
 router = APIRouter(tags=["reception"])
@@ -19,6 +22,7 @@ class ConversationTurnStartRequest(BaseModel):
     actor_type: ActorType = "visitor"
     text: str = Field(..., max_length=8_000)
     source: str = Field("unknown", max_length=80)
+    visit_id: str | None = Field(default=None, max_length=160)
 
 
 class ConversationTurnCompleteRequest(BaseModel):
@@ -27,12 +31,14 @@ class ConversationTurnCompleteRequest(BaseModel):
     task_id: str | None = Field(default=None, max_length=240)
     expect_reply: bool = True
     source: str = Field("agent", max_length=80)
+    visit_id: str | None = Field(default=None, max_length=160)
 
 
 class ConversationTaskStateRequest(BaseModel):
     task_id: str | None = Field(default=None, max_length=240)
     active: bool
     final_text: str = Field("", max_length=12_000)
+    visit_id: str | None = Field(default=None, max_length=160)
 
 
 class VisitEndRequest(BaseModel):
@@ -54,9 +60,9 @@ class ProximityDetectionRequest(BaseModel):
     stable_frames: int = Field(..., ge=1, le=120)
     detector: str = Field("unknown", max_length=80)
     track_id: int | None = Field(default=None, ge=1)
-    visitor_session_id: str | None = Field(default=None, max_length=120)
-    visit_id: str | None = Field(default=None, max_length=120)
-    provisional_session_id: str | None = Field(default=None, max_length=120)
+    visitor_session_id: str | None = Field(default=None, max_length=160)
+    visit_id: str | None = Field(default=None, max_length=160)
+    provisional_session_id: str | None = Field(default=None, max_length=160)
     session_stable: bool | None = None
     session_age_seconds: float | None = Field(default=None, ge=0.0)
     session_recovery_count: int | None = Field(default=None, ge=0)
@@ -82,6 +88,10 @@ def _proactive_reception_intro(language: Language) -> str:
         "我是 Sara，Smart Office 虚拟接待员。我可以为您演示 PowerPoint 语音控制、"
         "Outlook 助手，也可以回答一般问题。您愿意体验一个快速演示吗？"
     )
+
+
+def _stale_visit_http(exc: RuntimeError) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(exc))
 
 
 @router.get("/api/reception/status")
@@ -147,14 +157,23 @@ def conversation_turn_start(
     conversation_id: str,
     request: ConversationTurnStartRequest,
 ) -> dict:
-    state = conversation_store.begin_user_turn(
-        conversation_id,
-        language=request.language,
-        actor_type=request.actor_type,
-        text=request.text,
-        source=request.source,
-    )
-    return {"ok": True, "conversation_phase": state.conversation_phase}
+    try:
+        state = conversation_store.begin_user_turn(
+            conversation_id,
+            language=request.language,
+            actor_type=request.actor_type,
+            text=request.text,
+            source=request.source,
+            expected_visit_id=request.visit_id,
+        )
+    except RuntimeError as exc:
+        raise _stale_visit_http(exc) from exc
+    return {
+        "ok": True,
+        "conversation_phase": state.conversation_phase,
+        "visit_id": state.visit_id,
+        "revision": state.revision,
+    }
 
 
 @router.post("/api/conversations/{conversation_id}/turn-complete")
@@ -162,15 +181,24 @@ def conversation_turn_complete(
     conversation_id: str,
     request: ConversationTurnCompleteRequest,
 ) -> dict:
-    state = conversation_store.complete_assistant_turn(
-        conversation_id,
-        text=request.text,
-        route=request.route,
-        task_id=request.task_id,
-        expect_reply=request.expect_reply,
-        source=request.source,
-    )
-    return {"ok": True, "conversation_phase": state.conversation_phase}
+    try:
+        state = conversation_store.complete_assistant_turn(
+            conversation_id,
+            text=request.text,
+            route=request.route,
+            task_id=request.task_id,
+            expect_reply=request.expect_reply,
+            source=request.source,
+            expected_visit_id=request.visit_id,
+        )
+    except RuntimeError as exc:
+        raise _stale_visit_http(exc) from exc
+    return {
+        "ok": True,
+        "conversation_phase": state.conversation_phase,
+        "visit_id": state.visit_id,
+        "revision": state.revision,
+    }
 
 
 @router.post("/api/conversations/{conversation_id}/task-state")
@@ -178,13 +206,22 @@ def conversation_task_state(
     conversation_id: str,
     request: ConversationTaskStateRequest,
 ) -> dict:
-    state = conversation_store.set_task_state(
-        conversation_id,
-        task_id=request.task_id,
-        active=request.active,
-        final_text=request.final_text,
-    )
-    return {"ok": True, "conversation_phase": state.conversation_phase}
+    try:
+        state = conversation_store.set_task_state(
+            conversation_id,
+            task_id=request.task_id,
+            active=request.active,
+            final_text=request.final_text,
+            expected_visit_id=request.visit_id,
+        )
+    except RuntimeError as exc:
+        raise _stale_visit_http(exc) from exc
+    return {
+        "ok": True,
+        "conversation_phase": state.conversation_phase,
+        "visit_id": state.visit_id,
+        "revision": state.revision,
+    }
 
 
 @router.post("/api/conversations/{conversation_id}/standby")
@@ -198,29 +235,51 @@ def conversation_visit_end(
     conversation_id: str,
     request: VisitEndRequest,
 ) -> dict:
-    archive = conversation_store.end_visit(
-        conversation_id,
-        visit_id=request.visitor_session_id,
+    visit_id = str(request.visitor_session_id or "").strip() or None
+    archive = conversation_store.end_visit(conversation_id, visit_id=visit_id)
+
+    cancelled_task_ids = state_store.cancel_tasks_for_visit(
+        conversation_id=conversation_id,
+        visit_id=visit_id,
+        reason="Owning Visit ended; stale task output is fenced from future visitors.",
     )
+    for task_id in cancelled_task_ids:
+        event_bus.publish(
+            task_id=task_id,
+            event_type="cancelled",
+            message="Task cancelled because its owning Visit ended.",
+            data={
+                "conversation_id": conversation_id,
+                "visit_id": visit_id,
+                "reason": request.reason,
+            },
+        )
+
     identity_id = str(request.identity_id or archive.get("identity_id") or "").strip()
     display_name = str(request.display_name or archive.get("display_name") or "").strip()
-    memory_saved = False
+    memory_queued = False
+    memory_job_id: str | None = None
     if archive.get("ended") and identity_id:
-        visitor_memory_store.save(
+        memory_queued, memory_job_id = visitor_memory_queue.enqueue(
             identity_id=identity_id,
             display_name=display_name or identity_id,
             memory_summary=str(archive.get("conversation_summary") or ""),
             recent_messages=list(archive.get("recent_messages") or []),
-            visit_id=str(archive.get("visit_id") or request.visitor_session_id or "") or None,
+            visit_id=str(archive.get("visit_id") or visit_id or "") or None,
         )
-        memory_saved = True
+
     return {
         "ok": True,
+        "accepted": True,
         "conversation_phase": "standby",
-        "visit_id": archive.get("visit_id") or request.visitor_session_id,
+        "visit_id": archive.get("visit_id") or visit_id,
         "identity_id": identity_id or None,
-        "memory_saved": memory_saved,
+        "memory_saved": False,
+        "memory_queued": memory_queued,
+        "memory_job_id": memory_job_id,
+        "memory_queue": visitor_memory_queue.status(),
         "anonymous_history_discarded": not bool(identity_id),
+        "cancelled_task_ids": cancelled_task_ids,
         "end_reason": request.reason,
         "ended": bool(archive.get("ended")),
         "archive_reason": archive.get("reason"),
@@ -259,6 +318,7 @@ def proximity_greeting(
             route="proactive_reception_opening",
             expect_reply=True,
             source="virtual_host",
+            expected_visit_id=state.visit_id,
         )
         spoken_text = f"{greeting} {intro}".strip()
 
@@ -273,6 +333,7 @@ def proximity_greeting(
         "visit_id": state.visit_id,
         "identity_id": state.identity_id,
         "registered_memory_loaded": bool(registered_memory),
+        "revision": state.revision,
     }
 
 
