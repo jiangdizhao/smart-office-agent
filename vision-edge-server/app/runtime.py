@@ -29,6 +29,8 @@ class VisionRuntime:
         self._probe_lock = asyncio.Lock()
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._camera_selection_done = False
+        self._vision_stale = False
+        self._last_watchdog_monotonic = 0.0
         server_root = Path(__file__).resolve().parents[1]
         self.vision = VisionPipeline(config, server_root, self._emit_from_thread)
 
@@ -40,7 +42,15 @@ class VisionRuntime:
         if loop is None or loop.is_closed():
             return
         event = self.event_factory.build(event_type, payload)
-        asyncio.run_coroutine_threadsafe(self.hub.broadcast(event), loop)
+        future = asyncio.run_coroutine_threadsafe(self.hub.broadcast(event), loop)
+        future.add_done_callback(self._consume_broadcast_result)
+
+    @staticmethod
+    def _consume_broadcast_result(future: Any) -> None:
+        try:
+            future.result()
+        except Exception:
+            logger.exception("vision_event_broadcast_failed")
 
     def uptime_seconds(self) -> float:
         return round(time.monotonic() - self.started_monotonic, 3)
@@ -69,6 +79,43 @@ class VisionRuntime:
         await asyncio.to_thread(self.vision.start)
         return self.vision.status()
 
+    async def visit_watchdog_tick(self) -> None:
+        """Expire Visits and detect frozen camera/pipeline state without new frames."""
+        now = time.monotonic()
+        self._last_watchdog_monotonic = now
+        for event_type, payload in self.vision.visitor_sessions.expire_due(now):
+            await self.hub.broadcast(self.event_factory.build(event_type, payload))
+
+        camera_status = self.vision.camera.status()
+        frame_age_ms = camera_status.get("frame_age_ms")
+        stale_threshold_ms = max(
+            2_500.0,
+            4_000.0 / max(float(self.config.detection.inference_hz), 1.0),
+        )
+        stale = bool(
+            self.vision.running
+            and (
+                frame_age_ms is None
+                or float(frame_age_ms) > stale_threshold_ms
+                or not bool(camera_status.get("open"))
+            )
+        )
+        if stale == self._vision_stale:
+            return
+        self._vision_stale = stale
+        event_type = "vision_stale" if stale else "vision_recovered"
+        await self.hub.broadcast(
+            self.event_factory.build(
+                event_type,
+                {
+                    "frame_age_ms": frame_age_ms,
+                    "stale_threshold_ms": stale_threshold_ms,
+                    "camera_open": bool(camera_status.get("open")),
+                    "camera_running": bool(camera_status.get("running")),
+                },
+            )
+        )
+
     def readiness(self) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         if self.config.gpu.require_cuda and not bool((self.gpu or {}).get("ok")):
@@ -79,6 +126,8 @@ class VisionRuntime:
                 reasons.append(
                     f"vision pipeline is not ready (status={vision_status.get('status')})"
                 )
+            if self._vision_stale:
+                reasons.append("vision frames are stale")
         elif self.config.camera.enabled and self.camera is not None and not self.camera.get("ok"):
             camera_status = str(self.camera.get("status") or "unknown")
             reasons.append(f"camera is not realtime-ready (status={camera_status})")
@@ -90,11 +139,17 @@ class VisionRuntime:
             "service": self.config.service_name,
             "version": self.config.version,
             "phase": self.config.phase,
+            "server_instance_id": self.event_factory.server_instance_id,
             "ready": ready,
             "degraded_reasons": reasons,
             "uptime_seconds": self.uptime_seconds(),
             "probe_running": self.probe_running,
             "websocket_clients": self.hub.client_count,
+            "vision_stale": self._vision_stale,
+            "watchdog_age_ms": round(
+                max(time.monotonic() - self._last_watchdog_monotonic, 0.0) * 1000.0,
+                3,
+            ) if self._last_watchdog_monotonic else None,
             "gpu": self.gpu,
             "camera_selection": self.camera_selection,
             "camera_probe": self.camera,
