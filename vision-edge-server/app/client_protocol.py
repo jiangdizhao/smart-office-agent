@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from typing import Any
 
-CLIENT_SCHEMA_VERSION = "phase5.1"
+CLIENT_SCHEMA_VERSION = "phase5.2"
+ANONYMOUS_SESSION_STABILIZATION_SECONDS = 5.0
 
 
 def _number(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _integer(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -27,6 +35,39 @@ def _public_identity(identity: Any) -> dict[str, Any] | None:
     }
 
 
+def _session_profile(track: dict[str, Any], identity: dict[str, Any] | None) -> dict[str, Any]:
+    raw_session_id = track.get("visitor_session_id")
+    session = track.get("visitor_session") if isinstance(track.get("visitor_session"), dict) else {}
+    age_seconds = max(0.0, _number(session.get("age_seconds"), 0.0))
+    recovery_count = max(0, _integer(session.get("recovery_count"), 0))
+    registered = identity is not None
+    returning = bool(registered or recovery_count > 0)
+    stable = bool(
+        raw_session_id
+        and (
+            registered
+            or recovery_count > 0
+            or age_seconds >= ANONYMOUS_SESSION_STABILIZATION_SECONDS
+        )
+    )
+    if registered:
+        greeting_kind = "registered_identity"
+    elif recovery_count > 0:
+        greeting_kind = "returning_anonymous"
+    else:
+        greeting_kind = "new_anonymous"
+    return {
+        "raw_session_id": raw_session_id,
+        "visitor_session_id": raw_session_id if stable else None,
+        "provisional_session_id": raw_session_id if raw_session_id and not stable else None,
+        "session_stable": stable,
+        "session_age_seconds": age_seconds,
+        "session_recovery_count": recovery_count,
+        "returning_visitor": returning,
+        "greeting_kind": greeting_kind,
+    }
+
+
 def visitor_from_track(track: dict[str, Any]) -> dict[str, Any]:
     bbox = track.get("bbox") if isinstance(track.get("bbox"), dict) else {}
     face = track.get("face") if isinstance(track.get("face"), dict) else None
@@ -39,7 +80,9 @@ def visitor_from_track(track: dict[str, Any]) -> dict[str, Any]:
     confirmed = track.get("state") == "confirmed"
     primary = bool(track.get("primary"))
     engaged = bool(track.get("engaged"))
-    visitor_session_id = track.get("visitor_session_id")
+    identity = _public_identity(track.get("identity"))
+    session_profile = _session_profile(track, identity)
+    visitor_session_id = session_profile["visitor_session_id"]
     face_detected = face is not None
     greeting_eligible = bool(
         visible
@@ -47,11 +90,18 @@ def visitor_from_track(track: dict[str, Any]) -> dict[str, Any]:
         and primary
         and engaged
         and visitor_session_id
+        and session_profile["session_stable"]
         and face_detected
     )
     return {
         "track_id": int(track.get("track_id") or 0),
         "visitor_session_id": visitor_session_id,
+        "provisional_session_id": session_profile["provisional_session_id"],
+        "session_stable": session_profile["session_stable"],
+        "session_age_seconds": session_profile["session_age_seconds"],
+        "session_recovery_count": session_profile["session_recovery_count"],
+        "returning_visitor": session_profile["returning_visitor"],
+        "greeting_kind": session_profile["greeting_kind"],
         "state": track.get("state"),
         "visible": visible,
         "primary": primary,
@@ -74,7 +124,7 @@ def visitor_from_track(track: dict[str, Any]) -> dict[str, Any]:
                 or 0
             ),
         },
-        "identity": _public_identity(track.get("identity")),
+        "identity": identity,
         "greeting_eligible": greeting_eligible,
     }
 
