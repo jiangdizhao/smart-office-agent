@@ -63,15 +63,15 @@ def test_registered_primary_is_immediately_greeting_eligible() -> None:
     assert visitor["identity"]["display_name"] == "Rico"
 
 
-def test_greeting_requires_primary_engaged_visible_face() -> None:
+def test_greeting_requires_visible_primary_engaged_visit_not_face() -> None:
     assert visitor_from_track(_track(primary=False))["greeting_eligible"] is False
     assert visitor_from_track(_track(engaged=False))["greeting_eligible"] is False
-    assert visitor_from_track(_track(with_face=False))["greeting_eligible"] is False
+    assert visitor_from_track(_track(with_face=False))["greeting_eligible"] is True
 
 
-def test_new_anonymous_session_is_hidden_until_stable() -> None:
+def test_new_anonymous_session_is_hidden_only_during_short_stabilization() -> None:
     visitor = visitor_from_track(
-        _track(identity=False, session_age_seconds=1.0, recovery_count=0)
+        _track(identity=False, session_age_seconds=0.5, recovery_count=0)
     )
     assert visitor["visitor_session_id"] is None
     assert visitor["provisional_session_id"] == "visitor_abc123"
@@ -82,7 +82,7 @@ def test_new_anonymous_session_is_hidden_until_stable() -> None:
 
 def test_new_anonymous_session_becomes_eligible_after_stabilization() -> None:
     visitor = visitor_from_track(
-        _track(identity=False, session_age_seconds=5.1, recovery_count=0)
+        _track(identity=False, session_age_seconds=1.0, recovery_count=0)
     )
     assert visitor["visitor_session_id"] == "visitor_abc123"
     assert visitor["session_stable"] is True
@@ -105,8 +105,8 @@ def test_recovered_anonymous_session_is_welcome_back_candidate() -> None:
 def test_client_state_contains_compact_primary_and_visitors() -> None:
     state = build_client_state(
         service="rtx-vision-edge-server",
-        version="0.6.0",
-        phase="phase4_identity_session_fusion",
+        version="0.7.0",
+        phase="phase6_visit_lifecycle_identity_isolation",
         ready=True,
         degraded_reasons=[],
         tracks_snapshot={
@@ -117,7 +117,7 @@ def test_client_state_contains_compact_primary_and_visitors() -> None:
         },
         uptime_seconds=12.5,
     )
-    assert state["schema_version"] == "phase5.2"
+    assert state["schema_version"] == "phase6.0"
     assert state["ready"] is True
     assert state["primary"]["track_id"] == 7
     assert state["primary"]["greeting_eligible"] is True
