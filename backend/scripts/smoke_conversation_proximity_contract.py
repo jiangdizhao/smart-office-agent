@@ -151,6 +151,7 @@ def main() -> None:
     detector = read("ui/smart-office-ui/src/vision/proximityFaceMonitor.ts")
     remote_client = read("ui/smart-office-ui/src/vision/remoteVisionClient.ts")
     proximity_hook = read("ui/smart-office-ui/src/vision/useProximityGreeting.ts")
+    listening_gate = read("ui/smart-office-ui/src/vision/proactiveListeningGate.ts")
     proactive_loop = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
     stage1_css = read("ui/smart-office-ui/src/virtual-host/ProactiveReceptionStage1.css")
     main_tsx = read("ui/smart-office-ui/src/main.tsx")
@@ -197,6 +198,20 @@ def main() -> None:
         assert needle in remote_client, f"Missing remote vision client contract: {needle}"
 
     for needle in (
+        "ProactiveListeningGate",
+        "enterBodyRatio",
+        "exitBodyRatio",
+        "enterStableMs",
+        "exitGraceMs",
+        "face_missing",
+        "visitor_too_far",
+        "primary_absent",
+        "face_missing_grace",
+        "visitor_too_far_grace",
+    ):
+        assert needle in listening_gate, f"Missing listening-gate hysteresis contract: {needle}"
+
+    for needle in (
         "smartoffice:host-intro-start",
         "Welcome to our office.",
         "Welcome back",
@@ -204,9 +219,17 @@ def main() -> None:
         "greetedVisitRef",
         "captureAutomaticRealtimeTurn",
         "proactive-reception-started",
-        "remote_visitor_absent",
+        "proactive-reception-listening-suspended",
+        "proactive-listening-gate",
+        "VITE_PROACTIVE_LISTEN_ENTER_BODY_RATIO",
+        "VITE_PROACTIVE_LISTEN_EXIT_BODY_RATIO",
+        "VITE_PROACTIVE_LISTEN_MIN_FACE_CONFIDENCE",
+        "VITE_PROACTIVE_LISTEN_ENTER_STABLE_MS",
+        "VITE_PROACTIVE_LISTEN_EXIT_GRACE_MS",
+        "VITE_PROACTIVE_SESSION_ABSENCE_SECONDS",
+        "scheduleVisitorAbsence",
     ):
-        assert needle in proximity_hook, f"Missing Stage 1 proactive reception contract: {needle}"
+        assert needle in proximity_hook, f"Missing presence/listening separation contract: {needle}"
 
     for needle in (
         "END_SILENCE_MS = 900",
@@ -214,8 +237,10 @@ def main() -> None:
         "controller().beginListening()",
         "controller().endListening()",
         "realtimeAgent.abortCapture()",
+        "listeningGate",
+        "kind: 'gated'",
     ):
-        assert needle in proactive_loop, f"Missing automatic Realtime voice-turn contract: {needle}"
+        assert needle in proactive_loop, f"Missing gated automatic Realtime voice-turn contract: {needle}"
 
     assert ".voice-primary-row" in stage1_css
     assert ".conversation-record-button" in stage1_css
@@ -238,8 +263,8 @@ def main() -> None:
     assert "RTX 视觉服务器" in drawer
     assert "body_area_ratio" in drawer
 
-    print("PASS: Stage 1 proactive reception opening, automatic Realtime voice turns, visitor absence shutdown, and voice-first UI contracts are present.")
-    print("NOTE: Real LAN, dual microphone capture, room-noise VAD thresholds, local video assets, and GPT Realtime playback require local acceptance.")
+    print("PASS: proactive reception keeps the visitor session while face/distance hysteresis gates the real GPT Realtime microphone.")
+    print("NOTE: Real LAN, camera geometry, room-noise VAD thresholds, local video assets, and GPT Realtime playback require local acceptance.")
 
 
 if __name__ == "__main__":
