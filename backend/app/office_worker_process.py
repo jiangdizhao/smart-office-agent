@@ -92,7 +92,7 @@ def execute_office_tool_isolated(
         target=_worker,
         args=(output, tool_name, dict(args)),
         name=f"office-tool-{tool_name}",
-        daemon=True,
+        daemon=False,
     )
     process.start()
     process.join(timeout)
