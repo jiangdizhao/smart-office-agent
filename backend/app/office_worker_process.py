@@ -3,11 +3,15 @@ from __future__ import annotations
 import multiprocessing
 import os
 import queue
+import threading
 import time
 from datetime import UTC, datetime
 from typing import Any
 
 from app.models import ToolResult, VerificationResult
+
+_SPAWN_ENV_LOCK = threading.Lock()
+_WORKER_CHILD_ENV = "SMART_OFFICE_WORKER_CHILD"
 
 
 def _timeout_seconds() -> float:
@@ -77,6 +81,26 @@ def _failure(
     return result, verification, status
 
 
+def _start_marked_worker(process: multiprocessing.Process) -> None:
+    """Spawn a child that skips Backend-only daemon services.
+
+    Windows spawn inherits the parent environment while importing ``app`` in the
+    child. The lock prevents two concurrent Office requests from racing while the
+    temporary marker is set in the parent process.
+    """
+
+    with _SPAWN_ENV_LOCK:
+        previous = os.environ.get(_WORKER_CHILD_ENV)
+        os.environ[_WORKER_CHILD_ENV] = "1"
+        try:
+            process.start()
+        finally:
+            if previous is None:
+                os.environ.pop(_WORKER_CHILD_ENV, None)
+            else:
+                os.environ[_WORKER_CHILD_ENV] = previous
+
+
 def execute_office_tool_isolated(
     tool_name: str,
     args: dict[str, Any],
@@ -94,7 +118,7 @@ def execute_office_tool_isolated(
         name=f"office-tool-{tool_name}",
         daemon=False,
     )
-    process.start()
+    _start_marked_worker(process)
     process.join(timeout)
 
     if process.is_alive():
