@@ -90,6 +90,9 @@ ApprovalAction = Literal["approve", "cancel", "skip", "takeover"]
 class TaskCreateRequest(BaseModel):
     text: str = Field(..., description="User request")
     execute: bool = Field(False, description="Whether this task should execute tools")
+    conversation_id: str | None = Field(default=None, max_length=160)
+    visit_id: str | None = Field(default=None, max_length=160)
+    actor_type: str | None = Field(default=None, max_length=40)
 
 
 class ApprovalRequest(BaseModel):
@@ -139,3 +142,8 @@ class TaskSession(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
+    owner_conversation_id: str | None = None
+    owner_visit_id: str | None = None
+    owner_actor_type: str | None = None
+    detached_from_visit: bool = False
+    approval_deadline_at: datetime | None = None
