@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import './voice/safeRealtimeAgentRuntime'
 import './voice/visitFarewellSessionPatch'
+import './voice/proximityTimelineDiagnostics'
 import './voice/VoiceDebugPanelPhase2.css'
 import './virtual-host/ProactiveReceptionStage1.css'
 import { installRealtimeMetadataCompatibility } from './voice/realtimeMetadataCompatibility'
@@ -31,7 +32,7 @@ function installProximityTerminalForwarding(): void {
     (configured !== 'false' && configured !== '0' && configured !== 'off' && import.meta.env.DEV)
   if (!enabled) return
 
-  const forward = (level: 'info' | 'error', args: unknown[]) => {
+  const forward = (level: 'info' | 'warn' | 'error', args: unknown[]) => {
     const first = typeof args[0] === 'string' ? args[0] : ''
     if (!first.startsWith('[ProximityDebug]')) return
 
@@ -53,10 +54,15 @@ function installProximityTerminalForwarding(): void {
   }
 
   const originalInfo = console.info.bind(console)
+  const originalWarn = console.warn.bind(console)
   const originalError = console.error.bind(console)
   console.info = (...args: unknown[]) => {
     originalInfo(...args)
     forward('info', args)
+  }
+  console.warn = (...args: unknown[]) => {
+    originalWarn(...args)
+    forward('warn', args)
   }
   console.error = (...args: unknown[]) => {
     originalError(...args)
