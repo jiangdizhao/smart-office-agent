@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from html import escape
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
@@ -44,6 +44,21 @@ class ProximityDetectionRequest(BaseModel):
     center_y: float = Field(..., ge=0.0, le=1.0)
     stable_frames: int = Field(..., ge=1, le=120)
     detector: str = Field("unknown", max_length=80)
+    track_id: int | None = Field(default=None, ge=1)
+    visitor_session_id: str | None = Field(default=None, max_length=120)
+    provisional_session_id: str | None = Field(default=None, max_length=120)
+    session_stable: bool | None = None
+    session_age_seconds: float | None = Field(default=None, ge=0.0)
+    session_recovery_count: int | None = Field(default=None, ge=0)
+    returning_visitor: bool = False
+    greeting_kind: Literal[
+        "new_anonymous",
+        "returning_anonymous",
+        "registered_identity",
+    ] = "new_anonymous"
+    identity_id: str | None = Field(default=None, max_length=160)
+    display_name: str | None = Field(default=None, max_length=80)
+    identity_similarity: float | None = Field(default=None, ge=-1.0, le=1.0)
 
 
 @router.get("/api/reception/status")
@@ -173,8 +188,8 @@ def proximity_greeting(
 
     # A proximity greeting is a visual attention cycle, not a user turn. Once the
     # greeting has been accepted, return the conversation to standby immediately.
-    # The frontend monitor owns the rearm delay and requires a fresh unqualified
-    # interval before another greeting can be requested.
+    # The frontend owns presence-episode rearm and only requests another greeting
+    # after the visitor has been absent or a different stable visitor becomes primary.
     if triggered:
         state.last_proximity_greeting_at = None
         state = conversation_store.mark_standby(conversation_id)
