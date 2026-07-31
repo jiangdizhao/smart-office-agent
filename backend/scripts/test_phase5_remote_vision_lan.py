@@ -9,6 +9,8 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 import websockets
 
+EXPECTED_CLIENT_SCHEMA = "phase5.2"
+
 
 def to_ws_url(http_base: str) -> str:
     parsed = urlparse(http_base.rstrip("/"))
@@ -46,15 +48,16 @@ async def run(server: str, timeout_seconds: float) -> int:
             http_state = state_response.json()
         ws_state = await receive_client_state(to_ws_url(base), timeout_seconds)
         for label, state in (("HTTP", http_state), ("WebSocket", ws_state)):
-            if state.get("schema_version") != "phase5.1":
+            if state.get("schema_version") != EXPECTED_CLIENT_SCHEMA:
                 raise RuntimeError(
-                    f"{label} returned schema {state.get('schema_version')!r}, expected 'phase5.1'"
+                    f"{label} returned schema {state.get('schema_version')!r}, "
+                    f"expected {EXPECTED_CLIENT_SCHEMA!r}"
                 )
     except Exception as exc:
         print(f"FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    print("PASS: i5 client can reach the RTX Phase 5 vision service over HTTP and WebSocket.")
+    print("PASS: i5 client can reach the RTX Phase 5.2 vision service over HTTP and WebSocket.")
     print(
         f"Server: {health.get('service')} {health.get('version')} "
         f"phase={health.get('phase')} ready={health.get('ready')}"
@@ -66,8 +69,9 @@ async def run(server: str, timeout_seconds: float) -> int:
     primary = ws_state.get("primary") or {}
     print(
         f"Primary session={primary.get('visitor_session_id')} "
-        f"engaged={primary.get('engaged')} face={(primary.get('face') or {}).get('detected')} "
-        f"greeting_eligible={primary.get('greeting_eligible')}"
+        f"provisional={primary.get('provisional_session_id')} "
+        f"stable={primary.get('session_stable')} returning={primary.get('returning_visitor')} "
+        f"greeting={primary.get('greeting_kind')} eligible={primary.get('greeting_eligible')}"
     )
     return 0
 
