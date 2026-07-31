@@ -15,6 +15,7 @@ import {
 const ENABLED_KEY = 'smartoffice_proximity_greeting_enabled'
 const REMOTE_FALLBACK_DELAY_MS = 8_000
 const REMOTE_ATTEMPT_COOLDOWN_MS = 2_000
+const REMOTE_REARM_ABSENCE_MS = 1_000
 
 type VisionSourceMode = 'remote' | 'remote-with-fallback' | 'mediapipe' | 'disabled'
 export type ProximitySource = 'remote' | 'mediapipe' | 'disabled'
@@ -37,6 +38,22 @@ function configuredSourceMode(): VisionSourceMode {
   if (configured === 'remote-with-fallback') return 'remote-with-fallback'
   if (configured === 'disabled') return 'disabled'
   return 'remote'
+}
+
+function greetingText(
+  detection: ProximityDetection | RemoteVisionDetection,
+  language: 'zh' | 'en',
+): string {
+  if ('greeting_kind' in detection) {
+    const name = String(detection.display_name ?? '').trim()
+    if (detection.greeting_kind === 'registered_identity' && name) {
+      return language === 'zh' ? `欢迎回来，${name}。` : `Welcome back, ${name}.`
+    }
+    if (detection.greeting_kind === 'returning_anonymous') {
+      return language === 'zh' ? '欢迎回来。' : 'Welcome back.'
+    }
+  }
+  return language === 'zh' ? '欢迎来到我们的办公室。' : 'Welcome to our office.'
 }
 
 const GREET_FEATURE_ENABLED = greetFeatureEnabled()
@@ -74,7 +91,9 @@ export function useProximityGreeting(
   const lastEligibilitySignatureRef = useRef('')
   const monitorRef = useRef<ProximityFaceMonitor | null>(null)
   const remoteRef = useRef<RemoteVisionClient | null>(null)
-  const greetedSessionsRef = useRef(new Set<string>())
+  const greetedVisitRef = useRef<string | null>(null)
+  const activeRemoteSessionRef = useRef<string | null>(null)
+  const remoteAbsenceTimerRef = useRef<number | null>(null)
   const pendingSessionsRef = useRef(new Set<string>())
   const lastAttemptAtRef = useRef(new Map<string, number>())
   const localGreetingInFlightRef = useRef(false)
@@ -105,6 +124,12 @@ export function useProximityGreeting(
       monitorRef.current = null
       remoteRef.current?.stop()
       remoteRef.current = null
+      if (remoteAbsenceTimerRef.current !== null) {
+        window.clearTimeout(remoteAbsenceTimerRef.current)
+        remoteAbsenceTimerRef.current = null
+      }
+      greetedVisitRef.current = null
+      activeRemoteSessionRef.current = null
       return
     }
 
@@ -145,11 +170,11 @@ export function useProximityGreeting(
     }
 
     const attemptGreeting = async (
-      detection: ProximityDetection,
+      detection: ProximityDetection | RemoteVisionDetection,
       visitorSessionId = '',
     ): Promise<boolean> => {
       if (!eligibleNow()) return false
-      if (visitorSessionId && greetedSessionsRef.current.has(visitorSessionId)) return false
+      if (visitorSessionId && greetedVisitRef.current === visitorSessionId) return false
       const attemptKey = visitorSessionId || '__local__'
       const now = Date.now()
       if (now - (lastAttemptAtRef.current.get(attemptKey) ?? 0) < REMOTE_ATTEMPT_COOLDOWN_MS) {
@@ -164,14 +189,15 @@ export function useProximityGreeting(
         localGreetingInFlightRef.current = true
       }
       lastAttemptAtRef.current.set(attemptKey, now)
+      const welcomeText = greetingText(detection, controllerRef.current.language)
       window.dispatchEvent(
         new CustomEvent('smartoffice:host-intro-start', {
-          detail: { detection, welcomeText: 'Welcome to our office.' },
+          detail: { detection, welcomeText },
         }),
       )
       try {
         const triggered = await controllerRef.current.triggerProximityGreeting(detection)
-        if (triggered && visitorSessionId) greetedSessionsRef.current.add(visitorSessionId)
+        if (triggered && visitorSessionId) greetedVisitRef.current = visitorSessionId
         if (!triggered) window.dispatchEvent(new CustomEvent('smartoffice:host-intro-cancel'))
         return triggered
       } finally {
@@ -226,12 +252,32 @@ export function useProximityGreeting(
             fallbackTimer = window.setTimeout(() => startMediaPipe(true), REMOTE_FALLBACK_DELAY_MS)
           }
         },
-        onDetection: setLastDetection,
+        onDetection: (detection) => {
+          setLastDetection(detection)
+          if (detection) {
+            if (remoteAbsenceTimerRef.current !== null) {
+              window.clearTimeout(remoteAbsenceTimerRef.current)
+              remoteAbsenceTimerRef.current = null
+            }
+            activeRemoteSessionRef.current = detection.visitor_session_id
+            return
+          }
+          if (remoteAbsenceTimerRef.current !== null) return
+          remoteAbsenceTimerRef.current = window.setTimeout(() => {
+            remoteAbsenceTimerRef.current = null
+            const absentSession = activeRemoteSessionRef.current
+            if (absentSession && greetedVisitRef.current === absentSession) {
+              greetedVisitRef.current = null
+            }
+            activeRemoteSessionRef.current = null
+          }, REMOTE_REARM_ABSENCE_MS)
+        },
         onGreetingCandidate: (detection: RemoteVisionDetection) => {
           void attemptGreeting(detection, detection.visitor_session_id)
         },
         onSessionExpired: (visitorSessionId) => {
-          greetedSessionsRef.current.delete(visitorSessionId)
+          if (greetedVisitRef.current === visitorSessionId) greetedVisitRef.current = null
+          if (activeRemoteSessionRef.current === visitorSessionId) activeRemoteSessionRef.current = null
           pendingSessionsRef.current.delete(visitorSessionId)
           lastAttemptAtRef.current.delete(visitorSessionId)
         },
@@ -243,6 +289,10 @@ export function useProximityGreeting(
     return () => {
       disposed = true
       if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+      if (remoteAbsenceTimerRef.current !== null) {
+        window.clearTimeout(remoteAbsenceTimerRef.current)
+        remoteAbsenceTimerRef.current = null
+      }
       monitorRef.current?.stop()
       monitorRef.current = null
       remoteRef.current?.stop()
