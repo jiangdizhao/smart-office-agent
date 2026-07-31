@@ -295,7 +295,8 @@ def main() -> None:
         assert needle in detector, f"Missing MediaPipe fallback contract: {needle}"
 
     for needle in (
-        "phase6.0",
+        "schema_version",
+        "rtx-vision-phase6",
         "RemoteVisitEnded",
         "onVisitEnded",
         "visit_ended",
