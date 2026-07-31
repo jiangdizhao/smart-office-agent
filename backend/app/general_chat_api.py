@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -13,6 +14,41 @@ from app.turn_router import classify_turn
 router = APIRouter(tags=["general-chat"])
 
 Language = Literal["zh", "en"]
+ConversationComplexity = Literal["simple", "complex", "not_applicable"]
+AnswerEngine = Literal["realtime", "terra", "office_interpreter", "backend"]
+
+_COMPLEX_ZH_PATTERN = re.compile(
+    r"详细(?:解释|说明|分析)|深入(?:解释|说明|分析|讨论)|全面(?:解释|说明|分析|比较)|"
+    r"系统地(?:解释|说明|分析)|逐步(?:解释|说明|分析)|分步骤(?:解释|说明)|"
+    r"对比分析|比较分析|优缺点|利弊|制定(?:一个|一份)?(?:详细)?(?:计划|方案)|"
+    r"研究一下|评估一下|论证一下|法律建议|医疗建议|财务建议|投资建议|风险分析"
+)
+_COMPLEX_EN_PATTERN = re.compile(
+    r"\b(?:explain|describe|analyse|analyze|compare|evaluate|assess|research|discuss)\b.{0,24}"
+    r"\b(?:in detail|deeply|thoroughly|comprehensively|step by step)\b|"
+    r"\b(?:detailed analysis|comparative analysis|pros and cons|advantages and disadvantages|"
+    r"legal advice|medical advice|financial advice|investment advice|risk analysis)\b",
+    re.IGNORECASE,
+)
+
+
+class ConversationRouteRequest(BaseModel):
+    conversation_id: str = Field(..., min_length=1, max_length=160)
+    text: str = Field(..., min_length=1, max_length=12_000)
+    language: Language = "zh"
+    actor_type: ActorType = "visitor"
+    visit_id: str | None = Field(default=None, max_length=160)
+
+
+class ConversationRouteResponse(BaseModel):
+    ok: bool = True
+    route: str
+    scene: str
+    route_reason: str
+    conversation_complexity: ConversationComplexity
+    answer_engine: AnswerEngine
+    recent_context: str
+    visit_id: str | None = None
 
 
 class GeneralChatRequest(BaseModel):
@@ -56,6 +92,30 @@ def _history_text(context: dict[str, Any], current_text: str, language: Language
     if lines and lines[-1].endswith(current_text.strip()):
         lines = lines[:-1]
     return "\n".join(lines) if lines else "(none)"
+
+
+def _conversation_complexity(text: str, language: Language) -> ConversationComplexity:
+    clean = " ".join(text.strip().split())
+    if language == "zh":
+        cjk_count = len(re.findall(r"[\u3400-\u9fff]", clean))
+        clause_count = len(re.findall(r"[，；。！？]", clean))
+        if cjk_count >= 120 or clause_count >= 5 or _COMPLEX_ZH_PATTERN.search(clean):
+            return "complex"
+        return "simple"
+
+    word_count = len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", clean))
+    clause_count = len(re.findall(r"[,;.!?]", clean))
+    if word_count >= 55 or clause_count >= 5 or _COMPLEX_EN_PATTERN.search(clean):
+        return "complex"
+    return "simple"
+
+
+def _answer_engine(route: str, reason: str, complexity: ConversationComplexity) -> AnswerEngine:
+    if route in {"office_direct", "office_planned_task"}:
+        return "office_interpreter"
+    if route == "realtime_direct" and reason == "general_direct_conversation":
+        return "terra" if complexity == "complex" else "realtime"
+    return "backend"
 
 
 def _instructions(language: Language) -> str:
@@ -110,6 +170,35 @@ async def generate_general_chat_answer(
         input_text=input_text,
         instructions=_instructions(language),
         max_output_tokens=1600,
+    )
+
+
+@router.post("/api/conversation-route", response_model=ConversationRouteResponse)
+async def conversation_route(req: ConversationRouteRequest) -> ConversationRouteResponse:
+    clean = " ".join(req.text.strip().split())
+    context = conversation_store.context_snapshot(
+        req.conversation_id,
+        language=req.language,
+        actor_type=req.actor_type,
+    )
+    expected_visit_id = str(req.visit_id or context.get("visit_id") or "").strip() or None
+    if req.visit_id and not conversation_store.is_current_visit(req.conversation_id, req.visit_id):
+        raise HTTPException(status_code=409, detail="stale_visit_before_route_preview")
+
+    decision = classify_turn(clean, req.actor_type)
+    complexity: ConversationComplexity = (
+        _conversation_complexity(clean, req.language)
+        if decision.reason == "general_direct_conversation"
+        else "not_applicable"
+    )
+    return ConversationRouteResponse(
+        route=decision.route,
+        scene=decision.scene,
+        route_reason=decision.reason,
+        conversation_complexity=complexity,
+        answer_engine=_answer_engine(decision.route, decision.reason, complexity),
+        recent_context=_history_text(context, clean, req.language),
+        visit_id=expected_visit_id,
     )
 
 
