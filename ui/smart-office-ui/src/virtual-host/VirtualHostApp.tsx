@@ -35,7 +35,7 @@ function stateText(
   const labels: Record<VirtualHostVisualState, { zh: string; en: string }> = {
     idle: { zh: '随时为您服务', en: 'Ready to help' },
     connecting: { zh: '正在连接语音服务', en: 'Connecting voice service' },
-    listening: { zh: '正在聆听', en: 'Listening' },
+    listening: { zh: '麦克风已开启，正在聆听', en: 'Microphone on — listening' },
     processing: { zh: '正在理解您的请求', en: 'Understanding your request' },
     speaking: { zh: '正在为您说明', en: 'Speaking' },
     executing: { zh: '正在执行办公任务', en: 'Working on your office task' },
@@ -106,7 +106,9 @@ export default function VirtualHostApp() {
   )
   const isWaitingApproval = controller.taskStatus === 'waiting_approval'
   const isSendApproval = controller.pendingApprovalTool === 'outlook_send_approved_draft'
-  const userCaption = controller.transcript.trim() || lastUserText
+  const currentTranscript = controller.transcript.trim()
+  const userCaption =
+    currentTranscript || (visualState === 'listening' ? '' : lastUserText)
   const assistantCaption = controller.answer.trim() || lastAssistantText
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
   const humanSummaryAvailable = Boolean(
