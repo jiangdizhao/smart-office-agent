@@ -42,6 +42,13 @@ def main() -> None:
         "center_y": 0.5,
         "stable_frames": 4,
         "detector": "contract-person+face",
+        "track_id": 7,
+        "visitor_session_id": "visitor_new",
+        "session_stable": True,
+        "session_age_seconds": 5.2,
+        "session_recovery_count": 0,
+        "returning_visitor": False,
+        "greeting_kind": "new_anonymous",
     }
     greeting = client.post(
         f"/api/conversations/{conversation_id}/proximity-greeting",
@@ -64,6 +71,34 @@ def main() -> None:
     assert duplicate_payload["triggered"] is True
     assert duplicate_payload["greeting"] == "Welcome to our office."
     assert duplicate_payload["conversation_phase"] == "standby"
+
+    returning = client.post(
+        "/api/conversations/conversation-returning-anonymous/proximity-greeting",
+        json={
+            **detection,
+            "visitor_session_id": "visitor_returning",
+            "session_recovery_count": 1,
+            "returning_visitor": True,
+            "greeting_kind": "returning_anonymous",
+        },
+    )
+    returning.raise_for_status()
+    assert returning.json()["greeting"] == "Welcome back."
+
+    registered = client.post(
+        "/api/conversations/conversation-registered/proximity-greeting",
+        json={
+            **detection,
+            "visitor_session_id": "visitor_rico",
+            "returning_visitor": True,
+            "greeting_kind": "registered_identity",
+            "identity_id": "person_rico",
+            "display_name": "Rico",
+            "identity_similarity": 0.81,
+        },
+    )
+    registered.raise_for_status()
+    assert registered.json()["greeting"] == "Welcome back, Rico."
 
     started = client.post(
         f"/api/conversations/{conversation_id}/turn-start",
@@ -146,6 +181,9 @@ def main() -> None:
         "client_state_snapshot",
         "get_client_state",
         "visitor_session_id",
+        "session_stable",
+        "returning_visitor",
+        "greeting_kind",
         "greeting_eligible",
     ):
         assert needle in remote_client, f"Missing remote vision client contract: {needle}"
@@ -153,10 +191,12 @@ def main() -> None:
     for needle in (
         "smartoffice:host-intro-start",
         "Welcome to our office.",
+        "Welcome back",
         "VITE_VISION_SOURCE",
-        "greetedSessionsRef",
+        "greetedVisitRef",
+        "REMOTE_REARM_ABSENCE_MS",
     ):
-        assert needle in proximity_hook, f"Missing Phase 5 greeting trigger contract: {needle}"
+        assert needle in proximity_hook, f"Missing Phase 5.2 greeting trigger contract: {needle}"
 
     for needle in (
         "idle-primary.mp4",
@@ -173,7 +213,7 @@ def main() -> None:
     assert "RTX 视觉服务器" in drawer
     assert "body_area_ratio" in drawer
 
-    print("PASS: conversation memory, Phase 5 remote vision greeting, fallback, and video-avatar contracts are present.")
+    print("PASS: conversation memory, personalized Phase 5.2 greetings, fallback, and video-avatar contracts are present.")
     print("NOTE: Real LAN, RTX vision, camera geometry, local video assets, and GPT Realtime playback require local acceptance.")
 
 
