@@ -9,6 +9,8 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 import websockets
 
+EXPECTED_CLIENT_SCHEMA = "phase5.2"
+
 
 def websocket_url(http_base: str) -> str:
     parsed = urlparse(http_base.rstrip("/"))
@@ -30,7 +32,7 @@ async def check_websocket(ws_url: str, timeout_seconds: float) -> dict:
             if event_type != "client_state_snapshot":
                 continue
             payload = event.get("payload") or {}
-            if payload.get("schema_version") != "phase5.1":
+            if payload.get("schema_version") != EXPECTED_CLIENT_SCHEMA:
                 raise RuntimeError(f"unexpected client schema: {payload.get('schema_version')}")
             return {"events_seen": seen, "client_state": payload}
     raise RuntimeError("client_state_snapshot was not received")
@@ -52,7 +54,7 @@ async def main_async() -> int:
             state_response.raise_for_status()
             health = health_response.json()
             state = state_response.json()
-        if state.get("schema_version") != "phase5.1":
+        if state.get("schema_version") != EXPECTED_CLIENT_SCHEMA:
             raise RuntimeError(f"unexpected HTTP client schema: {state.get('schema_version')}")
         ws_result = await check_websocket(websocket_url(base), args.timeout_seconds)
     except Exception as exc:
@@ -68,7 +70,9 @@ async def main_async() -> int:
     print(
         "Primary: "
         f"track={primary.get('track_id')} session={primary.get('visitor_session_id')} "
-        f"engaged={primary.get('engaged')} greeting_eligible={primary.get('greeting_eligible')}"
+        f"provisional={primary.get('provisional_session_id')} "
+        f"stable={primary.get('session_stable')} returning={primary.get('returning_visitor')} "
+        f"greeting={primary.get('greeting_kind')} eligible={primary.get('greeting_eligible')}"
     )
     print(f"WebSocket events: {ws_result['events_seen']}")
     return 0
