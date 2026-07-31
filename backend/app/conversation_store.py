@@ -13,6 +13,7 @@ ConversationPhase = Literal["standby", "engaged", "awaiting_user", "task_active"
 MessageRole = Literal["user", "assistant", "system"]
 
 _MAX_MESSAGES = 16
+_MAX_REPLACED_VISIT_ARCHIVES = 128
 
 
 def _now() -> datetime:
@@ -79,11 +80,14 @@ class ConversationState:
     display_name: str | None = None
     registered_memory_summary: str = ""
     last_greeted_visit_id: str | None = None
+    revision: int = 0
 
 
 class ConversationStore:
     def __init__(self) -> None:
         self._items: dict[str, ConversationState] = {}
+        self._replaced_archives: dict[tuple[str, str], dict[str, Any]] = {}
+        self._archive_order: list[tuple[str, str]] = []
         self._lock = RLock()
 
     def get_or_create(
@@ -108,6 +112,21 @@ class ConversationStore:
             self._refresh_idle_locked(state)
             return state
 
+    def current_visit_id(self, conversation_id: str) -> str | None:
+        with self._lock:
+            state = self._items.get(conversation_id)
+            return None if state is None else state.visit_id
+
+    def is_current_visit(self, conversation_id: str, visit_id: str | None) -> bool:
+        clean = str(visit_id or "").strip()
+        with self._lock:
+            state = self._items.get(conversation_id)
+            if state is None:
+                return not clean
+            if not clean:
+                return state.visit_id is None
+            return state.visit_id == clean
+
     def update(
         self,
         conversation_id: str,
@@ -118,9 +137,11 @@ class ConversationStore:
         last_visible_answer: str | None = None,
         last_command: str | None = None,
         conversation_phase: ConversationPhase | None = None,
+        expected_visit_id: str | None = None,
     ) -> ConversationState:
         with self._lock:
             state = self._items[conversation_id]
+            self._require_current_visit_locked(state, expected_visit_id)
             if current_scene is not None:
                 state.current_scene = current_scene
             if set_active_task:
@@ -133,6 +154,7 @@ class ConversationStore:
                 state.conversation_phase = conversation_phase
                 state.awaiting_user_since = _now() if conversation_phase == "awaiting_user" else None
             state.last_activity_at = _now()
+            state.revision += 1
             self._refresh_summary_locked(state)
             return state
 
@@ -144,6 +166,7 @@ class ConversationStore:
         actor_type: ActorType,
         text: str,
         source: str,
+        expected_visit_id: str | None = None,
     ) -> ConversationState:
         clean = " ".join(text.strip().split())
         with self._lock:
@@ -152,10 +175,12 @@ class ConversationStore:
                 language=language,
                 actor_type=actor_type,
             )
+            self._require_current_visit_locked(state, expected_visit_id)
             state.conversation_phase = "engaged"
             state.awaiting_user_since = None
             state.last_command = clean
             state.last_activity_at = _now()
+            state.revision += 1
             if clean:
                 self._append_message_locked(
                     state,
@@ -173,14 +198,17 @@ class ConversationStore:
         task_id: str | None = None,
         expect_reply: bool = True,
         source: str = "agent",
+        expected_visit_id: str | None = None,
     ) -> ConversationState:
         clean = " ".join(text.strip().split())
         with self._lock:
             state = self._items[conversation_id]
+            self._require_current_visit_locked(state, expected_visit_id)
             now = _now()
             state.last_visible_answer = clean
             state.last_activity_at = now
             state.active_task_id = task_id if task_id else state.active_task_id
+            state.revision += 1
             if clean:
                 self._append_message_locked(
                     state,
@@ -211,11 +239,14 @@ class ConversationStore:
         task_id: str | None,
         active: bool,
         final_text: str = "",
+        expected_visit_id: str | None = None,
     ) -> ConversationState:
         with self._lock:
             state = self._items[conversation_id]
+            self._require_current_visit_locked(state, expected_visit_id)
             now = _now()
             state.last_activity_at = now
+            state.revision += 1
             if active:
                 state.active_task_id = task_id
                 state.conversation_phase = "task_active"
@@ -236,6 +267,7 @@ class ConversationStore:
             if state.active_task_id is None:
                 state.conversation_phase = "standby"
                 state.awaiting_user_since = None
+                state.revision += 1
             return state
 
     def proximity_greeting(
@@ -255,17 +287,16 @@ class ConversationStore:
             )
             visit_id = _visit_id(detection, conversation_id)
             if state.visit_id != visit_id:
-                if state.active_task_id is not None:
-                    return False, "", "active_task", state
+                if state.visit_id:
+                    self._store_replaced_archive_locked(state)
                 self._reset_for_new_visit_locked(state)
                 state.visit_id = visit_id
+                state.revision += 1
             self._refresh_idle_locked(state)
             if state.last_greeted_visit_id == visit_id:
                 return False, "", "visit_already_greeted", state
             if state.conversation_phase != "standby":
                 return False, "", f"conversation_phase={state.conversation_phase}", state
-            if state.active_task_id is not None:
-                return False, "", "active_task", state
 
             identity_id = str(detection.get("identity_id") or "").strip() or None
             display_name = " ".join(str(detection.get("display_name") or "").strip().split())[:80] or None
@@ -285,6 +316,7 @@ class ConversationStore:
             state.last_visible_answer = greeting
             state.last_proximity_detection = dict(detection)
             state.last_greeted_visit_id = visit_id
+            state.revision += 1
             self._append_message_locked(
                 state,
                 ConversationMessage(
@@ -298,39 +330,42 @@ class ConversationStore:
             return True, greeting, "triggered", state
 
     def end_visit(self, conversation_id: str, *, visit_id: str | None = None) -> dict[str, Any]:
+        clean_visit = str(visit_id or "").strip()
         with self._lock:
             state = self._items.get(conversation_id)
+            if clean_visit:
+                cached = self._replaced_archives.pop((conversation_id, clean_visit), None)
+                if cached is not None:
+                    try:
+                        self._archive_order.remove((conversation_id, clean_visit))
+                    except ValueError:
+                        pass
+                    return cached
             if state is None:
                 return {
                     "conversation_id": conversation_id,
-                    "visit_id": visit_id,
+                    "visit_id": clean_visit or None,
                     "identity_id": None,
                     "display_name": None,
                     "conversation_summary": "",
                     "recent_messages": [],
                     "ended": False,
+                    "reason": "conversation_not_found",
                 }
-            if visit_id and state.visit_id and visit_id != state.visit_id:
+            if clean_visit and state.visit_id and clean_visit != state.visit_id:
                 return {
                     "conversation_id": conversation_id,
-                    "visit_id": visit_id,
-                    "identity_id": state.identity_id,
-                    "display_name": state.display_name,
-                    "conversation_summary": state.conversation_summary,
-                    "recent_messages": [asdict(message) for message in state.messages[-8:]],
+                    "visit_id": clean_visit,
+                    "identity_id": None,
+                    "display_name": None,
+                    "conversation_summary": "",
+                    "recent_messages": [],
                     "ended": False,
                     "reason": "visit_id_mismatch",
                 }
-            archive = {
-                "conversation_id": state.conversation_id,
-                "visit_id": state.visit_id,
-                "identity_id": state.identity_id,
-                "display_name": state.display_name,
-                "conversation_summary": state.conversation_summary,
-                "recent_messages": [asdict(message) for message in state.messages[-8:]],
-                "ended": True,
-            }
+            archive = self._archive_state_locked(state)
             self._reset_for_new_visit_locked(state)
+            state.revision += 1
             return archive
 
     def snapshot(
@@ -385,6 +420,7 @@ class ConversationStore:
                 "visit_id": state.visit_id,
                 "identity_id": state.identity_id,
                 "display_name": state.display_name,
+                "revision": state.revision,
                 "recent_messages": [asdict(message) for message in state.messages[-_MAX_MESSAGES:]],
                 "last_activity_at": state.last_activity_at,
                 "awaiting_user_since": state.awaiting_user_since,
@@ -405,6 +441,44 @@ class ConversationStore:
         state.conversation_summary = " | ".join(
             f"{message.role}: {message.text[:180]}" for message in recent
         )
+
+    def _archive_state_locked(self, state: ConversationState) -> dict[str, Any]:
+        return {
+            "conversation_id": state.conversation_id,
+            "visit_id": state.visit_id,
+            "identity_id": state.identity_id,
+            "display_name": state.display_name,
+            "conversation_summary": state.conversation_summary,
+            "recent_messages": [asdict(message) for message in state.messages[-8:]],
+            "actor_type": state.actor_type,
+            "ended": True,
+            "ended_at": _now(),
+        }
+
+    def _store_replaced_archive_locked(self, state: ConversationState) -> None:
+        if not state.visit_id:
+            return
+        key = (state.conversation_id, state.visit_id)
+        self._replaced_archives[key] = self._archive_state_locked(state)
+        if key in self._archive_order:
+            self._archive_order.remove(key)
+        self._archive_order.append(key)
+        while len(self._archive_order) > _MAX_REPLACED_VISIT_ARCHIVES:
+            oldest = self._archive_order.pop(0)
+            self._replaced_archives.pop(oldest, None)
+
+    def _require_current_visit_locked(
+        self,
+        state: ConversationState,
+        expected_visit_id: str | None,
+    ) -> None:
+        expected = str(expected_visit_id or "").strip()
+        if not expected:
+            return
+        if state.visit_id != expected:
+            raise RuntimeError(
+                f"stale_visit: expected={expected} current={state.visit_id or 'none'}"
+            )
 
     def _reset_for_new_visit_locked(self, state: ConversationState) -> None:
         state.current_scene = "reception"
@@ -432,6 +506,7 @@ class ConversationStore:
         if _now() - state.last_activity_at >= timedelta(seconds=_idle_timeout_seconds()):
             state.conversation_phase = "standby"
             state.awaiting_user_since = None
+            state.revision += 1
 
 
 conversation_store = ConversationStore()
