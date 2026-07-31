@@ -68,7 +68,9 @@ export class VoiceOutputManager {
     }
 
     const generation = ++this.speechGeneration
-    await this.stopInternal(false)
+    // New speech owns the speaker immediately. Cancel both browser and Realtime
+    // output from any earlier Visit before starting this generation.
+    await this.stopInternal(true)
     if (options.fixedLocal) {
       await this.speakLocal(clean, language, generation, signal)
       return
