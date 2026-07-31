@@ -24,7 +24,7 @@ def _track(track_id: int, *, visible: bool = True, x: float = 0.2) -> dict:
     }
 
 
-def test_new_track_waits_for_face_then_reuses_original_session() -> None:
+def test_new_anonymous_track_does_not_reuse_old_visit_from_face_memory() -> None:
     runtime = VisitorSessionRuntime(
         VisitorSessionSettings(
             face_high_similarity=0.80,
@@ -65,22 +65,20 @@ def test_new_track_waits_for_face_then_reuses_original_session() -> None:
     assert pending[0]["visitor_session_pending"] is True
     assert not any(event_type == "visitor_session_started" for event_type, _ in pending_events)
 
-    rebound, events = runtime.update(
+    created, events = runtime.update(
         [_track(8, x=0.6)],
         face_embeddings={8: face},
         body_embeddings={8: unrelated_body},
         identities={8: None},
         now=3.5,
     )
-    assert rebound[0]["visitor_session_id"] == original_session
-    assert rebound[0]["visitor_session_pending"] is False
-    recovery = [event for event in events if event[0] == "visitor_session_recovered"]
-    assert recovery
-    assert "replaced_provisional_session_id" not in recovery[0][1]
-    assert runtime.snapshot(now=3.5)["session_count"] == 1
+    assert created[0]["visitor_session_id"] != original_session
+    assert created[0]["visitor_session_pending"] is False
+    assert any(event_type == "visitor_session_started" for event_type, _ in events)
+    assert not any(event_type == "visitor_session_recovered" for event_type, _ in events)
 
 
-def test_medium_face_match_requires_repeated_evidence_without_id_churn() -> None:
+def test_repeated_anonymous_face_evidence_still_does_not_restore_old_visit() -> None:
     runtime = VisitorSessionRuntime(
         VisitorSessionSettings(
             face_high_similarity=0.90,
@@ -128,21 +126,16 @@ def test_medium_face_match_requires_repeated_evidence_without_id_churn() -> None
         for event_type, _ in first_events
     )
 
-    recovered, second_events = runtime.update(
+    created, second_events = runtime.update(
         [_track(5, x=0.4)],
         face_embeddings={5: query_face},
         body_embeddings={5: body},
         identities={5: None},
         now=3.2,
     )
-    assert recovered[0]["visitor_session_id"] == original_session
-    recovery = [
-        payload
-        for event_type, payload in second_events
-        if event_type == "visitor_session_recovered"
-    ]
-    assert recovery
-    assert recovery[0]["reason"] == "face_body_medium"
+    assert created[0]["visitor_session_id"] != original_session
+    assert any(event_type == "visitor_session_started" for event_type, _ in second_events)
+    assert not any(event_type == "visitor_session_recovered" for event_type, _ in second_events)
 
 
 def test_different_anonymous_person_gets_one_new_id_after_grace() -> None:
