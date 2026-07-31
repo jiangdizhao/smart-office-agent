@@ -199,11 +199,12 @@ export class PersistentRealtimeAgent {
     await this.commitAudio(generation, signal)
     await this.restoreSilentTrack(false)
     this.captureActive = false
+    const instructions = this.transcriptionInstructions()
     const transcript = await this.createResponse(
       ['text'],
-      this.transcriptionInstructions(),
+      instructions,
       'speech_understanding',
-      this.transcriptionInstructions(),
+      instructions,
       generation,
       signal,
     )
@@ -316,23 +317,23 @@ export class PersistentRealtimeAgent {
     this.connectAbort = null
     this.connectPromise = null
     this.rejectPending(abortError('GPT Realtime session was revoked.'))
-    await this.restoreSilentTrack(true).catch(() => undefined)
-    this.dc?.close()
-    this.pc?.close()
-    this.remoteAudio?.pause()
-    this.remoteAudio?.remove()
-    this.dc = null
-    this.pc = null
-    this.sender = null
-    this.remoteAudio = null
-    this.remoteOutputStream = null
+
+    // Fence and detach real-time resources synchronously before the first await,
+    // so a replacement Visit cannot accidentally reuse the old connection.
+    const microphone = this.microphoneStream
+    this.microphoneStream = null
+    stopStream(microphone)
     this.captureStartedAt = 0
     this.captureActive = false
-    this.silentTrack?.stop()
+    this.closeConnectionObjects()
+
+    const silentTrack = this.silentTrack
+    const silentContext = this.silentContext
     this.silentTrack = null
     this.silentStream = null
-    await this.silentContext?.close().catch(() => undefined)
     this.silentContext = null
+    silentTrack?.stop()
+    await silentContext?.close().catch(() => undefined)
     window.dispatchEvent(new CustomEvent('smartoffice:realtime-visit-session-closed'))
   }
 
@@ -356,6 +357,7 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
   }
 
   private async ensureConnected(generation: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw abortError('Realtime connection was aborted.')
     this.assertGeneration(generation)
     if (
       this.pc &&
@@ -512,6 +514,7 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
     generation: number,
     signal?: AbortSignal,
   ): Promise<MediaStream> {
+    if (signal?.aborted) throw abortError('Microphone acquisition was aborted.')
     if (this.microphoneStream?.getAudioTracks().some((track) => track.readyState === 'live')) {
       return this.microphoneStream
     }
@@ -752,8 +755,6 @@ Output only normalized plain text without labels, JSON, Markdown, quotation mark
     if (event.type === 'output_audio_buffer.stopped') {
       if (pending?.modalities.includes('audio') && pending.audioStarted) {
         pending.audioStopped = true
-        // Audio completion is authoritative for speech. A missing response.done
-        // must not keep a finished utterance blocking the next visitor.
         this.resolveResponse(pending)
       }
       window.dispatchEvent(new CustomEvent('smartoffice:realtime-speaking-stop'))
