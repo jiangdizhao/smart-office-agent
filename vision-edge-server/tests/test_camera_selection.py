@@ -1,94 +1,89 @@
 from __future__ import annotations
 
-from app.camera_selection import select_startup_camera
+import pytest
+
+from app.camera_selection import RequiredCameraUnavailableError, select_startup_camera
 from app.config import CameraSettings
 
 
-def _probe_result(index: int) -> dict:
-    resolutions = {
-        0: (1280, 720, 30.0),
-        1: (1920, 1080, 30.0),
-        2: (3840, 2160, 15.0),
-    }
-    if index not in resolutions:
-        return {
-            "ok": False,
-            "status": "unavailable",
-            "device_index": index,
-            "error": "open failed",
+def test_selects_first_actual_4k_camera(monkeypatch) -> None:
+    monkeypatch.setenv("VISION_CAMERA_SCAN_MAX_INDEX", "4")
+    attempts: list[int] = []
+
+    def fake_probe(cv2, settings, device_index):
+        attempts.append(device_index)
+        resolutions = {
+            0: (1280, 720),
+            1: (1920, 1080),
+            2: (3840, 2160),
+            3: (3840, 2160),
         }
-    width, height, fps = resolutions[index]
-    return {
-        "ok": True,
-        "status": "ready",
-        "device_index": index,
-        "actual": {"width": width, "height": height, "backend": "DSHOW"},
-        "selected_mode": {
-            "backend": "DSHOW",
-            "fourcc": "MJPG",
-            "width": width,
-            "height": height,
-            "fps": fps,
-        },
-        "sample": {"success_ratio": 1.0},
-        "performance": {"measured_fps": fps},
-    }
+        width, height = resolutions.get(device_index, (0, 0))
+        return {
+            "device_index": device_index,
+            "opened": width > 0,
+            "frame_read": width > 0,
+            "is_4k": (width, height) == (3840, 2160),
+            "actual": {"width": width, "height": height, "backend": "MSMF"}
+            if width > 0
+            else None,
+            "error": None if width > 0 else "open failed",
+        }
 
-
-def test_selects_camera_with_highest_actual_resolution(monkeypatch) -> None:
-    monkeypatch.delenv("VISION_CAMERA_DEVICE_INDEX", raising=False)
-    monkeypatch.setenv("VISION_CAMERA_SCAN_MAX_INDEX", "3")
-    monkeypatch.setattr(
-        "app.camera_selection.probe_camera",
-        lambda settings: _probe_result(settings.device_index),
-    )
+    monkeypatch.setattr("app.camera_selection.importlib.import_module", lambda name: object())
+    monkeypatch.setattr("app.camera_selection._probe_index_fast", fake_probe)
     settings = CameraSettings(device_index=0)
 
     result = select_startup_camera(settings)
 
     assert result["selected"] is True
+    assert result["mode"] == "strict_first_4k"
     assert result["device_index"] == 2
     assert settings.device_index == 2
-    assert settings.runtime_backend == "DSHOW"
-    assert settings.runtime_fourcc == "MJPG"
-    assert settings.runtime_fps == 15.0
+    assert attempts == [0, 1, 2]
 
 
-def test_manual_override_bypasses_enumeration(monkeypatch) -> None:
-    monkeypatch.setenv("VISION_CAMERA_DEVICE_INDEX", "4")
-    called = False
-
-    def fail_if_called(settings):
-        nonlocal called
-        called = True
-        raise AssertionError("probe_camera must not run for a manual override")
-
-    monkeypatch.setattr("app.camera_selection.probe_camera", fail_if_called)
-    settings = CameraSettings(device_index=1)
-
-    result = select_startup_camera(settings)
-
-    assert called is False
-    assert result["mode"] == "manual_override"
-    assert settings.device_index == 4
-
-
-def test_falls_back_to_configured_index_when_no_camera_is_usable(monkeypatch) -> None:
-    monkeypatch.delenv("VISION_CAMERA_DEVICE_INDEX", raising=False)
+def test_rejects_non_4k_cameras_and_fails_startup(monkeypatch) -> None:
     monkeypatch.setenv("VISION_CAMERA_SCAN_MAX_INDEX", "2")
-    monkeypatch.setattr(
-        "app.camera_selection.probe_camera",
-        lambda settings: {
-            "ok": False,
-            "status": "unavailable",
-            "device_index": settings.device_index,
-            "error": "open failed",
-        },
-    )
+
+    def fake_probe(cv2, settings, device_index):
+        return {
+            "device_index": device_index,
+            "opened": True,
+            "frame_read": True,
+            "is_4k": False,
+            "actual": {"width": 1920, "height": 1080, "backend": "MSMF"},
+            "error": None,
+        }
+
+    monkeypatch.setattr("app.camera_selection.importlib.import_module", lambda name: object())
+    monkeypatch.setattr("app.camera_selection._probe_index_fast", fake_probe)
     settings = CameraSettings(device_index=1)
 
-    result = select_startup_camera(settings)
+    with pytest.raises(RequiredCameraUnavailableError, match="3840x2160"):
+        select_startup_camera(settings)
 
-    assert result["selected"] is False
-    assert result["device_index"] == 1
     assert settings.device_index == 1
+
+
+def test_scan_limit_is_respected(monkeypatch) -> None:
+    monkeypatch.setenv("VISION_CAMERA_SCAN_MAX_INDEX", "1")
+    attempts: list[int] = []
+
+    def fake_probe(cv2, settings, device_index):
+        attempts.append(device_index)
+        return {
+            "device_index": device_index,
+            "opened": False,
+            "frame_read": False,
+            "is_4k": False,
+            "error": "open failed",
+        }
+
+    monkeypatch.setattr("app.camera_selection.importlib.import_module", lambda name: object())
+    monkeypatch.setattr("app.camera_selection._probe_index_fast", fake_probe)
+
+    with pytest.raises(RequiredCameraUnavailableError):
+        select_startup_camera(CameraSettings())
+
+    assert attempts == [0, 1]
