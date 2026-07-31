@@ -6,7 +6,7 @@ import numpy as np
 
 from app.config import VisitorSessionSettings
 from app.identity_runtime import normalize_embedding
-from app.visitor_session import ANONYMOUS_REBIND_GRACE_SECONDS, VisitorSessionRuntime
+from app.visitor_session import VisitorSessionRuntime
 
 
 def _track(track_id: int, *, visible: bool = True, x: float = 0.2) -> dict:
@@ -24,73 +24,43 @@ def _track(track_id: int, *, visible: bool = True, x: float = 0.2) -> dict:
     }
 
 
-def test_new_anonymous_track_does_not_reuse_old_visit_from_face_memory() -> None:
-    runtime = VisitorSessionRuntime(
-        VisitorSessionSettings(
-            face_high_similarity=0.80,
-            face_medium_similarity=0.70,
-            face_minimum_margin=0.01,
-            body_high_similarity=0.95,
-        )
-    )
+def test_new_anonymous_track_immediately_gets_new_visit_even_with_same_face() -> None:
+    runtime = VisitorSessionRuntime(VisitorSessionSettings())
     face = normalize_embedding(np.asarray([1.0, 0.0, 0.0], dtype=np.float32))
-    old_body = normalize_embedding(np.asarray([0.0, 1.0, 0.0], dtype=np.float32))
-    unrelated_body = normalize_embedding(np.asarray([0.0, 0.0, 1.0], dtype=np.float32))
+    body = normalize_embedding(np.asarray([0.0, 1.0, 0.0], dtype=np.float32))
 
     first, _ = runtime.update(
         [_track(1)],
         face_embeddings={1: face},
-        body_embeddings={1: old_body},
+        body_embeddings={1: body},
         identities={1: None},
         now=1.0,
     )
-    original_session = first[0]["visitor_session_id"]
-
+    original_visit = first[0]["visitor_session_id"]
     runtime.update(
         [_track(1, visible=False)],
         face_embeddings={1: None},
-        body_embeddings={1: old_body},
+        body_embeddings={1: body},
         identities={1: None},
-        now=2.0,
+        now=1.5,
     )
-
-    pending, pending_events = runtime.update(
-        [_track(8, x=0.6)],
-        face_embeddings={8: None},
-        body_embeddings={8: unrelated_body},
-        identities={8: None},
-        now=3.0,
-    )
-    assert "visitor_session_id" not in pending[0]
-    assert pending[0]["visitor_session_pending"] is True
-    assert not any(event_type == "visitor_session_started" for event_type, _ in pending_events)
 
     created, events = runtime.update(
         [_track(8, x=0.6)],
         face_embeddings={8: face},
-        body_embeddings={8: unrelated_body},
+        body_embeddings={8: body},
         identities={8: None},
-        now=3.5,
+        now=1.6,
     )
-    assert created[0]["visitor_session_id"] != original_session
+    assert created[0]["visitor_session_id"] != original_visit
     assert created[0]["visitor_session_pending"] is False
     assert any(event_type == "visitor_session_started" for event_type, _ in events)
     assert not any(event_type == "visitor_session_recovered" for event_type, _ in events)
 
 
-def test_repeated_anonymous_face_evidence_still_does_not_restore_old_visit() -> None:
-    runtime = VisitorSessionRuntime(
-        VisitorSessionSettings(
-            face_high_similarity=0.90,
-            face_medium_similarity=0.70,
-            face_minimum_margin=0.01,
-            body_medium_similarity=0.70,
-            medium_confirmations=2,
-        )
-    )
-    reference_face = normalize_embedding(
-        np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
-    )
+def test_repeated_anonymous_face_evidence_never_restores_old_visit() -> None:
+    runtime = VisitorSessionRuntime(VisitorSessionSettings())
+    reference_face = normalize_embedding(np.asarray([1.0, 0.0, 0.0], dtype=np.float32))
     query_face = normalize_embedding(
         np.asarray([0.75, math.sqrt(1.0 - 0.75**2), 0.0], dtype=np.float32)
     )
@@ -101,99 +71,106 @@ def test_repeated_anonymous_face_evidence_still_does_not_restore_old_visit() -> 
         face_embeddings={1: reference_face},
         body_embeddings={1: body},
         identities={1: None},
-        now=1.0,
+        now=10.0,
     )
-    original_session = first[0]["visitor_session_id"]
+    original_visit = first[0]["visitor_session_id"]
     runtime.update(
         [_track(1, visible=False)],
         face_embeddings={1: None},
         body_embeddings={1: body},
         identities={1: None},
-        now=2.0,
+        now=10.5,
     )
 
-    pending, first_events = runtime.update(
+    created, first_events = runtime.update(
         [_track(5, x=0.4)],
         face_embeddings={5: query_face},
         body_embeddings={5: body},
         identities={5: None},
-        now=3.0,
+        now=10.6,
     )
-    assert "visitor_session_id" not in pending[0]
-    assert pending[0]["visitor_session_pending"] is True
-    assert not any(
-        event_type in {"visitor_session_started", "visitor_session_recovered"}
-        for event_type, _ in first_events
-    )
-
-    created, second_events = runtime.update(
-        [_track(5, x=0.4)],
-        face_embeddings={5: query_face},
-        body_embeddings={5: body},
-        identities={5: None},
-        now=3.2,
-    )
-    assert created[0]["visitor_session_id"] != original_session
-    assert any(event_type == "visitor_session_started" for event_type, _ in second_events)
-    assert not any(event_type == "visitor_session_recovered" for event_type, _ in second_events)
-
-
-def test_different_anonymous_person_gets_one_new_id_after_grace() -> None:
-    runtime = VisitorSessionRuntime(
-        VisitorSessionSettings(
-            face_high_similarity=0.80,
-            face_medium_similarity=0.70,
-            face_minimum_margin=0.01,
-            body_high_similarity=0.95,
-        )
-    )
-    original_face = normalize_embedding(np.asarray([1.0, 0.0, 0.0], dtype=np.float32))
-    different_face = normalize_embedding(np.asarray([0.0, 1.0, 0.0], dtype=np.float32))
-    original_body = normalize_embedding(np.asarray([0.0, 0.0, 1.0], dtype=np.float32))
-    different_body = normalize_embedding(np.asarray([0.5, 0.5, 0.0], dtype=np.float32))
-
-    first, _ = runtime.update(
-        [_track(1)],
-        face_embeddings={1: original_face},
-        body_embeddings={1: original_body},
-        identities={1: None},
-        now=1.0,
-    )
-    original_session = first[0]["visitor_session_id"]
-    runtime.update(
-        [_track(1, visible=False)],
-        face_embeddings={1: None},
-        body_embeddings={1: original_body},
-        identities={1: None},
-        now=2.0,
-    )
-
-    pending, _ = runtime.update(
-        [_track(9, x=0.7)],
-        face_embeddings={9: different_face},
-        body_embeddings={9: different_body},
-        identities={9: None},
-        now=3.0,
-    )
-    assert "visitor_session_id" not in pending[0]
-
-    created, events = runtime.update(
-        [_track(9, x=0.7)],
-        face_embeddings={9: different_face},
-        body_embeddings={9: different_body},
-        identities={9: None},
-        now=3.0 + ANONYMOUS_REBIND_GRACE_SECONDS + 0.01,
-    )
-    new_session = created[0]["visitor_session_id"]
-    assert new_session != original_session
-    assert sum(event_type == "visitor_session_started" for event_type, _ in events) == 1
+    new_visit = created[0]["visitor_session_id"]
+    assert new_visit != original_visit
+    assert any(event_type == "visitor_session_started" for event_type, _ in first_events)
+    assert not any(event_type == "visitor_session_recovered" for event_type, _ in first_events)
 
     stable, later_events = runtime.update(
-        [_track(9, x=0.7)],
-        face_embeddings={9: different_face},
-        body_embeddings={9: different_body},
-        identities={9: None},
-        now=3.0 + ANONYMOUS_REBIND_GRACE_SECONDS + 0.2,
+        [_track(5, x=0.4)],
+        face_embeddings={5: query_face},
+        body_embeddings={5: body},
+        identities={5: None},
+        now=10.8,
     )
-    assert stable[0]["visitor_session_id"] == new_session
+    assert stable[0]["visitor_session_id"] == new_visit
     assert not any(event_type == "visitor_session_started" for event_type, _ in later_events)
+
+
+def test_registered_visit_recovers_only_after_independent_identity_confirmation() -> None:
+    runtime = VisitorSessionRuntime(VisitorSessionSettings())
+    face = normalize_embedding(np.asarray([1.0, 0.0, 0.0], dtype=np.float32))
+    body = normalize_embedding(np.asarray([0.0, 1.0, 0.0], dtype=np.float32))
+    rico = {
+        "identity_id": "person_rico",
+        "display_name": "Rico",
+        "similarity": 0.9,
+        "source": "sface_gallery",
+    }
+
+    first, _ = runtime.update(
+        [_track(11)],
+        face_embeddings={11: face},
+        body_embeddings={11: body},
+        identities={11: rico},
+        now=20.0,
+    )
+    original_visit = first[0]["visitor_session_id"]
+    runtime.update(
+        [_track(11, visible=False)],
+        face_embeddings={11: None},
+        body_embeddings={11: body},
+        identities={11: None},
+        now=20.5,
+    )
+
+    stranger, stranger_events = runtime.update(
+        [_track(12, x=0.6)],
+        face_embeddings={12: face},
+        body_embeddings={12: body},
+        identities={12: None},
+        now=20.6,
+    )
+    assert stranger[0]["visitor_session_id"] != original_visit
+    assert stranger[0].get("identity") is None
+    assert not any(event_type == "visitor_session_recovered" for event_type, _ in stranger_events)
+
+    # Use a fresh runtime to test a genuine tracker-ID change for Rico. The new
+    # track must independently carry the same confirmed identity.
+    runtime = VisitorSessionRuntime(VisitorSessionSettings())
+    first, _ = runtime.update(
+        [_track(21)],
+        face_embeddings={21: face},
+        body_embeddings={21: body},
+        identities={21: rico},
+        now=30.0,
+    )
+    original_visit = first[0]["visitor_session_id"]
+    runtime.update(
+        [_track(21, visible=False)],
+        face_embeddings={21: None},
+        body_embeddings={21: body},
+        identities={21: None},
+        now=30.5,
+    )
+    recovered, events = runtime.update(
+        [_track(22)],
+        face_embeddings={22: face},
+        body_embeddings={22: body},
+        identities={22: rico},
+        now=30.6,
+    )
+    assert recovered[0]["visitor_session_id"] == original_visit
+    assert any(
+        event_type == "visitor_session_recovered"
+        and payload["reason"] == "independently_confirmed_registered_identity"
+        for event_type, payload in events
+    )
