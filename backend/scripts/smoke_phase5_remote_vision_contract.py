@@ -23,6 +23,10 @@ def main() -> int:
         "get_client_state",
         "client_state_snapshot",
         "visitor_session_id",
+        "provisional_session_id",
+        "session_stable",
+        "returning_visitor",
+        "greeting_kind",
         "greeting_eligible",
         "identity_similarity",
         "face_quality_score",
@@ -36,7 +40,9 @@ def main() -> int:
         "ui/smart-office-ui/src/vision/useProximityGreeting.ts",
         "VITE_VISION_SOURCE",
         "remote-with-fallback",
-        "greetedSessionsRef",
+        "greetedVisitRef",
+        "REMOTE_REARM_ABSENCE_MS",
+        "Welcome back",
         "triggerProximityGreeting",
         "RemoteVisionClient",
         "ProximityDetection | RemoteVisionDetection | null",
@@ -58,7 +64,7 @@ def main() -> int:
         "VITE_VISION_SOURCE=remote",
         "VITE_VISION_SERVER_WS=ws://",
     )
-    print("PASS: Phase 5 Smart Office remote-vision client and detailed diagnostics contracts are present.")
+    print("PASS: Phase 5.2 stable-session and returning-visitor greeting contracts are present.")
     return 0
 
 
