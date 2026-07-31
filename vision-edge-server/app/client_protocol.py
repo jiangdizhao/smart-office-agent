@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-CLIENT_SCHEMA_VERSION = "phase5.2"
-ANONYMOUS_SESSION_STABILIZATION_SECONDS = 5.0
+CLIENT_SCHEMA_VERSION = "phase6.0"
+ANONYMOUS_SESSION_STABILIZATION_SECONDS = 0.75
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -39,6 +39,7 @@ def _session_profile(track: dict[str, Any], identity: dict[str, Any] | None) -> 
     raw_session_id = track.get("visitor_session_id")
     session = track.get("visitor_session") if isinstance(track.get("visitor_session"), dict) else {}
     age_seconds = max(0.0, _number(session.get("age_seconds"), 0.0))
+    last_seen_age_seconds = max(0.0, _number(session.get("last_seen_age_seconds"), 0.0))
     recovery_count = max(0, _integer(session.get("recovery_count"), 0))
     assignment_stable = bool(session.get("assignment_stable"))
     registered = identity is not None
@@ -61,10 +62,12 @@ def _session_profile(track: dict[str, Any], identity: dict[str, Any] | None) -> 
     return {
         "raw_session_id": raw_session_id,
         "visitor_session_id": raw_session_id if stable else None,
+        "visit_id": raw_session_id if stable else None,
         "provisional_session_id": raw_session_id if raw_session_id and not stable else None,
         "session_stable": stable,
         "session_assignment_stable": assignment_stable,
         "session_age_seconds": age_seconds,
+        "session_last_seen_age_seconds": last_seen_age_seconds,
         "session_recovery_count": recovery_count,
         "returning_visitor": returning,
         "greeting_kind": greeting_kind,
@@ -94,15 +97,17 @@ def visitor_from_track(track: dict[str, Any]) -> dict[str, Any]:
         and engaged
         and visitor_session_id
         and session_profile["session_stable"]
-        and face_detected
     )
     return {
         "track_id": int(track.get("track_id") or 0),
         "visitor_session_id": visitor_session_id,
+        "visit_id": session_profile["visit_id"],
+        "visit_state": "visible" if visible else "retained",
         "provisional_session_id": session_profile["provisional_session_id"],
         "session_stable": session_profile["session_stable"],
         "session_assignment_stable": session_profile["session_assignment_stable"],
         "session_age_seconds": session_profile["session_age_seconds"],
+        "session_last_seen_age_seconds": session_profile["session_last_seen_age_seconds"],
         "session_recovery_count": session_profile["session_recovery_count"],
         "returning_visitor": session_profile["returning_visitor"],
         "greeting_kind": session_profile["greeting_kind"],
@@ -149,7 +154,11 @@ def build_client_state(
         for track in raw_tracks
         if isinstance(track, dict) and track.get("state") != "removed"
     ]
-    primary = next((visitor for visitor in visitors if visitor["primary"]), None)
+    retained_primary = next((visitor for visitor in visitors if visitor["primary"]), None)
+    visible_primary = next(
+        (visitor for visitor in visitors if visitor["primary"] and visitor["visible"]),
+        None,
+    )
     return {
         "schema_version": CLIENT_SCHEMA_VERSION,
         "service": service,
@@ -160,7 +169,10 @@ def build_client_state(
         "uptime_seconds": float(uptime_seconds),
         "scene_state": tracks_snapshot.get("scene_state", "unknown"),
         "person_count": int(tracks_snapshot.get("person_count") or 0),
-        "primary_track_id": tracks_snapshot.get("primary_track_id"),
-        "primary": primary,
+        "primary_track_id": (
+            None if visible_primary is None else visible_primary["track_id"]
+        ),
+        "primary": visible_primary,
+        "retained_primary": retained_primary,
         "visitors": visitors,
     }
