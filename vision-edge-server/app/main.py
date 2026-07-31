@@ -18,11 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.client_protocol import build_client_state
-from app.config import AppConfig, load_config
+from app.client_protocol import CLIENT_SCHEMA_VERSION, build_client_state
+from app.config import AppConfig
 from app.events import EventFactory, WebSocketHub
 from app.logging_json import configure_logging
 from app.runtime import VisionRuntime
+from app.short_visit_config import load_config
 
 
 class IdentityEnrollmentRequest(BaseModel):
@@ -43,9 +44,9 @@ def _require_local_identity_operator(request: Request) -> None:
         )
 
 
-def _client_state(runtime: VisionRuntime) -> dict[str, Any]:
+def _client_state(runtime: VisionRuntime, event_factory: EventFactory) -> dict[str, Any]:
     ready, reasons = runtime.readiness()
-    return build_client_state(
+    payload = build_client_state(
         service=runtime.config.service_name,
         version=runtime.config.version,
         phase=runtime.config.phase,
@@ -54,6 +55,16 @@ def _client_state(runtime: VisionRuntime) -> dict[str, Any]:
         tracks_snapshot=runtime.vision.tracks_snapshot(),
         uptime_seconds=runtime.uptime_seconds(),
     )
+    camera_status = runtime.vision.camera.status()
+    payload.update(
+        {
+            "server_instance_id": event_factory.server_instance_id,
+            "snapshot_revision": event_factory.next_snapshot_revision(),
+            "frame_age_ms": camera_status.get("frame_age_ms"),
+            "vision_stale": bool(runtime.public_status().get("vision_stale")),
+        }
+    )
+    return payload
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -77,14 +88,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         app.state.runtime = runtime
         runtime.bind_event_loop(asyncio.get_running_loop())
         tasks: list[asyncio.Task[Any]] = [
-            asyncio.create_task(_heartbeat_loop(runtime))
+            asyncio.create_task(_heartbeat_loop(runtime)),
+            asyncio.create_task(_visit_watchdog_loop(runtime)),
         ]
         if loaded_config.gpu.probe_on_startup:
             tasks.append(
                 asyncio.create_task(
-                    runtime.run_hardware_probes(
-                        include_gpu=True, include_camera=False
-                    )
+                    runtime.run_hardware_probes(include_gpu=True, include_camera=False)
                 )
             )
         if loaded_config.vision.enabled and loaded_config.vision.start_on_startup:
@@ -92,9 +102,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         elif loaded_config.camera.enabled and loaded_config.camera.probe_on_startup:
             tasks.append(
                 asyncio.create_task(
-                    runtime.run_hardware_probes(
-                        include_gpu=False, include_camera=True
-                    )
+                    runtime.run_hardware_probes(include_gpu=False, include_camera=True)
                 )
             )
         try:
@@ -128,6 +136,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "service": loaded_config.service_name,
             "version": loaded_config.version,
             "phase": loaded_config.phase,
+            "server_instance_id": event_factory.server_instance_id,
+            "client_schema_version": CLIENT_SCHEMA_VERSION,
             "ready": ready,
             "degraded_reasons": reasons,
         }
@@ -138,7 +148,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.get("/api/v1/client/state", tags=["client"])
     async def client_state() -> dict[str, Any]:
-        return _client_state(runtime)
+        return _client_state(runtime, event_factory)
 
     @app.get("/api/v1/config/public", tags=["system"])
     async def public_config() -> dict[str, Any]:
@@ -155,9 +165,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         include_camera: bool = Query(default=True),
     ) -> dict[str, Any]:
         if runtime.probe_running:
-            raise HTTPException(
-                status_code=409, detail="A hardware probe is already running"
-            )
+            raise HTTPException(status_code=409, detail="A hardware probe is already running")
         try:
             return await runtime.run_hardware_probes(
                 include_gpu=include_gpu,
@@ -218,9 +226,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.delete("/api/v1/identities/{identity_id}", tags=["identity"])
     async def delete_identity(identity_id: str, request: Request) -> dict[str, Any]:
         _require_local_identity_operator(request)
-        deleted = await asyncio.to_thread(
-            runtime.vision.delete_identity, identity_id
-        )
+        deleted = await asyncio.to_thread(runtime.vision.delete_identity, identity_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Identity was not found")
         return {"deleted": True, "identity_id": identity_id}
@@ -229,9 +235,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def debug_frame() -> Response:
         data = runtime.vision.latest_preview()
         if data is None:
-            raise HTTPException(
-                status_code=503, detail="No debug frame is available yet"
-            )
+            raise HTTPException(status_code=503, detail="No debug frame is available yet")
         return Response(
             content=data,
             media_type="image/jpeg",
@@ -260,65 +264,74 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.websocket("/ws/v1/events")
     async def event_stream(websocket: WebSocket) -> None:
         await hub.connect(websocket)
+        await hub.send_to(
+            websocket,
+            event_factory.build(
+                "server_ready",
+                {
+                    "service": loaded_config.service_name,
+                    "version": loaded_config.version,
+                    "phase": loaded_config.phase,
+                    "client_schema_version": CLIENT_SCHEMA_VERSION,
+                    "server_instance_id": event_factory.server_instance_id,
+                },
+            ),
+        )
+        await hub.send_to(
+            websocket,
+            event_factory.build("state_snapshot", runtime.public_status()),
+        )
+        await hub.send_to(
+            websocket,
+            event_factory.build(
+                "client_state_snapshot",
+                _client_state(runtime, event_factory),
+            ),
+        )
         try:
-            await websocket.send_json(
-                event_factory.build(
-                    "server_ready",
-                    {
-                        "service": loaded_config.service_name,
-                        "version": loaded_config.version,
-                        "phase": loaded_config.phase,
-                        "client_schema_version": "phase5.1",
-                    },
-                )
-            )
-            await websocket.send_json(
-                event_factory.build("state_snapshot", runtime.public_status())
-            )
-            await websocket.send_json(
-                event_factory.build("client_state_snapshot", _client_state(runtime))
-            )
             while True:
                 raw = await websocket.receive_text()
                 try:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
-                    await websocket.send_json(
+                    await hub.send_to(
+                        websocket,
                         event_factory.build(
-                            "client_error",
-                            {"detail": "Expected a JSON object"},
-                        )
+                            "client_error", {"detail": "Expected a JSON object"}
+                        ),
                     )
                     continue
                 message_type = str(message.get("type", "")).strip()
                 if message_type == "ping":
-                    await websocket.send_json(
+                    await hub.send_to(
+                        websocket,
                         event_factory.build(
-                            "pong",
-                            {"client_time": message.get("client_time")},
-                        )
+                            "pong", {"client_time": message.get("client_time")}
+                        ),
                     )
                 elif message_type == "get_state":
-                    await websocket.send_json(
-                        event_factory.build(
-                            "state_snapshot", runtime.public_status()
-                        )
+                    await hub.send_to(
+                        websocket,
+                        event_factory.build("state_snapshot", runtime.public_status()),
                     )
                 elif message_type == "get_client_state":
-                    await websocket.send_json(
+                    await hub.send_to(
+                        websocket,
                         event_factory.build(
-                            "client_state_snapshot", _client_state(runtime)
-                        )
+                            "client_state_snapshot",
+                            _client_state(runtime, event_factory),
+                        ),
                     )
                 else:
-                    await websocket.send_json(
+                    await hub.send_to(
+                        websocket,
                         event_factory.build(
                             "client_error",
                             {
                                 "detail": "Unsupported client message",
                                 "received_type": message_type,
                             },
-                        )
+                        ),
                     )
         except WebSocketDisconnect:
             pass
@@ -338,10 +351,17 @@ async def _heartbeat_loop(runtime: VisionRuntime) -> None:
                     "uptime_seconds": runtime.uptime_seconds(),
                     "ready": runtime.readiness()[0],
                     "websocket_clients": runtime.hub.client_count,
-                    "client_schema_version": "phase5.1",
+                    "client_schema_version": CLIENT_SCHEMA_VERSION,
+                    "server_instance_id": runtime.event_factory.server_instance_id,
                 },
             )
         )
+
+
+async def _visit_watchdog_loop(runtime: VisionRuntime) -> None:
+    while True:
+        await asyncio.sleep(0.1)
+        await runtime.visit_watchdog_tick()
 
 
 app = create_app()
