@@ -37,6 +37,9 @@ export type RemoteVisionDetection = ProximityDetection & {
   recognition_usable: boolean
   enrollment_usable: boolean
   schema_version?: string | null
+  server_instance_id?: string | null
+  snapshot_revision?: number
+  frame_age_ms?: number | null
   service_ready?: boolean
   scene_state?: string | null
   person_count?: number
@@ -52,6 +55,7 @@ export type RemoteVisitEnded = {
   identity_id?: string | null
   display_name?: string | null
   sequence: number
+  server_instance_id?: string | null
   source_event: string
 }
 
@@ -105,6 +109,10 @@ type RemoteVisitor = {
 
 type ClientState = {
   schema_version?: string
+  server_instance_id?: string
+  snapshot_revision?: number
+  frame_age_ms?: number | null
+  vision_stale?: boolean
   ready?: boolean
   scene_state?: string
   person_count?: number
@@ -115,6 +123,7 @@ type ClientState = {
 
 type EventEnvelope = {
   protocol_version?: string
+  server_instance_id?: string
   event_id?: string
   sequence?: number
   type?: string
@@ -132,6 +141,9 @@ type RemoteVisionClientOptions = {
 
 const STATE_POLL_MS = 750
 const PING_MS = 10_000
+const FRESHNESS_CHECK_MS = 250
+const REMOTE_MESSAGE_STALE_MS = 2_500
+const FRAME_STALE_MS = 2_500
 const MAX_RECONNECT_MS = 10_000
 const EVENT_CACHE_LIMIT = 512
 
@@ -185,7 +197,7 @@ function toDetection(
     center_x: clamp(visitor.center_x),
     center_y: clamp(visitor.center_y),
     stable_frames: Math.max(1, Number(face.stable_frames) || 1),
-    detector: 'rtx-vision-phase6',
+    detector: 'rtx-vision-phase6.1',
     track_id: trackId,
     visitor_session_id: sessionId,
     visit_id: visitor.visit_id ?? sessionId,
@@ -212,6 +224,9 @@ function toDetection(
     recognition_usable: Boolean(face.recognition_usable),
     enrollment_usable: Boolean(face.enrollment_usable),
     schema_version: state.schema_version ?? null,
+    server_instance_id: state.server_instance_id ?? null,
+    snapshot_revision: Math.max(0, Number(state.snapshot_revision) || 0),
+    frame_age_ms: optionalNumber(state.frame_age_ms),
     service_ready: Boolean(state.ready),
     scene_state: state.scene_state ?? null,
     person_count: Math.max(0, Number(state.person_count) || 0),
@@ -231,8 +246,13 @@ export class RemoteVisionClient {
   private reconnectTimer: number | null = null
   private statePollTimer: number | null = null
   private pingTimer: number | null = null
+  private freshnessTimer: number | null = null
   private seenEventIds = new Set<string>()
   private seenEventOrder: string[] = []
+  private serverInstanceId: string | null = null
+  private lastSnapshotRevision = 0
+  private lastMessageAt = 0
+  private stalePublished = false
 
   constructor(options: RemoteVisionClientOptions) {
     this.options = options
@@ -249,7 +269,7 @@ export class RemoteVisionClient {
   stop(): void {
     this.stopped = true
     this.clearTimers()
-    this.replacementTracker.reset()
+    this.resetServerEpoch(null)
     const socket = this.socket
     this.socket = null
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'client stopped')
@@ -268,6 +288,7 @@ export class RemoteVisionClient {
     try {
       socket = new WebSocket(this.url)
     } catch (error) {
+      this.publishStale(`WebSocket construction failed: ${String(error)}`)
       this.scheduleReconnect(String(error))
       return
     }
@@ -275,22 +296,27 @@ export class RemoteVisionClient {
     socket.onopen = () => {
       if (this.socket !== socket || this.stopped) return
       this.reconnectAttempt = 0
+      this.lastMessageAt = performance.now()
+      this.stalePublished = false
       this.options.onStatus('connected', this.url)
       this.send({ type: 'get_client_state' })
       this.startTimers()
     }
     socket.onmessage = (event) => {
       if (this.socket !== socket || this.stopped) return
+      this.lastMessageAt = performance.now()
+      this.stalePublished = false
       this.handleMessage(event.data)
     }
     socket.onerror = () => {
       if (this.socket === socket && !this.stopped) {
-        this.options.onStatus('offline', `WebSocket error: ${this.url}`)
+        this.publishStale(`WebSocket error: ${this.url}`)
       }
     }
     socket.onclose = (event) => {
       if (this.socket === socket) this.socket = null
       this.clearLiveTimers()
+      this.publishStale(`closed ${event.code}${event.reason ? `: ${event.reason}` : ''}`)
       if (!this.stopped) {
         this.scheduleReconnect(`closed ${event.code}${event.reason ? `: ${event.reason}` : ''}`)
       }
@@ -304,6 +330,12 @@ export class RemoteVisionClient {
       () => this.send({ type: 'ping', client_time: new Date().toISOString() }),
       PING_MS,
     )
+    this.freshnessTimer = window.setInterval(() => {
+      if (!this.lastMessageAt) return
+      if (performance.now() - this.lastMessageAt > REMOTE_MESSAGE_STALE_MS) {
+        this.publishStale('RTX vision messages are stale.')
+      }
+    }, FRESHNESS_CHECK_MS)
   }
 
   private scheduleReconnect(detail: string): void {
@@ -317,11 +349,20 @@ export class RemoteVisionClient {
     }, delay)
   }
 
+  private publishStale(detail: string): void {
+    this.options.onDetection(null)
+    if (this.stalePublished || this.stopped) return
+    this.stalePublished = true
+    this.options.onStatus('offline', detail)
+  }
+
   private clearLiveTimers(): void {
     if (this.statePollTimer !== null) window.clearInterval(this.statePollTimer)
     if (this.pingTimer !== null) window.clearInterval(this.pingTimer)
+    if (this.freshnessTimer !== null) window.clearInterval(this.freshnessTimer)
     this.statePollTimer = null
     this.pingTimer = null
+    this.freshnessTimer = null
   }
 
   private clearTimers(): void {
@@ -335,6 +376,26 @@ export class RemoteVisionClient {
     this.socket.send(JSON.stringify(message))
   }
 
+  private resetServerEpoch(next: string | null): void {
+    this.serverInstanceId = next
+    this.lastSnapshotRevision = 0
+    this.seenEventIds.clear()
+    this.seenEventOrder = []
+    this.replacementTracker.reset()
+  }
+
+  private observeServerInstance(value: unknown): void {
+    const next = String(value ?? '').trim()
+    if (!next || next === this.serverInstanceId) return
+    const previous = this.serverInstanceId
+    this.resetServerEpoch(next)
+    this.options.onDetection(null)
+    console.info('[ProximityDebug] remote-vision-server-instance-changed', {
+      previousServerInstanceId: previous,
+      serverInstanceId: next,
+    })
+  }
+
   private handleMessage(raw: unknown): void {
     let envelope: EventEnvelope
     try {
@@ -342,6 +403,9 @@ export class RemoteVisionClient {
     } catch {
       return
     }
+    const payload = envelope.payload ?? {}
+    this.observeServerInstance(envelope.server_instance_id ?? payload.server_instance_id)
+
     const eventId = String(envelope.event_id ?? '')
     if (eventId) {
       if (this.seenEventIds.has(eventId)) return
@@ -352,8 +416,19 @@ export class RemoteVisionClient {
         if (removed) this.seenEventIds.delete(removed)
       }
     }
+
     const eventType = String(envelope.type ?? '')
-    const payload = envelope.payload ?? {}
+    if (eventType === 'server_ready' || eventType === 'heartbeat' || eventType === 'pong') {
+      return
+    }
+    if (eventType === 'vision_stale') {
+      this.publishStale('RTX camera or vision pipeline is stale.')
+      return
+    }
+    if (eventType === 'vision_recovered') {
+      this.requestState()
+      return
+    }
     if (eventType === 'client_state_snapshot') {
       this.handleClientState(payload as ClientState)
       return
@@ -369,9 +444,7 @@ export class RemoteVisionClient {
       return
     }
     if (eventType === 'visit_ended' || eventType === 'visitor_session_expired') {
-      const sessionId = String(
-        payload.visit_id ?? payload.visitor_session_id ?? '',
-      ).trim()
+      const sessionId = String(payload.visit_id ?? payload.visitor_session_id ?? '').trim()
       if (!sessionId) return
       const visit = this.replacementTracker.enrichEnded({
         visitor_session_id: sessionId,
@@ -380,6 +453,7 @@ export class RemoteVisionClient {
         identity_id: String(payload.identity_id ?? '').trim() || null,
         display_name: String(payload.display_name ?? '').trim() || null,
         sequence: Math.max(0, Number(envelope.sequence) || 0),
+        server_instance_id: this.serverInstanceId,
         source_event: eventType,
       })
       this.options.onVisitEnded?.(visit)
@@ -388,6 +462,17 @@ export class RemoteVisionClient {
   }
 
   private handleClientState(state: ClientState): void {
+    this.observeServerInstance(state.server_instance_id)
+    const revision = Math.max(0, Number(state.snapshot_revision) || 0)
+    if (revision > 0 && revision <= this.lastSnapshotRevision) return
+    if (revision > 0) this.lastSnapshotRevision = revision
+
+    const frameAge = optionalNumber(state.frame_age_ms)
+    if (state.vision_stale || (frameAge !== null && frameAge > FRAME_STALE_MS)) {
+      this.publishStale(`RTX frame is stale (${frameAge ?? 'unknown'} ms).`)
+      return
+    }
+
     const primary = state.primary
     if (!primary || !primary.visible) {
       this.options.onDetection(null)
@@ -400,6 +485,7 @@ export class RemoteVisionClient {
     }
     const replacedVisit = this.replacementTracker.observe(detection)
     if (replacedVisit) {
+      replacedVisit.server_instance_id = this.serverInstanceId
       this.options.onVisitEnded?.(replacedVisit)
       this.options.onSessionExpired?.(replacedVisit.visit_id)
     }
