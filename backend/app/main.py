@@ -33,7 +33,7 @@ from app.turn_api import router as turn_router
 
 install_lightweight_system_status_policy()
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.9.0")
+app = FastAPI(title="Smart Office Agent Backend", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -70,10 +70,16 @@ def health_check():
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.9.0",
-        "phase": "m3a_fusion_phase_3_gate_3_5",
+        "version": "1.0.0",
+        "phase": "preemptive_visit_orchestration",
         "capabilities": {
             "task_runtime": True,
+            "visit_scoped_task_ownership": True,
+            "visit_task_cancellation": True,
+            "approval_timeout_watchdog": True,
+            "killable_office_worker_process": True,
+            "background_visitor_memory_persistence": True,
+            "stale_visit_result_fencing": True,
             "realtime_voice_api": True,
             "realtime_presentation_function_calling": True,
             "unified_presentation_plan": True,
@@ -150,6 +156,9 @@ async def create_agent_task(req: TaskCreateRequest):
         user_request=req.text,
         execute=req.execute,
         task_graph=task_graph,
+        owner_conversation_id=req.conversation_id,
+        owner_visit_id=req.visit_id,
+        owner_actor_type=req.actor_type,
     )
     event_bus.publish(
         task_id=task.task_id,
@@ -158,6 +167,9 @@ async def create_agent_task(req: TaskCreateRequest):
         data={
             "execute": req.execute,
             "step_count": len(task_graph.steps),
+            "owner_conversation_id": req.conversation_id,
+            "owner_visit_id": req.visit_id,
+            "owner_actor_type": req.actor_type,
             "note": "Task graph is available; executor has been scheduled.",
         },
     )
@@ -209,6 +221,7 @@ def handle_agent_task_approval(task_id: str, req: ApprovalRequest):
             "step_index": waiting_step.index,
             "action": req.action,
             "note": req.note,
+            "owner_visit_id": task.owner_visit_id,
         },
     )
     return state_store.get_task(task_id) or task
@@ -236,7 +249,7 @@ def cancel_agent_task(task_id: str):
         task_id=task_id,
         event_type="cancelled",
         message="Task cancellation requested.",
-        data={},
+        data={"owner_visit_id": task.owner_visit_id},
     )
     return state_store.get_task(task_id) or task
 
