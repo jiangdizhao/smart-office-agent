@@ -1,13 +1,21 @@
 import type { OfficeVoiceController } from '../voice/useOfficeVoiceController'
 import { realtimeAgent } from '../voice/realtimeAgentRuntime'
+import type { ProactiveListeningGateSnapshot } from './proactiveListeningGate'
 
 export type AutomaticVoiceTurnResult =
   | { kind: 'heard'; transcript: string }
   | { kind: 'silence' }
+  | { kind: 'gated'; reason: string }
   | { kind: 'aborted' }
   | { kind: 'error'; message: string }
 
-type VadResult = 'speech_complete' | 'silence' | 'aborted'
+type VadResult =
+  | { kind: 'speech_complete' }
+  | { kind: 'silence' }
+  | { kind: 'gated'; reason: string }
+  | { kind: 'aborted' }
+
+type ListeningGateReader = () => ProactiveListeningGateSnapshot
 
 const CALIBRATION_MS = 500
 const SPEECH_START_TIMEOUT_MS = 12_000
@@ -35,10 +43,18 @@ async function closeAudioResources(
   }
 }
 
-async function waitForUtterance(signal: AbortSignal): Promise<VadResult> {
+async function waitForUtterance(
+  signal: AbortSignal,
+  listeningGate: ListeningGateReader,
+): Promise<VadResult> {
   let stream: MediaStream | null = null
   let context: AudioContext | null = null
   try {
+    const initialGate = listeningGate()
+    if (!initialGate.eligible) {
+      return { kind: 'gated', reason: initialGate.reason }
+    }
+
     stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -47,7 +63,7 @@ async function waitForUtterance(signal: AbortSignal): Promise<VadResult> {
         channelCount: 1,
       },
     })
-    if (signal.aborted) return 'aborted'
+    if (signal.aborted) return { kind: 'aborted' }
 
     context = new AudioContext()
     const source = context.createMediaStreamSource(stream)
@@ -66,6 +82,9 @@ async function waitForUtterance(signal: AbortSignal): Promise<VadResult> {
     let consecutiveSpeechSamples = 0
 
     while (!signal.aborted) {
+      const gate = listeningGate()
+      if (!gate.eligible) return { kind: 'gated', reason: gate.reason }
+
       const now = performance.now()
       analyser.getFloatTimeDomainData(samples)
       let energy = 0
@@ -89,17 +108,19 @@ async function waitForUtterance(signal: AbortSignal): Promise<VadResult> {
           speechStartedAt = now
           lastSpeechAt = now
         } else if (now - calibrationEndsAt >= SPEECH_START_TIMEOUT_MS) {
-          return 'silence'
+          return { kind: 'silence' }
         }
       } else {
         if (speechNow) lastSpeechAt = now
-        if (now - lastSpeechAt >= END_SILENCE_MS) return 'speech_complete'
-        if (now - speechStartedAt >= MAX_UTTERANCE_MS) return 'speech_complete'
+        if (now - lastSpeechAt >= END_SILENCE_MS) return { kind: 'speech_complete' }
+        if (now - speechStartedAt >= MAX_UTTERANCE_MS) {
+          return { kind: 'speech_complete' }
+        }
       }
 
       await wait(SAMPLE_INTERVAL_MS)
     }
-    return 'aborted'
+    return { kind: 'aborted' }
   } finally {
     await closeAudioResources(context, stream)
   }
@@ -121,8 +142,14 @@ async function waitForControllerTranscript(
 export async function captureAutomaticRealtimeTurn(
   controller: () => OfficeVoiceController,
   signal: AbortSignal,
+  listeningGate: ListeningGateReader,
 ): Promise<AutomaticVoiceTurnResult> {
   if (signal.aborted) return { kind: 'aborted' }
+
+  const initialGate = listeningGate()
+  if (!initialGate.eligible) {
+    return { kind: 'gated', reason: initialGate.reason }
+  }
 
   const previousTranscript = controller().transcript
   const vadController = new AbortController()
@@ -130,7 +157,7 @@ export async function captureAutomaticRealtimeTurn(
   signal.addEventListener('abort', abortVad, { once: true })
 
   try {
-    const vadPromise = waitForUtterance(vadController.signal)
+    const vadPromise = waitForUtterance(vadController.signal, listeningGate)
     await controller().beginListening()
     await wait(200)
 
@@ -139,6 +166,14 @@ export async function captureAutomaticRealtimeTurn(
       await realtimeAgent.abortCapture().catch(() => undefined)
       await controller().stopSpeaking().catch(() => undefined)
       return { kind: 'aborted' }
+    }
+
+    const gateAfterCaptureStart = listeningGate()
+    if (!gateAfterCaptureStart.eligible) {
+      vadController.abort()
+      await realtimeAgent.abortCapture().catch(() => undefined)
+      await controller().stopSpeaking().catch(() => undefined)
+      return { kind: 'gated', reason: gateAfterCaptureStart.reason }
     }
 
     if (!realtimeAgent.status().microphoneAttached) {
@@ -150,13 +185,19 @@ export async function captureAutomaticRealtimeTurn(
     }
 
     const vadResult = await vadPromise
-    if (vadResult === 'aborted' || signal.aborted) {
+    if (vadResult.kind === 'aborted' || signal.aborted) {
       await realtimeAgent.abortCapture().catch(() => undefined)
       await controller().stopSpeaking().catch(() => undefined)
       return { kind: 'aborted' }
     }
 
-    if (vadResult === 'silence') {
+    if (vadResult.kind === 'gated') {
+      await realtimeAgent.abortCapture().catch(() => undefined)
+      await controller().stopSpeaking().catch(() => undefined)
+      return { kind: 'gated', reason: vadResult.reason }
+    }
+
+    if (vadResult.kind === 'silence') {
       await realtimeAgent.abortCapture().catch(() => undefined)
       await controller().stopSpeaking().catch(() => undefined)
       return { kind: 'silence' }
