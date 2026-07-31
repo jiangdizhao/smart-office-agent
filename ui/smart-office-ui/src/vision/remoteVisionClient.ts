@@ -1,4 +1,5 @@
 import type { ProximityDetection } from './proximityFaceMonitor'
+import { RemoteVisitReplacementTracker } from './remoteVisionVisitReplacement'
 
 export type RemoteVisionStatus =
   | 'connecting'
@@ -168,7 +169,7 @@ function toDetection(
 ): RemoteVisionDetection | null {
   const sessionId = String(visitor.visitor_session_id ?? visitor.visit_id ?? '').trim()
   const trackId = Number(visitor.track_id)
-  if (!Number.isFinite(trackId) || trackId <= 0) return null
+  if (!Number.isFinite(trackId) || trackId <= 0 || !sessionId) return null
   const face = visitor.face ?? {}
   const bodyConfidence = clamp(visitor.score)
   const faceConfidence = clamp(face.confidence)
@@ -223,6 +224,7 @@ function toDetection(
 export class RemoteVisionClient {
   private readonly url: string
   private readonly options: RemoteVisionClientOptions
+  private readonly replacementTracker = new RemoteVisitReplacementTracker()
   private socket: WebSocket | null = null
   private stopped = true
   private reconnectAttempt = 0
@@ -247,6 +249,7 @@ export class RemoteVisionClient {
   stop(): void {
     this.stopped = true
     this.clearTimers()
+    this.replacementTracker.reset()
     const socket = this.socket
     this.socket = null
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'client stopped')
@@ -370,7 +373,7 @@ export class RemoteVisionClient {
         payload.visit_id ?? payload.visitor_session_id ?? '',
       ).trim()
       if (!sessionId) return
-      const visit: RemoteVisitEnded = {
+      const visit = this.replacementTracker.enrichEnded({
         visitor_session_id: sessionId,
         visit_id: sessionId,
         last_track_id: optionalNumber(payload.last_track_id),
@@ -378,7 +381,7 @@ export class RemoteVisionClient {
         display_name: String(payload.display_name ?? '').trim() || null,
         sequence: Math.max(0, Number(envelope.sequence) || 0),
         source_event: eventType,
-      }
+      })
       this.options.onVisitEnded?.(visit)
       this.options.onSessionExpired?.(sessionId)
     }
@@ -394,6 +397,11 @@ export class RemoteVisionClient {
     if (!detection) {
       this.options.onDetection(null)
       return
+    }
+    const replacedVisit = this.replacementTracker.observe(detection)
+    if (replacedVisit) {
+      this.options.onVisitEnded?.(replacedVisit)
+      this.options.onSessionExpired?.(replacedVisit.visit_id)
     }
     this.options.onDetection(detection)
     if (
