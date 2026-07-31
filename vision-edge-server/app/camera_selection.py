@@ -3,20 +3,16 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-import time
 from typing import Any
 
 from app.config import CameraSettings
 
 logger = logging.getLogger(__name__)
 
+REQUIRED_WIDTH = 3840
+REQUIRED_HEIGHT = 2160
 DEFAULT_SCAN_MAX_INDEX = 6
-TARGET_WIDTH = 3840
-TARGET_HEIGHT = 2160
-
-
-class RequiredCameraUnavailableError(RuntimeError):
-    pass
+MAX_READ_ATTEMPTS = 3
 
 
 def _scan_max_index() -> int:
@@ -28,31 +24,26 @@ def _scan_max_index() -> int:
     return max(0, min(value, 32))
 
 
-def _backend_code(cv2: Any, name: str) -> int:
-    if name == "DSHOW":
+def _backend_code(cv2: Any, backend: str) -> int:
+    if backend == "DSHOW":
         return int(getattr(cv2, "CAP_DSHOW", getattr(cv2, "CAP_ANY", 0)))
-    if name == "MSMF":
+    if backend == "MSMF":
         return int(getattr(cv2, "CAP_MSMF", getattr(cv2, "CAP_ANY", 0)))
     return int(getattr(cv2, "CAP_ANY", 0))
 
 
-def _decode_fourcc(raw_value: float | int) -> str:
-    integer = int(raw_value)
-    chars = [chr((integer >> (8 * index)) & 0xFF) for index in range(4)]
-    decoded = "".join(chars).strip("\x00 ")
-    if not decoded or any(ord(char) < 32 or ord(char) > 126 for char in decoded):
-        return "unknown"
-    return decoded
-
-
-def _probe_index_fast(cv2: Any, settings: CameraSettings, device_index: int) -> dict[str, Any]:
+def _probe_index_fast(
+    cv2: Any,
+    settings: CameraSettings,
+    device_index: int,
+) -> dict[str, Any]:
     capture = None
-    started = time.perf_counter()
     result: dict[str, Any] = {
         "device_index": device_index,
         "opened": False,
         "frame_read": False,
         "is_4k": False,
+        "actual": None,
         "error": None,
     }
     try:
@@ -63,24 +54,26 @@ def _probe_index_fast(cv2: Any, settings: CameraSettings, device_index: int) -> 
         if not capture.isOpened():
             result["error"] = "open failed"
             return result
-        result["opened"] = True
 
+        result["opened"] = True
         if settings.runtime_fourcc != "AUTO":
             capture.set(
                 cv2.CAP_PROP_FOURCC,
                 float(cv2.VideoWriter_fourcc(*settings.runtime_fourcc)),
             )
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(TARGET_WIDTH))
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(TARGET_HEIGHT))
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(REQUIRED_WIDTH))
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(REQUIRED_HEIGHT))
         capture.set(cv2.CAP_PROP_FPS, float(settings.runtime_fps))
         if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
             capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         frame = None
-        for _ in range(max(1, min(settings.warmup_frames + 1, 4))):
+        for _ in range(MAX_READ_ATTEMPTS):
             ok, candidate = capture.read()
             if ok and candidate is not None:
                 frame = candidate
+                break
+
         if frame is None:
             result["error"] = "opened but no frame was read"
             return result
@@ -90,19 +83,15 @@ def _probe_index_fast(cv2: Any, settings: CameraSettings, device_index: int) -> 
             backend = capture.getBackendName()
         except Exception:
             backend = settings.runtime_backend
-        actual = {
-            "width": int(width),
-            "height": int(height),
-            "backend": backend,
-            "reported_fps": float(capture.get(cv2.CAP_PROP_FPS)),
-            "fourcc": _decode_fourcc(capture.get(cv2.CAP_PROP_FOURCC)),
-            "frame_shape": list(frame.shape),
-        }
         result.update(
             {
                 "frame_read": True,
-                "actual": actual,
-                "is_4k": int(width) == TARGET_WIDTH and int(height) == TARGET_HEIGHT,
+                "is_4k": width == REQUIRED_WIDTH and height == REQUIRED_HEIGHT,
+                "actual": {
+                    "width": int(width),
+                    "height": int(height),
+                    "backend": backend,
+                },
             }
         )
         return result
@@ -111,40 +100,45 @@ def _probe_index_fast(cv2: Any, settings: CameraSettings, device_index: int) -> 
         return result
     finally:
         if capture is not None:
-            capture.release()
-        result["elapsed_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+            try:
+                capture.release()
+            except Exception:
+                pass
 
 
 def select_startup_camera(settings: CameraSettings) -> dict[str, Any]:
-    """Select the first camera that actually delivers a 3840x2160 frame."""
+    """Select the first camera that actually returns a 3840x2160 frame.
+
+    Each rejected capture is released before the next index is tried. The function
+    raises RuntimeError when no scanned camera satisfies the strict 4K requirement,
+    so the vision service cannot start on the wrong camera silently.
+    """
 
     try:
         cv2 = importlib.import_module("cv2")
     except Exception as exc:
-        raise RequiredCameraUnavailableError(
-            f"OpenCV is unavailable: {type(exc).__name__}: {exc}"
+        raise RuntimeError(
+            f"OpenCV is unavailable for 4K camera selection: {type(exc).__name__}: {exc}"
         ) from exc
 
     attempts: list[dict[str, Any]] = []
-    max_index = _scan_max_index()
-    for device_index in range(max_index + 1):
+    for device_index in range(_scan_max_index() + 1):
         attempt = _probe_index_fast(cv2, settings, device_index)
         attempts.append(attempt)
-        logger.info("camera_4k_probe", extra={"event": "camera_4k_probe", **attempt})
+        logger.info(
+            "camera_4k_probe",
+            extra={"event": "camera_4k_probe", **attempt},
+        )
         if not attempt.get("is_4k"):
             continue
 
         settings.device_index = device_index
-        actual = attempt.get("actual") or {}
         result = {
-            "mode": "strict_first_4k",
+            "mode": "first_verified_4k",
             "selected": True,
-            "required_resolution": [TARGET_WIDTH, TARGET_HEIGHT],
             "device_index": device_index,
-            "actual": actual,
-            "runtime_backend": settings.runtime_backend,
-            "runtime_fourcc": settings.runtime_fourcc,
-            "runtime_fps": settings.runtime_fps,
+            "required": {"width": REQUIRED_WIDTH, "height": REQUIRED_HEIGHT},
+            "actual": attempt.get("actual"),
             "attempts": attempts,
         }
         logger.info(
@@ -152,32 +146,23 @@ def select_startup_camera(settings: CameraSettings) -> dict[str, Any]:
             extra={
                 "event": "camera_4k_selected",
                 "device_index": device_index,
-                "width": actual.get("width"),
-                "height": actual.get("height"),
-                "backend": actual.get("backend"),
+                "width": REQUIRED_WIDTH,
+                "height": REQUIRED_HEIGHT,
             },
         )
         return result
 
-    observed = [
-        {
-            "device_index": item.get("device_index"),
-            "actual": item.get("actual"),
-            "error": item.get("error"),
-        }
+    diagnostics = "; ".join(
+        f"device {item['device_index']}: "
+        + (
+            f"{(item.get('actual') or {}).get('width')}x"
+            f"{(item.get('actual') or {}).get('height')}"
+            if item.get("actual")
+            else str(item.get("error") or "unavailable")
+        )
         for item in attempts
-    ]
-    message = (
-        f"No camera produced the required {TARGET_WIDTH}x{TARGET_HEIGHT} frame. "
-        f"Scanned indices 0..{max_index}. Observed: {observed}"
     )
-    logger.error(
-        "required_4k_camera_not_found",
-        extra={
-            "event": "required_4k_camera_not_found",
-            "required_width": TARGET_WIDTH,
-            "required_height": TARGET_HEIGHT,
-            "attempts": attempts,
-        },
+    raise RuntimeError(
+        f"No camera produced the required {REQUIRED_WIDTH}x{REQUIRED_HEIGHT} frame. "
+        f"Scanned indices 0..{_scan_max_index()}. {diagnostics}"
     )
-    raise RequiredCameraUnavailableError(message)
