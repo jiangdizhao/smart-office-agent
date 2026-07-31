@@ -26,13 +26,6 @@ def _idle_timeout_seconds() -> int:
         return 180
 
 
-def _greeting_cooldown_seconds() -> int:
-    try:
-        return max(10, int(os.getenv("SMART_OFFICE_PROXIMITY_GREETING_COOLDOWN_SECONDS", "30")))
-    except ValueError:
-        return 30
-
-
 def _visitor_greeting(language: Language, detection: dict[str, Any]) -> str:
     kind = str(detection.get("greeting_kind") or "new_anonymous").strip().casefold()
     display_name = " ".join(str(detection.get("display_name") or "").strip().split())[:80]
@@ -43,6 +36,16 @@ def _visitor_greeting(language: Language, detection: dict[str, Any]) -> str:
     if kind == "returning_anonymous" or returning:
         return "欢迎回来。" if language == "zh" else "Welcome back."
     return "欢迎来到我们的办公室。" if language == "zh" else "Welcome to our office."
+
+
+def _visit_id(detection: dict[str, Any], conversation_id: str) -> str:
+    value = str(
+        detection.get("visitor_session_id")
+        or detection.get("visit_id")
+        or detection.get("provisional_session_id")
+        or ""
+    ).strip()
+    return value[:160] or f"local-{conversation_id}"
 
 
 @dataclass
@@ -70,8 +73,12 @@ class ConversationState:
     created_at: datetime = field(default_factory=_now)
     last_activity_at: datetime = field(default_factory=_now)
     awaiting_user_since: datetime | None = None
-    last_proximity_greeting_at: datetime | None = None
     last_proximity_detection: dict[str, Any] | None = None
+    visit_id: str | None = None
+    identity_id: str | None = None
+    display_name: str | None = None
+    registered_memory_summary: str = ""
+    last_greeted_visit_id: str | None = None
 
 
 class ConversationStore:
@@ -238,6 +245,7 @@ class ConversationStore:
         language: Language,
         actor_type: ActorType,
         detection: dict[str, Any],
+        registered_memory: dict[str, Any] | None = None,
     ) -> tuple[bool, str, str, ConversationState]:
         with self._lock:
             state = self.get_or_create(
@@ -245,26 +253,38 @@ class ConversationStore:
                 language=language,
                 actor_type=actor_type,
             )
+            visit_id = _visit_id(detection, conversation_id)
+            if state.visit_id != visit_id:
+                if state.active_task_id is not None:
+                    return False, "", "active_task", state
+                self._reset_for_new_visit_locked(state)
+                state.visit_id = visit_id
             self._refresh_idle_locked(state)
+            if state.last_greeted_visit_id == visit_id:
+                return False, "", "visit_already_greeted", state
             if state.conversation_phase != "standby":
                 return False, "", f"conversation_phase={state.conversation_phase}", state
             if state.active_task_id is not None:
                 return False, "", "active_task", state
-            now = _now()
-            if (
-                state.last_proximity_greeting_at is not None
-                and now - state.last_proximity_greeting_at
-                < timedelta(seconds=_greeting_cooldown_seconds())
-            ):
-                return False, "", "cooldown", state
+
+            identity_id = str(detection.get("identity_id") or "").strip() or None
+            display_name = " ".join(str(detection.get("display_name") or "").strip().split())[:80] or None
+            state.identity_id = identity_id
+            state.display_name = display_name
+            state.registered_memory_summary = (
+                " ".join(str((registered_memory or {}).get("memory_summary") or "").strip().split())[:8_000]
+                if identity_id
+                else ""
+            )
 
             greeting = _visitor_greeting(language, detection)
+            now = _now()
             state.conversation_phase = "awaiting_user"
             state.awaiting_user_since = now
             state.last_activity_at = now
             state.last_visible_answer = greeting
-            state.last_proximity_greeting_at = now
             state.last_proximity_detection = dict(detection)
+            state.last_greeted_visit_id = visit_id
             self._append_message_locked(
                 state,
                 ConversationMessage(
@@ -276,6 +296,42 @@ class ConversationStore:
             )
             self._refresh_summary_locked(state)
             return True, greeting, "triggered", state
+
+    def end_visit(self, conversation_id: str, *, visit_id: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            state = self._items.get(conversation_id)
+            if state is None:
+                return {
+                    "conversation_id": conversation_id,
+                    "visit_id": visit_id,
+                    "identity_id": None,
+                    "display_name": None,
+                    "conversation_summary": "",
+                    "recent_messages": [],
+                    "ended": False,
+                }
+            if visit_id and state.visit_id and visit_id != state.visit_id:
+                return {
+                    "conversation_id": conversation_id,
+                    "visit_id": visit_id,
+                    "identity_id": state.identity_id,
+                    "display_name": state.display_name,
+                    "conversation_summary": state.conversation_summary,
+                    "recent_messages": [asdict(message) for message in state.messages[-8:]],
+                    "ended": False,
+                    "reason": "visit_id_mismatch",
+                }
+            archive = {
+                "conversation_id": state.conversation_id,
+                "visit_id": state.visit_id,
+                "identity_id": state.identity_id,
+                "display_name": state.display_name,
+                "conversation_summary": state.conversation_summary,
+                "recent_messages": [asdict(message) for message in state.messages[-8:]],
+                "ended": True,
+            }
+            self._reset_for_new_visit_locked(state)
+            return archive
 
     def snapshot(
         self,
@@ -325,6 +381,10 @@ class ConversationStore:
                 "last_visible_answer": state.last_visible_answer,
                 "last_command": state.last_command,
                 "conversation_summary": state.conversation_summary,
+                "registered_memory_summary": state.registered_memory_summary,
+                "visit_id": state.visit_id,
+                "identity_id": state.identity_id,
+                "display_name": state.display_name,
                 "recent_messages": [asdict(message) for message in state.messages[-_MAX_MESSAGES:]],
                 "last_activity_at": state.last_activity_at,
                 "awaiting_user_since": state.awaiting_user_since,
@@ -345,6 +405,23 @@ class ConversationStore:
         state.conversation_summary = " | ".join(
             f"{message.role}: {message.text[:180]}" for message in recent
         )
+
+    def _reset_for_new_visit_locked(self, state: ConversationState) -> None:
+        state.current_scene = "reception"
+        state.conversation_phase = "standby"
+        state.active_task_id = None
+        state.last_visible_answer = ""
+        state.last_command = ""
+        state.messages.clear()
+        state.conversation_summary = ""
+        state.last_activity_at = _now()
+        state.awaiting_user_since = None
+        state.last_proximity_detection = None
+        state.visit_id = None
+        state.identity_id = None
+        state.display_name = None
+        state.registered_memory_summary = ""
+        state.last_greeted_visit_id = None
 
     def _refresh_idle_locked(self, state: ConversationState) -> None:
         if state.active_task_id is not None:
