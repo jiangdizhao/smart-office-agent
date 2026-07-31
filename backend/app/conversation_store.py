@@ -33,6 +33,18 @@ def _greeting_cooldown_seconds() -> int:
         return 30
 
 
+def _visitor_greeting(language: Language, detection: dict[str, Any]) -> str:
+    kind = str(detection.get("greeting_kind") or "new_anonymous").strip().casefold()
+    display_name = " ".join(str(detection.get("display_name") or "").strip().split())[:80]
+    returning = bool(detection.get("returning_visitor"))
+
+    if kind == "registered_identity" and display_name:
+        return f"欢迎回来，{display_name}。" if language == "zh" else f"Welcome back, {display_name}."
+    if kind == "returning_anonymous" or returning:
+        return "欢迎回来。" if language == "zh" else "Welcome back."
+    return "欢迎来到我们的办公室。" if language == "zh" else "Welcome to our office."
+
+
 @dataclass
 class ConversationMessage:
     role: MessageRole
@@ -246,7 +258,7 @@ class ConversationStore:
             ):
                 return False, "", "cooldown", state
 
-            greeting = "Welcome to our office."
+            greeting = _visitor_greeting(language, detection)
             state.conversation_phase = "awaiting_user"
             state.awaiting_user_since = now
             state.last_activity_at = now
