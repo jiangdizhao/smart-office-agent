@@ -33,6 +33,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function gateAllowsNewSpeech(gate: ProactiveListeningGateSnapshot): boolean {
+  return gate.eligible && gate.reason === 'eligible'
+}
+
 async function closeAudioResources(
   context: AudioContext | null,
   stream: MediaStream | null,
@@ -51,7 +55,7 @@ async function waitForUtterance(
   let context: AudioContext | null = null
   try {
     const initialGate = listeningGate()
-    if (!initialGate.eligible) {
+    if (!gateAllowsNewSpeech(initialGate)) {
       return { kind: 'gated', reason: initialGate.reason }
     }
 
@@ -83,7 +87,9 @@ async function waitForUtterance(
 
     while (!signal.aborted) {
       const gate = listeningGate()
-      if (!gate.eligible) return { kind: 'gated', reason: gate.reason }
+      if (!gate.eligible || (!speechStartedAt && gate.reason !== 'eligible')) {
+        return { kind: 'gated', reason: gate.reason }
+      }
 
       const now = performance.now()
       analyser.getFloatTimeDomainData(samples)
@@ -147,7 +153,7 @@ export async function captureAutomaticRealtimeTurn(
   if (signal.aborted) return { kind: 'aborted' }
 
   const initialGate = listeningGate()
-  if (!initialGate.eligible) {
+  if (!gateAllowsNewSpeech(initialGate)) {
     return { kind: 'gated', reason: initialGate.reason }
   }
 
@@ -169,7 +175,7 @@ export async function captureAutomaticRealtimeTurn(
     }
 
     const gateAfterCaptureStart = listeningGate()
-    if (!gateAfterCaptureStart.eligible) {
+    if (!gateAllowsNewSpeech(gateAfterCaptureStart)) {
       vadController.abort()
       await realtimeAgent.abortCapture().catch(() => undefined)
       await controller().stopSpeaking().catch(() => undefined)
