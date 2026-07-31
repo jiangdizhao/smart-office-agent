@@ -20,6 +20,7 @@ class GeneralChatRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=12_000)
     language: Language = "zh"
     actor_type: ActorType = "visitor"
+    visit_id: str | None = Field(default=None, max_length=160)
 
 
 class GeneralChatResponse(BaseModel):
@@ -30,6 +31,7 @@ class GeneralChatResponse(BaseModel):
     model: str
     permission_decision: str = "not_required"
     content_url: str | None = None
+    visit_id: str | None = None
 
 
 def _history_text(context: dict[str, Any], current_text: str, language: Language) -> str:
@@ -119,12 +121,16 @@ async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
         language=req.language,
         actor_type=req.actor_type,
     )
-    decision = classify_turn(clean, req.actor_type)
+    expected_visit_id = str(req.visit_id or context.get("visit_id") or "").strip() or None
+    if req.visit_id and not conversation_store.is_current_visit(req.conversation_id, req.visit_id):
+        raise HTTPException(status_code=409, detail="stale_visit_before_general_chat")
 
+    decision = classify_turn(clean, req.actor_type)
     if decision.reason != "general_direct_conversation":
         delegated = await handle_turn(
             TurnRequest(
                 conversation_id=req.conversation_id,
+                visit_id=expected_visit_id,
                 text=clean,
                 language=req.language,
                 input_source="voice",
@@ -140,6 +146,7 @@ async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
             model="deterministic_turn_router",
             permission_decision=delegated.permission_decision,
             content_url=delegated.content_url,
+            visit_id=expected_visit_id,
         )
 
     try:
@@ -152,9 +159,16 @@ async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    if expected_visit_id and not conversation_store.is_current_visit(
+        req.conversation_id,
+        expected_visit_id,
+    ):
+        raise HTTPException(status_code=409, detail="stale_visit_after_general_chat")
+
     return GeneralChatResponse(
         route="general_chat",
         spoken_text=answer,
         response_language=req.language,
         model=model,
+        visit_id=expected_visit_id,
     )
