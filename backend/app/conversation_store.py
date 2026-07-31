@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from threading import RLock
 from typing import Any, Literal
 
+from app.state_store import state_store
+
 ActorType = Literal["visitor", "employee", "operator"]
 Scene = Literal["reception", "office", "meeting"]
 Language = Literal["zh", "en"]
@@ -31,7 +33,6 @@ def _visitor_greeting(language: Language, detection: dict[str, Any]) -> str:
     kind = str(detection.get("greeting_kind") or "new_anonymous").strip().casefold()
     display_name = " ".join(str(detection.get("display_name") or "").strip().split())[:80]
     returning = bool(detection.get("returning_visitor"))
-
     if kind == "registered_identity" and display_name:
         return f"欢迎回来，{display_name}。" if language == "zh" else f"Welcome back, {display_name}."
     if kind == "returning_anonymous" or returning:
@@ -146,6 +147,13 @@ class ConversationStore:
                 state.current_scene = current_scene
             if set_active_task:
                 state.active_task_id = active_task_id
+                if active_task_id:
+                    state_store.bind_task_owner(
+                        active_task_id,
+                        conversation_id=state.conversation_id,
+                        visit_id=state.visit_id,
+                        actor_type=state.actor_type,
+                    )
             if last_visible_answer is not None:
                 state.last_visible_answer = last_visible_answer
             if last_command is not None:
@@ -208,6 +216,13 @@ class ConversationStore:
             state.last_visible_answer = clean
             state.last_activity_at = now
             state.active_task_id = task_id if task_id else state.active_task_id
+            if task_id:
+                state_store.bind_task_owner(
+                    task_id,
+                    conversation_id=state.conversation_id,
+                    visit_id=state.visit_id,
+                    actor_type=state.actor_type,
+                )
             state.revision += 1
             if clean:
                 self._append_message_locked(
@@ -251,6 +266,13 @@ class ConversationStore:
                 state.active_task_id = task_id
                 state.conversation_phase = "task_active"
                 state.awaiting_user_since = None
+                if task_id:
+                    state_store.bind_task_owner(
+                        task_id,
+                        conversation_id=state.conversation_id,
+                        visit_id=state.visit_id,
+                        actor_type=state.actor_type,
+                    )
             else:
                 if task_id is None or state.active_task_id == task_id:
                     state.active_task_id = None
@@ -297,7 +319,6 @@ class ConversationStore:
                 return False, "", "visit_already_greeted", state
             if state.conversation_phase != "standby":
                 return False, "", f"conversation_phase={state.conversation_phase}", state
-
             identity_id = str(detection.get("identity_id") or "").strip() or None
             display_name = " ".join(str(detection.get("display_name") or "").strip().split())[:80] or None
             state.identity_id = identity_id
@@ -307,7 +328,6 @@ class ConversationStore:
                 if identity_id
                 else ""
             )
-
             greeting = _visitor_greeting(language, detection)
             now = _now()
             state.conversation_phase = "awaiting_user"
@@ -349,6 +369,7 @@ class ConversationStore:
                     "display_name": None,
                     "conversation_summary": "",
                     "recent_messages": [],
+                    "active_task_id": None,
                     "ended": False,
                     "reason": "conversation_not_found",
                 }
@@ -360,6 +381,7 @@ class ConversationStore:
                     "display_name": None,
                     "conversation_summary": "",
                     "recent_messages": [],
+                    "active_task_id": None,
                     "ended": False,
                     "reason": "visit_id_mismatch",
                 }
@@ -450,6 +472,7 @@ class ConversationStore:
             "display_name": state.display_name,
             "conversation_summary": state.conversation_summary,
             "recent_messages": [asdict(message) for message in state.messages[-8:]],
+            "active_task_id": state.active_task_id,
             "actor_type": state.actor_type,
             "ended": True,
             "ended_at": _now(),
