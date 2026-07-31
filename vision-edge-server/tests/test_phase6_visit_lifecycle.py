@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from app.client_protocol import build_client_state
-from app.config import VisitorSessionSettings, load_config
+from app.config import VisitorSessionSettings
+from app.short_visit_config import load_config
 from app.visitor_session import VisitorSessionRuntime
 
 
@@ -124,6 +125,20 @@ def test_visit_expires_after_two_seconds_and_new_track_gets_new_id() -> None:
 
     next_tracks, _ = _update(runtime, [_track(2)], {2: None}, now=12.1)
     assert next_tracks[0]["visitor_session_id"] != first_visit
+
+
+def test_watchdog_expiration_does_not_require_a_new_frame() -> None:
+    runtime = VisitorSessionRuntime(VisitorSessionSettings(ttl_seconds=5.0))
+    tracks, _ = _update(runtime, [_track(3)], {3: None}, now=40.0)
+    visit_id = tracks[0]["visitor_session_id"]
+    _update(runtime, [], {}, now=40.1)
+
+    events = runtime.expire_due(now=42.11)
+    assert any(
+        event_type == "visitor_session_expired"
+        and payload["visit_id"] == visit_id
+        for event_type, payload in events
+    )
 
 
 def test_anonymous_track_cannot_inherit_registered_visit_identity() -> None:
