@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 
+import app.config as config_module
 import app.visitor_session as visitor_session_module
 from app.visitor_session import VisitorSession
 
 VISIT_ABSENCE_SECONDS = 2.0
+_ORIGINAL_LOAD_CONFIG = config_module.load_config
 
 
 class IsolatedVisitorSessionRuntime(visitor_session_module.VisitorSessionRuntime):
@@ -133,5 +138,34 @@ class IsolatedVisitorSessionRuntime(visitor_session_module.VisitorSessionRuntime
         return payload
 
 
+def _load_config_with_short_visit(
+    path: str | Path | None = None,
+) -> tuple[config_module.AppConfig, Path]:
+    config_path = (
+        Path(path).expanduser().resolve()
+        if path is not None
+        else config_module.default_config_path()
+    )
+    if not config_path.exists():
+        raise FileNotFoundError(f"Vision config does not exist: {config_path}")
+    with config_path.open("r", encoding="utf-8") as handle:
+        requested_raw = yaml.safe_load(handle) or {}
+    requested_ttl = float(
+        (requested_raw.get("visitor_session") or {}).get(
+            "ttl_seconds",
+            VISIT_ABSENCE_SECONDS,
+        )
+    )
+    if requested_ttl >= 5.0:
+        return _ORIGINAL_LOAD_CONFIG(config_path)
+
+    validated_raw = deepcopy(requested_raw)
+    validated_raw.setdefault("visitor_session", {})["ttl_seconds"] = 5.0
+    config = config_module.AppConfig.model_validate(validated_raw)
+    config.visitor_session.ttl_seconds = requested_ttl
+    return config, config_path
+
+
 def install_visit_session_isolation() -> None:
     visitor_session_module.VisitorSessionRuntime = IsolatedVisitorSessionRuntime
+    config_module.load_config = _load_config_with_short_visit
