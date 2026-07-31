@@ -219,7 +219,7 @@ def test_enrollment_reuses_name_and_saves_multiple_samples(
     assert second["reused_existing_identity"] is True
 
 
-def test_face_memory_recovers_same_visitor_session_for_new_track() -> None:
+def test_anonymous_face_memory_does_not_recover_expired_visit() -> None:
     runtime = VisitorSessionRuntime(
         VisitorSessionSettings(
             face_high_similarity=0.80,
@@ -248,21 +248,19 @@ def test_face_memory_recovers_same_visitor_session_for_new_track() -> None:
         identities={1: None},
         now=2.0,
     )
-    recovered_tracks, events = runtime.update(
+    new_tracks, events = runtime.update(
         [track(9, x=0.55)],
         face_embeddings={9: face},
         body_embeddings={9: body},
         identities={9: None},
         now=4.0,
     )
-    assert recovered_tracks[0]["visitor_session_id"] == session_id
-    recovered = [
-        event for event in events if event[0] == "visitor_session_recovered"
-    ]
-    assert recovered and recovered[0][1]["previous_track_id"] == 1
+    assert new_tracks[0]["visitor_session_id"] != session_id
+    assert any(event_type == "visitor_session_started" for event_type, _ in events)
+    assert not any(event_type == "visitor_session_recovered" for event_type, _ in events)
 
 
-def test_registered_identity_is_propagated_across_track_change() -> None:
+def test_registered_identity_is_not_propagated_without_new_confirmation() -> None:
     runtime = VisitorSessionRuntime(VisitorSessionSettings())
     identity = {
         "identity_id": "rico",
@@ -288,13 +286,14 @@ def test_registered_identity_is_propagated_across_track_change() -> None:
         identities={1: None},
         now=2.0,
     )
-    second, _ = runtime.update(
+    second, events = runtime.update(
         [track(2)],
         face_embeddings={2: face},
         body_embeddings={2: None},
         identities={2: None},
         now=3.0,
     )
-    assert second[0]["visitor_session_id"] == session_id
-    assert second[0]["identity"]["display_name"] == "Rico"
-    assert second[0]["identity_source"] == "visitor_session_memory"
+    assert second[0]["visitor_session_id"] != session_id
+    assert second[0].get("identity") is None
+    assert second[0].get("identity_source") is None
+    assert not any(event_type == "visitor_session_recovered" for event_type, _ in events)
