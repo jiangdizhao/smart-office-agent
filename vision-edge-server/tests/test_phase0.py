@@ -105,14 +105,14 @@ def test_http_and_websocket_contract() -> None:
 
         client_state = client.get("/api/v1/client/state")
         assert client_state.status_code == 200
-        assert client_state.json()["schema_version"] == "phase5.2"
+        assert client_state.json()["schema_version"] == "phase6.0"
 
         with client.websocket_connect("/ws/v1/events") as websocket:
             assert websocket.receive_json()["type"] == "server_ready"
             assert websocket.receive_json()["type"] == "state_snapshot"
             initial_client_state = websocket.receive_json()
             assert initial_client_state["type"] == "client_state_snapshot"
-            assert initial_client_state["payload"]["schema_version"] == "phase5.2"
+            assert initial_client_state["payload"]["schema_version"] == "phase6.0"
 
             websocket.send_json({"type": "ping", "client_time": "test"})
             pong = websocket.receive_json()
@@ -122,4 +122,4 @@ def test_http_and_websocket_contract() -> None:
             websocket.send_json({"type": "get_client_state"})
             refreshed = websocket.receive_json()
             assert refreshed["type"] == "client_state_snapshot"
-            assert refreshed["payload"]["schema_version"] == "phase5.2"
+            assert refreshed["payload"]["schema_version"] == "phase6.0"
