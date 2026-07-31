@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import './index.css'
+import './voice/visitRealtimeLeaseBridge'
 import './voice/proximityTimelineDiagnostics'
 import './voice/VoiceDebugPanelPhase2.css'
 import './virtual-host/ProactiveReceptionStage1.css'
