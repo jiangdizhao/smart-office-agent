@@ -48,11 +48,16 @@ export class VisitOrchestrator<TDetection> {
   private farewellAbort: AbortController | null = null
   private disposed = false
   private readonly background = new Set<Promise<unknown>>()
+  private readonly hooks: VisitOrchestratorHooks<TDetection>
+  private readonly absenceGraceMs: number
 
   constructor(
-    private readonly hooks: VisitOrchestratorHooks<TDetection>,
-    private readonly absenceGraceMs = 2_000,
-  ) {}
+    hooks: VisitOrchestratorHooks<TDetection>,
+    absenceGraceMs = 2_000,
+  ) {
+    this.hooks = hooks
+    this.absenceGraceMs = absenceGraceMs
+  }
 
   currentLease(): VisitLease | null {
     return this.active?.lease ?? null
