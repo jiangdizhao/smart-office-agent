@@ -150,7 +150,7 @@ function toDetection(
 ): RemoteVisionDetection | null {
   const sessionId = String(visitor.visitor_session_id ?? '').trim()
   const trackId = Number(visitor.track_id)
-  if (!sessionId || !Number.isFinite(trackId) || trackId <= 0) return null
+  if (!Number.isFinite(trackId) || trackId <= 0) return null
   const face = visitor.face ?? {}
   const bodyConfidence = clamp(visitor.score)
   const faceConfidence = clamp(face.confidence)
@@ -351,13 +351,13 @@ export class RemoteVisionClient {
       return
     }
     const detection = toDetection(primary, 'client_state_snapshot', state)
-    if (!detection) {
-      // A primary visitor can temporarily have no published session while the RTX
-      // server is resolving an anonymous rebind. This is presence, not absence.
-      return
-    }
+    if (!detection) return
     this.options.onDetection(detection)
-    if (primary.greeting_eligible) {
+    if (
+      primary.greeting_eligible &&
+      detection.session_stable &&
+      Boolean(detection.visitor_session_id)
+    ) {
       this.options.onGreetingCandidate(detection)
     }
   }
