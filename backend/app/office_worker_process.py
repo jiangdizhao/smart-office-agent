@@ -23,9 +23,9 @@ def _worker(
     args: dict[str, Any],
 ) -> None:
     try:
-        from app.office_actions import execute_office_tool_call
+        from app.office_actions import execute_office_tool_call_direct
 
-        result, verification, status = execute_office_tool_call(tool_name, args)
+        result, verification, status = execute_office_tool_call_direct(tool_name, args)
         output.put(
             {
                 "ok": True,
