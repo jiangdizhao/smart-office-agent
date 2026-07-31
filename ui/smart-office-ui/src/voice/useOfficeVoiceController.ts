@@ -5,6 +5,10 @@ import {
   type VisitLease,
 } from '../vision/visitLeaseRegistry'
 import { BrowserSpeechCapture } from './browserSpeechRecognition'
+import {
+  generateSimpleRealtimeAnswer,
+  previewConversationRoute,
+} from './fastConversationRouter'
 import { realtimeAgent, type RealtimeRuntimeStatus, type VoiceLanguage } from './realtimeAgentRuntime'
 import { realtimeOfficeInterpreter, type RealtimeOfficeToolCall } from './realtimeOfficeInterpreter'
 import { voiceOutputManager, type VoiceOutputProvider } from './voiceOutputManager'
@@ -656,6 +660,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     selectedLanguage: VoiceLanguage,
     lease: VisitLease | null,
   ): Promise<void> {
+    const startedAt = performance.now()
     const response = await fetchWithTimeout(
       `${OFFICE_API_BASE}/api/general-chat`,
       {
@@ -677,6 +682,12 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     const payload = (await response.json()) as GeneralChatEnvelope
     const text = payload.spoken_text?.trim()
     if (!text) throw new Error('The Backend general-chat model returned no answer.')
+    console.info('[ConversationLatency] backend-answer-complete', {
+      route: payload.route ?? 'general_chat',
+      model: payload.model ?? 'unknown',
+      elapsedMs: Math.round(performance.now() - startedAt),
+      visitId: lease?.visitId ?? null,
+    })
     setRoute(payload.route ?? 'general_chat')
     setPermission(payload.permission_decision ?? 'not_required')
     setAnswer(text)
@@ -913,7 +924,60 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     assertLeaseCurrent(lease)
     if (await handleHumanRecordingSummary(clean, selectedLanguage, lease)) return
 
+    let routePreview: Awaited<ReturnType<typeof previewConversationRoute>> | null = null
+    try {
+      routePreview = await previewConversationRoute({
+        conversationId: conversationIdRef.current,
+        visitId: lease?.visitId ?? null,
+        text: clean,
+        language: selectedLanguage,
+        actor,
+        lease,
+      })
+    } catch (errorValue) {
+      if (errorValue instanceof Error && errorValue.name === 'AbortError') throw errorValue
+      console.error('[ConversationLatency] route-preview-fallback-office-interpreter', {
+        message: errorText(errorValue),
+        visitId: lease?.visitId ?? null,
+      })
+    }
+    assertLeaseCurrent(lease)
+
+    if (routePreview?.answer_engine === 'realtime') {
+      const responseText = await generateSimpleRealtimeAnswer(
+        clean,
+        selectedLanguage,
+        routePreview.recent_context,
+        lease,
+      )
+      assertLeaseCurrent(lease)
+      setRoute('realtime_direct')
+      setPermission('not_required')
+      setAnswer(responseText)
+      setTool('')
+      setVerified(null)
+      setContentUrl(null)
+      await completeConversationTurn(responseText, 'realtime_direct', null, lease)
+      await speak(responseText, selectedLanguage, lease)
+      return
+    }
+
+    if (
+      routePreview?.answer_engine === 'terra' ||
+      routePreview?.answer_engine === 'backend'
+    ) {
+      await performGeneralChat(clean, selectedLanguage, lease)
+      return
+    }
+
+    const decisionStartedAt = performance.now()
     const decision = await realtimeOfficeInterpreter.interpret(clean, selectedLanguage)
+    console.info('[ConversationLatency] office-interpreter-complete', {
+      elapsedMs: Math.round(performance.now() - decisionStartedAt),
+      decisionKind: decision.kind,
+      routePreviewAvailable: routePreview !== null,
+      visitId: lease?.visitId ?? null,
+    })
     assertLeaseCurrent(lease)
     if (decision.kind === 'clarify') {
       const clarification = decision.clarification || (selectedLanguage === 'zh' ? '请明确办公操作或选择已配置的邮件联系人。' : 'Please clarify the office action or choose a configured email recipient.')
