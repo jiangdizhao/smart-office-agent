@@ -33,7 +33,6 @@ const PROACTIVE_SILENCE_RETRY_MS = 500
 const PROACTIVE_ERROR_RETRY_MS = 1_000
 const GREETING_REQUEST_TIMEOUT_MS = 5_000
 const VISIT_ARCHIVE_TIMEOUT_MS = 3_000
-const FIXED_FAREWELL_TIMEOUT_MS = 6_000
 
 type VisionSourceMode = 'remote' | 'remote-with-fallback' | 'mediapipe' | 'disabled'
 export type ProximitySource = 'remote' | 'mediapipe' | 'disabled'
@@ -132,50 +131,24 @@ async function fetchWithTimeout(
   }
 }
 
-async function speakLocalFixed(
+async function speakRealtimeFarewell(
   text: string,
   language: 'zh' | 'en',
   signal: AbortSignal,
 ): Promise<void> {
   if (signal.aborted) return
-  if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') {
-    return
+  try {
+    await realtimeAgent.speakExact(text, language, signal)
+  } catch (error) {
+    if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) return
+    // Voice consistency takes priority over guaranteed farewell playback. If
+    // Realtime cannot start, do not switch to a visibly different local voice.
+    console.error('[ProximityDebug] realtime-farewell-speech-error', {
+      text,
+      language,
+      message: errorText(error),
+    })
   }
-  await new Promise<void>((resolve) => {
-    let started = false
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.lang = language === 'zh' ? 'zh-CN' : 'en-AU'
-    utterance.rate = language === 'zh' ? 0.94 : 1
-    const finish = () => {
-      window.clearTimeout(timer)
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }
-    const onAbort = () => {
-      window.speechSynthesis.cancel()
-      finish()
-    }
-    const timer = window.setTimeout(() => {
-      window.speechSynthesis.cancel()
-      finish()
-    }, FIXED_FAREWELL_TIMEOUT_MS)
-    utterance.onstart = () => {
-      started = true
-      console.info('[ProximityDebug] local-fixed-speech-started', { text })
-    }
-    utterance.onend = finish
-    utterance.onerror = (event) => {
-      console.error('[ProximityDebug] local-fixed-speech-error', {
-        text,
-        started,
-        error: event.error,
-      })
-      finish()
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.speak(utterance)
-  })
 }
 
 function remoteVisitId(detection: RemoteVisionDetection): string {
@@ -472,9 +445,10 @@ export function useProximityGreeting(
             epoch: ended.lease.epoch,
             language: current.language,
             text,
-            provider: 'local-fixed',
+            provider: 'gpt-realtime-2',
+            interruptible: true,
           })
-          await speakLocalFixed(text, current.language, signal)
+          await speakRealtimeFarewell(text, current.language, signal)
         },
         onArchive: archiveVisit,
       },
