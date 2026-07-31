@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { ConversationAudioRecorder } from '../recording/conversationAudioRecorder'
+import {
+  visitLeaseRegistry,
+  type VisitLease,
+} from '../vision/visitLeaseRegistry'
 import { BrowserSpeechCapture } from './browserSpeechRecognition'
 import { realtimeAgent, type RealtimeRuntimeStatus, type VoiceLanguage } from './realtimeAgentRuntime'
 import { realtimeOfficeInterpreter, type RealtimeOfficeToolCall } from './realtimeOfficeInterpreter'
@@ -10,6 +14,8 @@ export const OFFICE_API_BASE =
 
 const TASK_TIMEOUT = 180_000
 const CONVERSATION_POLL_MS = 3_000
+const API_TIMEOUT_MS = 35_000
+const TASK_POLL_TIMEOUT_MS = 4_000
 const CJK = /[\u3400-\u9fff]/
 
 export type OfficeActor = 'visitor' | 'employee' | 'operator'
@@ -117,6 +123,9 @@ type Task = {
   status: OfficeTaskStatus
   steps: TaskStep[]
   summary?: string | null
+  owner_visit_id?: string | null
+  owner_conversation_id?: string | null
+  approval_deadline_at?: string | null
 }
 
 type Turn = {
@@ -142,6 +151,8 @@ type ConversationEnvelope = {
     conversation_phase?: ConversationPhase
     active_task_id?: string | null
     last_visible_answer?: string
+    visit_id?: string | null
+    revision?: number
   }
 }
 
@@ -161,6 +172,7 @@ type GeneralChatEnvelope = {
   model?: string
   permission_decision?: string
   content_url?: string | null
+  visit_id?: string | null
 }
 
 type RecordingUploadEnvelope = {
@@ -259,15 +271,10 @@ function utteranceLanguage(text: string, selected: VoiceLanguage): VoiceLanguage
 function isHumanRecordingSummaryRequest(text: string): boolean {
   const clean = text.trim().toLocaleLowerCase()
   if (!clean) return false
-  const chineseRequest =
-    /(总结|概括|整理|回顾).{0,10}(录音|现场对话|人员对话|刚才的谈话|刚才的对话)|(?:录音|现场对话|人员对话|刚才的谈话|刚才的对话).{0,10}(总结|概括|整理|回顾)/.test(
-      clean,
-    )
-  const englishRequest =
-    /(summari[sz]e|recap).{0,24}(recording|human conversation|people's conversation|discussion)|what did they discuss|summari[sz]e what they discussed/.test(
-      clean,
-    )
-  return chineseRequest || englishRequest
+  return (
+    /(总结|概括|整理|回顾).{0,10}(录音|现场对话|人员对话|刚才的谈话|刚才的对话)|(?:录音|现场对话|人员对话|刚才的谈话|刚才的对话).{0,10}(总结|概括|整理|回顾)/.test(clean) ||
+    /(summari[sz]e|recap).{0,24}(recording|human conversation|people's conversation|discussion)|what did they discuss|summari[sz]e what they discussed/.test(clean)
+  )
 }
 
 function latestStep(task: Task): TaskStep | undefined {
@@ -297,7 +304,6 @@ function finalTaskText(task: Task, language: VoiceLanguage): string {
   const step = latestStep(task)
   const data = step?.result?.data
   const status = data?.office_status ?? data?.presentation_status
-
   if (task.status === 'cancelled') {
     return language === 'zh'
       ? `办公任务已取消，已完成 ${done} 个步骤。`
@@ -310,41 +316,23 @@ function finalTaskText(task: Task, language: VoiceLanguage): string {
       : `The office task failed at step ${failed}; later steps were not executed.`
   }
   if (data?.sent || status?.sent) {
-    const sender =
-      data?.sender_account_email ?? status?.sender_account_email ?? 'configured Outlook account'
-    const recipientName =
-      data?.recipient_name ??
-      status?.recipient_name ??
-      data?.recipient_key ??
-      status?.recipient_key ??
-      'configured recipient'
-    const recipientEmail =
-      data?.recipient_email ?? status?.recipient_email ?? 'configured email'
+    const sender = data?.sender_account_email ?? status?.sender_account_email ?? 'configured Outlook account'
+    const recipientName = data?.recipient_name ?? status?.recipient_name ?? data?.recipient_key ?? status?.recipient_key ?? 'configured recipient'
+    const recipientEmail = data?.recipient_email ?? status?.recipient_email ?? 'configured email'
     return language === 'zh'
       ? `已在第二次批准后删除“仅保存为草稿、尚未发送”的提示，并由 Outlook 接受从 ${sender} 发往 ${recipientName}（${recipientEmail}）的发送操作。最终送达状态由 Outlook 和网络处理。`
       : `After the second approval, the draft-only notice was removed and Outlook accepted the send from ${sender} to ${recipientName} (${recipientEmail}). Final delivery is handled by Outlook and the network.`
   }
   if (data?.outlook_draft_created || status?.outlook_draft_created) {
-    const sender =
-      data?.sender_account_email ?? status?.sender_account_email ?? 'configured Outlook account'
-    const recipientName =
-      data?.recipient_name ??
-      status?.recipient_name ??
-      data?.recipient_key ??
-      status?.recipient_key ??
-      'configured recipient'
-    const recipientEmail =
-      data?.recipient_email ?? status?.recipient_email ?? 'configured email'
+    const sender = data?.sender_account_email ?? status?.sender_account_email ?? 'configured Outlook account'
+    const recipientName = data?.recipient_name ?? status?.recipient_name ?? data?.recipient_key ?? status?.recipient_key ?? 'configured recipient'
+    const recipientEmail = data?.recipient_email ?? status?.recipient_email ?? 'configured email'
     return language === 'zh'
       ? `Outlook 草稿已创建并验证。发件账号为 ${sender}，收件人为 ${recipientName}（${recipientEmail}），邮件尚未发送。`
       : `A verified Outlook draft was created from ${sender} for ${recipientName} (${recipientEmail}); it has not been sent.`
   }
   const summary = data?.summary_path_relative ?? status?.summary_path_relative
-  if (summary) {
-    return language === 'zh'
-      ? `演示摘要已生成：${summary}。`
-      : `The presentation summary was generated at ${summary}.`
-  }
+  if (summary) return language === 'zh' ? `演示摘要已生成：${summary}。` : `The presentation summary was generated at ${summary}.`
   if (status?.volume_percent !== undefined || status?.brightness_percent !== undefined) {
     return language === 'zh'
       ? `办公任务已完成。当前音量 ${status?.volume_percent ?? '不可用'}%，亮度 ${status?.brightness_percent ?? '不可用'}%。`
@@ -368,17 +356,60 @@ function apiError(prefix: string, status: number, detail: string): Error {
   return new Error(`${prefix}: ${status}${detail ? ` ${detail}` : ''}`)
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T | null> {
+function abortError(message: string): Error {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = API_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  const onAbort = () => controller.abort()
+  signal?.addEventListener('abort', onAbort, { once: true })
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify(body),
-    })
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    window.clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+async function postJson<T>(
+  url: string,
+  body: unknown,
+  lease?: VisitLease | null,
+): Promise<T | null> {
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(body),
+      },
+      API_TIMEOUT_MS,
+      lease?.signal,
+    )
     if (!response.ok) return null
     return (await response.json()) as T
   } catch {
     return null
+  }
+}
+
+function currentLease(): VisitLease | null {
+  return visitLeaseRegistry.current()
+}
+
+function assertLeaseCurrent(lease: VisitLease | null): void {
+  if (lease && !visitLeaseRegistry.isCurrent(lease)) {
+    throw abortError('The operation belongs to a stale Visit.')
   }
 }
 
@@ -391,17 +422,12 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   const recordingActiveRef = useRef(false)
   const recordingSavingRef = useRef(false)
   const recordingStartedAtRef = useRef(0)
+  const conversationRevisionRef = useRef(0)
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>('standby')
   const [language, setLanguageState] = useState<VoiceLanguage>('zh')
-  const [actor, setActorState] = useState<OfficeActor>(
-    (localStorage.getItem('smartoffice_actor_type') as OfficeActor) || 'visitor',
-  )
-  const [asr, setAsrState] = useState<OfficeAsrProvider>(
-    localStorage.getItem('smartoffice_asr_provider') === 'browser' ? 'browser' : 'realtime',
-  )
-  const [voice, setVoiceState] = useState<VoiceOutputProvider>(
-    voiceOutputManager.selectedProvider(),
-  )
+  const [actor, setActorState] = useState<OfficeActor>((localStorage.getItem('smartoffice_actor_type') as OfficeActor) || 'visitor')
+  const [asr, setAsrState] = useState<OfficeAsrProvider>(localStorage.getItem('smartoffice_asr_provider') === 'browser' ? 'browser' : 'realtime')
+  const [voice, setVoiceState] = useState<VoiceOutputProvider>(voiceOutputManager.selectedProvider())
   const [panel, setPanel] = useState<OfficePanelState>('idle')
   const [runtime, setRuntime] = useState<RealtimeRuntimeStatus>(runtimeInitial)
   const [input, setInput] = useState('')
@@ -426,9 +452,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
 
   const listening = panel === 'listening'
   const busy = ['connecting', 'processing', 'speaking'].includes(panel)
-  const active = Boolean(
-    taskId && taskStatus && !['completed', 'failed', 'cancelled'].includes(taskStatus),
-  )
+  const active = Boolean(taskId && taskStatus && !['completed', 'failed', 'cancelled'].includes(taskStatus))
   const browserAsrAvailable = browser.current.available()
 
   useEffect(() => {
@@ -440,40 +464,73 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   }, [])
 
   useEffect(() => {
-    if (!recordingActive) return
-    const updateDuration = () => {
-      setRecordingDurationSeconds(
-        Math.max(0, Math.floor((Date.now() - recordingStartedAtRef.current) / 1_000)),
-      )
+    const resetForVisitBoundary = () => {
+      generation.current += 1
+      approvalPrompted.current = null
+      browser.current.abort()
+      void realtimeOfficeInterpreter.shutdown().catch(() => undefined)
+      recordingActiveRef.current = false
+      recordingSavingRef.current = false
+      void audioRecorder.current.dispose(false)
+      setRecordingActive(false)
+      setRecordingSaving(false)
+      setTaskId(null)
+      setTaskStatus(null)
+      setPendingApprovalTool(null)
+      setPendingRecipientKey(null)
+      setConversationPhase('standby')
+      setPanel('idle')
+      setError('')
     }
+    const onActivated = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null
+      if (detail?.replacedVisitId) resetForVisitBoundary()
+    }
+    const onRevoked = () => resetForVisitBoundary()
+    window.addEventListener('smartoffice:visit-activated', onActivated)
+    window.addEventListener('smartoffice:visit-revoked', onRevoked)
+    return () => {
+      window.removeEventListener('smartoffice:visit-activated', onActivated)
+      window.removeEventListener('smartoffice:visit-revoked', onRevoked)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!recordingActive) return
+    const updateDuration = () => setRecordingDurationSeconds(Math.max(0, Math.floor((Date.now() - recordingStartedAtRef.current) / 1_000)))
     updateDuration()
     const timer = window.setInterval(updateDuration, 1_000)
     return () => window.clearInterval(timer)
   }, [recordingActive])
 
-  useEffect(() => {
-    return () => {
-      recordingActiveRef.current = false
-      recordingSavingRef.current = false
-      void audioRecorder.current.dispose()
-    }
+  useEffect(() => () => {
+    recordingActiveRef.current = false
+    recordingSavingRef.current = false
+    void audioRecorder.current.dispose()
   }, [])
 
   useEffect(() => {
     let cancelled = false
     const refresh = async () => {
+      const lease = currentLease()
       try {
         const query = new URLSearchParams({ language, actor_type: actor })
-        const response = await fetch(
+        const response = await fetchWithTimeout(
           `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}?${query}`,
           { headers: { Accept: 'application/json' } },
+          4_000,
+          lease?.signal,
         )
-        if (!response.ok) return
+        if (!response.ok || cancelled) return
         const payload = (await response.json()) as ConversationEnvelope
-        const next = payload.state?.conversation_phase
-        if (!cancelled && next) setConversationPhase(next)
+        const state = payload.state
+        const revision = Number(state?.revision ?? 0)
+        if (lease && state?.visit_id !== lease.visitId) return
+        if (revision && revision < conversationRevisionRef.current) return
+        if (revision) conversationRevisionRef.current = revision
+        if (state?.conversation_phase) setConversationPhase(state.conversation_phase)
       } catch {
-        // Conversation memory must never block the core Office workflow.
+        // Polling never blocks the real-time Visit path.
       }
     }
     void refresh()
@@ -486,16 +543,22 @@ export function useOfficeVoiceController(): OfficeVoiceController {
 
   async function startRecording(): Promise<void> {
     if (recordingActiveRef.current || recordingSavingRef.current) return
+    const token = generation.current
     setRecordingError('')
     setRecordingAvailable(false)
     try {
       await voiceOutputManager.stop()
       await audioRecorder.current.start()
+      if (token !== generation.current) {
+        await audioRecorder.current.dispose(false)
+        return
+      }
       recordingActiveRef.current = true
       recordingStartedAtRef.current = Date.now()
       setRecordingDurationSeconds(0)
       setRecordingActive(true)
     } catch (errorValue) {
+      if (token !== generation.current) return
       recordingActiveRef.current = false
       setRecordingActive(false)
       setRecordingError(errorText(errorValue))
@@ -504,6 +567,7 @@ export function useOfficeVoiceController(): OfficeVoiceController {
 
   async function stopRecording(): Promise<void> {
     if (!recordingActiveRef.current || recordingSavingRef.current) return
+    const token = generation.current
     setRecordingError('')
     recordingActiveRef.current = false
     recordingSavingRef.current = true
@@ -511,111 +575,105 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     setRecordingSaving(true)
     try {
       const result = await audioRecorder.current.stop()
+      if (token !== generation.current) return
       if (!result?.blob.size) throw new Error('The recorded audio file is empty.')
       setRecordingDurationSeconds(result.durationSeconds)
       const extension = result.mimeType.includes('mp4') ? 'm4a' : 'webm'
       const form = new FormData()
-      form.append(
-        'file',
-        result.blob,
-        `human-conversation-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`,
-      )
+      form.append('file', result.blob, `human-conversation-${new Date(result.startedAt).toISOString().replace(/[:.]/g, '-')}.${extension}`)
       form.append('language', language)
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `${OFFICE_API_BASE}/api/human-recordings/${encodeURIComponent(conversationIdRef.current)}`,
         { method: 'POST', body: form },
       )
-      if (!response.ok) {
-        throw apiError('Recording upload failed', response.status, await response.text())
-      }
+      if (!response.ok) throw apiError('Recording upload failed', response.status, await response.text())
+      if (token !== generation.current) return
       const payload = (await response.json()) as RecordingUploadEnvelope
       setRecordingAvailable(Boolean(payload.ok && payload.recording_available))
     } catch (errorValue) {
-      setRecordingAvailable(false)
-      setRecordingError(errorText(errorValue))
+      if (token === generation.current) {
+        setRecordingAvailable(false)
+        setRecordingError(errorText(errorValue))
+      }
     } finally {
-      recordingSavingRef.current = false
-      setRecordingSaving(false)
+      if (token === generation.current) {
+        recordingSavingRef.current = false
+        setRecordingSaving(false)
+      }
     }
   }
 
   function downloadRecording(): void {
     if (!audioRecorder.current.download()) {
-      setRecordingError(
-        language === 'zh' ? '当前没有已完成的现场对话录音可供下载。' : 'No completed human-conversation recording is available.',
-      )
+      setRecordingError(language === 'zh' ? '当前没有已完成的现场对话录音可供下载。' : 'No completed human-conversation recording is available.')
     }
   }
 
   async function handleHumanRecordingSummary(
     clean: string,
     selectedLanguage: VoiceLanguage,
+    lease: VisitLease | null,
   ): Promise<boolean> {
     if (!isHumanRecordingSummaryRequest(clean)) return false
+    assertLeaseCurrent(lease)
     setPanel('processing')
     setRoute('human_recording_summary')
     setPermission('not_required')
     setTool('')
     setVerified(null)
-
     let responseText: string
-    let artifactUrl: string | null = null
     if (recordingActiveRef.current) {
-      responseText =
-        selectedLanguage === 'zh'
-          ? '现场对话仍在录音。请先点击停止录音，等待音频保存完成后再让我总结。'
-          : 'The human conversation is still being recorded. Stop and save the recording before asking for a summary.'
+      responseText = selectedLanguage === 'zh' ? '现场对话仍在录音。请先停止录音。' : 'The human conversation is still being recorded. Stop it before requesting a summary.'
     } else if (recordingSavingRef.current) {
-      responseText =
-        selectedLanguage === 'zh'
-          ? '现场对话录音正在保存，请稍等片刻后再让我总结。'
-          : 'The human-conversation recording is still being saved. Please try again shortly.'
+      responseText = selectedLanguage === 'zh' ? '现场对话录音正在保存，请稍等。' : 'The recording is still being saved. Please wait.'
     } else {
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `${OFFICE_API_BASE}/api/human-recordings/${encodeURIComponent(conversationIdRef.current)}/summary`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json; charset=utf-8' },
           body: JSON.stringify({ language: selectedLanguage }),
         },
+        API_TIMEOUT_MS,
+        lease?.signal,
       )
-      if (!response.ok) {
-        throw apiError('Human conversation summary failed', response.status, await response.text())
-      }
+      if (!response.ok) throw apiError('Human conversation summary failed', response.status, await response.text())
+      assertLeaseCurrent(lease)
       const payload = (await response.json()) as RecordingSummaryEnvelope
-      responseText =
-        payload.spoken_text?.trim() ||
-        (selectedLanguage === 'zh'
-          ? '现场对话总结请求已经处理。'
-          : 'The human-conversation summary request was processed.')
-      artifactUrl = payload.artifact_url ?? null
-      if (artifactUrl) setContentUrl(artifactUrl)
+      responseText = payload.spoken_text?.trim() || (selectedLanguage === 'zh' ? '现场对话总结请求已经处理。' : 'The human-conversation summary request was processed.')
+      if (payload.artifact_url) setContentUrl(payload.artifact_url)
       setRecordingAvailable(Boolean(payload.recording_available))
     }
-
+    assertLeaseCurrent(lease)
     setAnswer(responseText)
-    await completeConversationTurn(responseText, 'human_recording_summary')
-    await speak(responseText, selectedLanguage)
+    await completeConversationTurn(responseText, 'human_recording_summary', null, lease)
+    await speak(responseText, selectedLanguage, lease)
     return true
   }
 
   async function performGeneralChat(
     clean: string,
     selectedLanguage: VoiceLanguage,
+    lease: VisitLease | null,
   ): Promise<void> {
-    const response = await fetch(`${OFFICE_API_BASE}/api/general-chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({
-        conversation_id: conversationIdRef.current,
-        text: clean,
-        language: selectedLanguage,
-        actor_type: actor,
-      }),
-    })
-    if (!response.ok) {
-      throw apiError('General chat failed', response.status, await response.text())
-    }
+    const response = await fetchWithTimeout(
+      `${OFFICE_API_BASE}/api/general-chat`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          conversation_id: conversationIdRef.current,
+          visit_id: lease?.visitId ?? null,
+          text: clean,
+          language: selectedLanguage,
+          actor_type: actor,
+        }),
+      },
+      API_TIMEOUT_MS,
+      lease?.signal,
+    )
+    if (!response.ok) throw apiError('General chat failed', response.status, await response.text())
+    assertLeaseCurrent(lease)
     const payload = (await response.json()) as GeneralChatEnvelope
     const text = payload.spoken_text?.trim()
     if (!text) throw new Error('The Backend general-chat model returned no answer.')
@@ -625,11 +683,15 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     setTool('')
     setVerified(null)
     setContentUrl(payload.content_url ?? null)
-    await completeConversationTurn(text, payload.route ?? 'general_chat')
-    await speak(text, selectedLanguage)
+    await completeConversationTurn(text, payload.route ?? 'general_chat', null, lease)
+    await speak(text, selectedLanguage, lease)
   }
 
   function fail(errorValue: unknown): void {
+    if (errorValue instanceof Error && (errorValue.name === 'AbortError' || errorValue.message.includes('stale_visit'))) {
+      setPanel('idle')
+      return
+    }
     setError(errorText(errorValue))
     setPanel('error')
   }
@@ -638,16 +700,14 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     text: string,
     selectedLanguage: VoiceLanguage,
     source: 'text' | 'voice',
+    lease: VisitLease | null,
   ): Promise<void> {
+    assertLeaseCurrent(lease)
     setConversationPhase('engaged')
     await postJson(
       `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}/turn-start`,
-      {
-        language: selectedLanguage,
-        actor_type: actor,
-        text,
-        source,
-      },
+      { language: selectedLanguage, actor_type: actor, text, source, visit_id: lease?.visitId ?? null },
+      lease,
     )
   }
 
@@ -655,7 +715,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     text: string,
     turnRoute: string,
     activeTaskId: string | null = null,
+    lease: VisitLease | null = currentLease(),
   ): Promise<void> {
+    assertLeaseCurrent(lease)
     const nextPhase: ConversationPhase = activeTaskId ? 'task_active' : 'awaiting_user'
     setConversationPhase(nextPhase)
     await postJson(
@@ -666,7 +728,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
         task_id: activeTaskId,
         expect_reply: activeTaskId === null,
         source: 'virtual_host',
+        visit_id: lease?.visitId ?? null,
       },
+      lease,
     )
   }
 
@@ -674,30 +738,37 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     id: string | null,
     isActive: boolean,
     finalText = '',
+    lease: VisitLease | null = currentLease(),
   ): Promise<void> {
+    assertLeaseCurrent(lease)
     setConversationPhase(isActive ? 'task_active' : 'awaiting_user')
     await postJson(
       `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}/task-state`,
-      {
-        task_id: id,
-        active: isActive,
-        final_text: finalText,
-      },
+      { task_id: id, active: isActive, final_text: finalText, visit_id: lease?.visitId ?? null },
+      lease,
     )
   }
 
-  async function speak(text: string, selectedLanguage: VoiceLanguage): Promise<void> {
+  async function speak(
+    text: string,
+    selectedLanguage: VoiceLanguage,
+    lease: VisitLease | null = currentLease(),
+  ): Promise<void> {
+    assertLeaseCurrent(lease)
     if (voice === 'none') {
-      setPanel('idle')
+      if (!lease || visitLeaseRegistry.isCurrent(lease)) setPanel('idle')
       return
     }
     setPanel('speaking')
     try {
-      await voiceOutputManager.speak(text, selectedLanguage)
-      setPanel('idle')
+      await voiceOutputManager.speak(text, selectedLanguage, {
+        lease,
+        signal: lease?.signal,
+      })
+      if (!lease || visitLeaseRegistry.isCurrent(lease)) setPanel('idle')
     } catch (errorValue) {
       if (errorValue instanceof Error && errorValue.name === 'AbortError') {
-        setPanel('idle')
+        if (!lease || visitLeaseRegistry.isCurrent(lease)) setPanel('idle')
         return
       }
       throw errorValue
@@ -707,8 +778,10 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   async function connect(): Promise<void> {
     setPanel('connecting')
     setError('')
+    const lease = currentLease()
     try {
-      await realtimeAgent.prewarm(language)
+      await realtimeAgent.prewarm(language, lease?.signal)
+      assertLeaseCurrent(lease)
       setRuntime(realtimeAgent.status())
       setPanel('idle')
     } catch (errorValue) {
@@ -717,12 +790,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   }
 
   async function beginListening(): Promise<void> {
+    const lease = currentLease()
     if (recordingActiveRef.current || recordingSavingRef.current) {
-      setError(
-        language === 'zh'
-          ? '请先停止并保存现场对话录音，再使用 Agent 的点击说话功能。'
-          : 'Stop and save the human-conversation recording before using push-to-talk.',
-      )
+      setError(language === 'zh' ? '请先停止并保存现场对话录音，再使用语音交互。' : 'Stop and save the recording before using voice interaction.')
       setPanel('error')
       return
     }
@@ -732,8 +802,9 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     setConversationPhase('engaged')
     try {
       await voiceOutputManager.stop()
-      if (asr === 'realtime') await realtimeAgent.beginCapture(language)
+      if (asr === 'realtime') await realtimeAgent.beginCapture(language, lease?.signal)
       else await browser.current.begin(language, setTranscript)
+      assertLeaseCurrent(lease)
       setPanel('listening')
     } catch (errorValue) {
       fail(errorValue)
@@ -741,12 +812,13 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   }
 
   async function endListening(): Promise<void> {
+    const lease = currentLease()
     setPanel('processing')
     try {
-      const text =
-        asr === 'realtime' ? await realtimeAgent.endCapture() : await browser.current.end()
+      const text = asr === 'realtime' ? await realtimeAgent.endCapture(lease?.signal) : await browser.current.end()
+      assertLeaseCurrent(lease)
       setTranscript(text)
-      await performSubmit(text, 'voice')
+      await performSubmit(text, 'voice', lease)
     } catch (errorValue) {
       fail(errorValue)
     }
@@ -756,13 +828,22 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     id: string,
     selectedLanguage: VoiceLanguage,
     token: number,
+    lease: VisitLease | null,
   ): Promise<void> {
     const deadline = performance.now() + TASK_TIMEOUT
     while (performance.now() < deadline && generation.current === token) {
-      const response = await fetch(`${OFFICE_API_BASE}/agent/tasks/${encodeURIComponent(id)}`)
+      assertLeaseCurrent(lease)
+      const response = await fetchWithTimeout(
+        `${OFFICE_API_BASE}/agent/tasks/${encodeURIComponent(id)}`,
+        { headers: { Accept: 'application/json' } },
+        TASK_POLL_TIMEOUT_MS,
+        lease?.signal,
+      )
       if (!response.ok) throw new Error(`Task status failed: ${response.status}`)
       const task = (await response.json()) as Task
+      assertLeaseCurrent(lease)
       if (generation.current !== token) return
+      if (lease && task.owner_visit_id && task.owner_visit_id !== lease.visitId) return
 
       setTaskStatus(task.status)
       const state = statusFromTask(task)
@@ -785,105 +866,101 @@ export function useOfficeVoiceController(): OfficeVoiceController {
         if (approvalPrompted.current !== approvalKey) {
           approvalPrompted.current = approvalKey
           const isSend = waiting.tool_name === 'outlook_send_approved_draft'
-          const recipientLabel = recipientKey
-            ? `联系人 ${recipientKey}`
-            : '最新已验证草稿的联系人'
-          const prompt =
-            selectedLanguage === 'zh'
-              ? isSend
-                ? `发送给${recipientLabel}的邮件需要第二次批准。批准后会先删除正文中的“该邮件目前仅保存为 Outlook 草稿，尚未发送。”，重新保存并核对发件人与白名单收件人，然后调用 Outlook 发送。请检查草稿后再批准。`
-                : `为${recipientLabel}创建本机 Outlook 草稿需要第一次批准。草稿会使用已登录的 Outlook 账号，但此时不会发送。`
-              : isSend
-                ? `Sending to ${recipientLabel} requires a second approval. The draft-only notice will be removed and the allowlisted recipient will be re-verified before Outlook Send() is invoked.`
-                : `Creating the Outlook draft for ${recipientLabel} requires the first approval. It will not send at this stage.`
+          const recipientLabel = recipientKey ? `联系人 ${recipientKey}` : '最新已验证草稿的联系人'
+          const prompt = selectedLanguage === 'zh'
+            ? isSend
+              ? `发送给${recipientLabel}的邮件需要第二次批准。请检查草稿后再批准。`
+              : `为${recipientLabel}创建本机 Outlook 草稿需要第一次批准。`
+            : isSend
+              ? `Sending to ${recipientLabel} requires a second approval.`
+              : `Creating the Outlook draft for ${recipientLabel} requires the first approval.`
           setAnswer(prompt)
-          if (!realtimeAgent.status().microphoneAttached) await speak(prompt, selectedLanguage)
+          if (!realtimeAgent.status().microphoneAttached) await speak(prompt, selectedLanguage, lease)
         }
       }
 
       if (['completed', 'failed', 'cancelled'].includes(task.status)) {
         setPendingApprovalTool(null)
         setPendingRecipientKey(null)
+        if (task.status === 'cancelled') return
         const text = finalTaskText(task, selectedLanguage)
         setAnswer(text)
-        await setConversationTaskState(id, false, text)
-        await completeConversationTurn(text, 'office_task_complete')
-        if (!realtimeAgent.status().microphoneAttached && task.status !== 'cancelled') {
-          await speak(text, selectedLanguage)
-        }
+        await setConversationTaskState(id, false, text, lease)
+        await completeConversationTurn(text, 'office_task_complete', null, lease)
+        if (!realtimeAgent.status().microphoneAttached) await speak(text, selectedLanguage, lease)
         return
       }
       await new Promise((resolve) => window.setTimeout(resolve, 250))
     }
-    if (generation.current === token) {
+    if (generation.current === token && (!lease || visitLeaseRegistry.isCurrent(lease))) {
       throw new Error('The office task did not finish within three minutes.')
     }
   }
 
-  async function performSubmit(text: string, source: 'text' | 'voice'): Promise<void> {
+  async function performSubmit(
+    text: string,
+    source: 'text' | 'voice',
+    suppliedLease: VisitLease | null = currentLease(),
+  ): Promise<void> {
+    const lease = suppliedLease
+    assertLeaseCurrent(lease)
     const clean = text.trim()
     if (!clean) throw new Error('请输入文字或完成一次语音识别。')
-
     setPanel('processing')
     setError('')
     const selectedLanguage = utteranceLanguage(clean, language)
-    await beginConversationTurn(clean, selectedLanguage, source)
-    if (await handleHumanRecordingSummary(clean, selectedLanguage)) return
+    await beginConversationTurn(clean, selectedLanguage, source, lease)
+    assertLeaseCurrent(lease)
+    if (await handleHumanRecordingSummary(clean, selectedLanguage, lease)) return
 
     const decision = await realtimeOfficeInterpreter.interpret(clean, selectedLanguage)
-
+    assertLeaseCurrent(lease)
     if (decision.kind === 'clarify') {
-      const clarification =
-        decision.clarification ||
-        (selectedLanguage === 'zh'
-          ? '请明确办公操作或选择已配置的邮件联系人。'
-          : 'Please clarify the office action or choose a configured email recipient.')
+      const clarification = decision.clarification || (selectedLanguage === 'zh' ? '请明确办公操作或选择已配置的邮件联系人。' : 'Please clarify the office action or choose a configured email recipient.')
       setAnswer(clarification)
-      await completeConversationTurn(clarification, 'clarification')
-      await speak(clarification, selectedLanguage)
+      await completeConversationTurn(clarification, 'clarification', null, lease)
+      await speak(clarification, selectedLanguage, lease)
       return
     }
-
     if (decision.kind === 'none') {
-      await performGeneralChat(clean, selectedLanguage)
+      await performGeneralChat(clean, selectedLanguage, lease)
       return
     }
-
     if (active && decision.kind === 'tool_call') {
-      const activeMessage =
-        selectedLanguage === 'zh'
-          ? '当前已有办公任务正在执行。请先等待、批准、跳过或取消。'
-          : 'An office task is already active. Wait, approve, skip, or cancel it first.'
+      const activeMessage = selectedLanguage === 'zh' ? '当前已有办公任务正在执行。请先等待、批准、跳过或取消。' : 'An office task is already active. Wait, approve, skip, or cancel it first.'
       setAnswer(activeMessage)
-      await completeConversationTurn(activeMessage, 'active_task_guard', taskId)
-      await speak(activeMessage, selectedLanguage)
+      await completeConversationTurn(activeMessage, 'active_task_guard', taskId, lease)
+      await speak(activeMessage, selectedLanguage, lease)
       return
     }
 
     const call = decision.kind === 'tool_call' ? decision.toolCall : null
     const endpoint = call?.name === 'office_plan' ? '/agent/office-turn' : '/agent/turn'
-    const response = await fetch(`${OFFICE_API_BASE}${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({
-        conversation_id: conversationIdRef.current,
-        text: clean,
-        language: selectedLanguage,
-        input_source: source,
-        actor_context: { type: actor, source: 'shared_office_voice_controller' },
-        active_task_id: active ? taskId : null,
-        realtime_tool_call: call,
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`Agent turn failed: ${response.status} ${await response.text()}`)
-    }
-
+    const response = await fetchWithTimeout(
+      `${OFFICE_API_BASE}${endpoint}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          conversation_id: conversationIdRef.current,
+          visit_id: lease?.visitId ?? null,
+          text: clean,
+          language: selectedLanguage,
+          input_source: source,
+          actor_context: { type: actor, source: 'shared_office_voice_controller' },
+          active_task_id: active ? taskId : null,
+          realtime_tool_call: call,
+        }),
+      },
+      API_TIMEOUT_MS,
+      lease?.signal,
+    )
+    if (!response.ok) throw new Error(`Agent turn failed: ${response.status} ${await response.text()}`)
+    assertLeaseCurrent(lease)
     const payload = (await response.json()) as Turn
-    const safe =
-      selectedLanguage === 'en' && CJK.test(payload.spoken_text)
-        ? 'The office request was processed. Check the verified status shown on screen.'
-        : payload.spoken_text
+    const safe = selectedLanguage === 'en' && CJK.test(payload.spoken_text)
+      ? 'The office request was processed. Check the verified status shown on screen.'
+      : payload.spoken_text
     setRoute(payload.route)
     setPermission(payload.permission_decision)
     setAnswer(safe)
@@ -895,62 +972,53 @@ export function useOfficeVoiceController(): OfficeVoiceController {
     if (payload.task_status) setTaskStatus(payload.task_status as OfficeTaskStatus)
 
     if (payload.route === 'office_planned_task' && payload.task_id && payload.tool_result?.ok) {
-      const token = generation.current + 1
-      generation.current = token
-      await completeConversationTurn(safe, payload.route, payload.task_id)
-      await setConversationTaskState(payload.task_id, true)
-      await speak(safe, selectedLanguage)
-      void monitor(payload.task_id, selectedLanguage, token).catch(fail)
+      const token = generation.current
+      await completeConversationTurn(safe, payload.route, payload.task_id, lease)
+      await setConversationTaskState(payload.task_id, true, '', lease)
+      await speak(safe, selectedLanguage, lease)
+      void monitor(payload.task_id, selectedLanguage, token, lease).catch(fail)
       return
     }
-    await completeConversationTurn(safe, payload.route)
-    await speak(safe, selectedLanguage)
+    await completeConversationTurn(safe, payload.route, null, lease)
+    await speak(safe, selectedLanguage, lease)
   }
 
   async function submit(text: string, source: 'text' | 'voice' = 'text'): Promise<void> {
     try {
-      await performSubmit(text, source)
+      await performSubmit(text, source, currentLease())
     } catch (errorValue) {
       fail(errorValue)
     }
   }
 
   async function approve(action: ApprovalAction): Promise<void> {
+    const lease = currentLease()
     if (!taskId) return
     try {
+      const endpoint = action === 'cancel' ? `/agent/tasks/${taskId}/cancel` : `/agent/tasks/${taskId}/approval`
+      const response = await fetchWithTimeout(
+        `${OFFICE_API_BASE}${endpoint}`,
+        action === 'cancel'
+          ? { method: 'POST' }
+          : {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action, note: 'Submitted from shared Office voice controller' }),
+            },
+        API_TIMEOUT_MS,
+        lease?.signal,
+      )
+      if (!response.ok) throw new Error(`Task action failed: ${response.status} ${await response.text()}`)
+      assertLeaseCurrent(lease)
       if (action === 'cancel') {
-        const response = await fetch(`${OFFICE_API_BASE}/agent/tasks/${taskId}/cancel`, {
-          method: 'POST',
-        })
-        if (!response.ok) {
-          throw new Error(`Cancel failed: ${response.status} ${await response.text()}`)
-        }
         setAnswer('已请求取消当前任务。')
         return
       }
-
-      const response = await fetch(`${OFFICE_API_BASE}/agent/tasks/${taskId}/approval`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action,
-          note: 'Submitted from shared Office voice controller',
-        }),
-      })
-      if (!response.ok) {
-        throw new Error(`Approval failed: ${response.status} ${await response.text()}`)
-      }
       const isSend = pendingApprovalTool === 'outlook_send_approved_draft'
       const recipientText = pendingRecipientKey ? `联系人 ${pendingRecipientKey}` : '所选联系人'
-      setAnswer(
-        action === 'approve'
-          ? isSend
-            ? `已完成第二次批准，正在删除草稿提示并向${recipientText}发送。`
-            : `已完成第一次批准，正在为${recipientText}创建 Outlook 草稿。`
-          : isSend
-            ? '已跳过 Outlook 发送步骤，草稿保持未发送。'
-            : '已跳过 Outlook 草稿步骤。',
-      )
+      setAnswer(action === 'approve'
+        ? isSend ? `已完成第二次批准，正在向${recipientText}发送。` : `已完成第一次批准，正在为${recipientText}创建 Outlook 草稿。`
+        : isSend ? '已跳过 Outlook 发送步骤，草稿保持未发送。' : '已跳过 Outlook 草稿步骤。')
     } catch (errorValue) {
       fail(errorValue)
     }
@@ -966,35 +1034,21 @@ export function useOfficeVoiceController(): OfficeVoiceController {
   }
 
   async function triggerProximityGreeting(detection: ProximityDetection): Promise<boolean> {
-    if (
-      conversationPhase !== 'standby' ||
-      panel !== 'idle' ||
-      active ||
-      listening ||
-      recordingActiveRef.current ||
-      recordingSavingRef.current ||
-      runtime.outputActive ||
-      runtime.microphoneAttached
-    ) {
-      return false
-    }
-
+    const lease = currentLease()
+    if (panel !== 'idle' || listening || recordingActiveRef.current || recordingSavingRef.current || runtime.outputActive || runtime.microphoneAttached) return false
     const payload = await postJson<ProximityGreetingEnvelope>(
       `${OFFICE_API_BASE}/api/conversations/${encodeURIComponent(conversationIdRef.current)}/proximity-greeting`,
-      {
-        language,
-        actor_type: actor,
-        ...detection,
-      },
+      { language, actor_type: actor, ...detection, visit_id: lease?.visitId ?? null },
+      lease,
     )
     if (!payload?.triggered || !payload.greeting) return false
-
+    assertLeaseCurrent(lease)
     setConversationPhase(payload.conversation_phase ?? 'awaiting_user')
     setTranscript('')
     setAnswer(payload.greeting)
     setRoute('proximity_greeting')
     try {
-      await speak(payload.greeting, language)
+      await speak(payload.greeting, language, lease)
       return true
     } catch (errorValue) {
       fail(errorValue)
