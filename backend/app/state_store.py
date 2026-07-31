@@ -122,6 +122,18 @@ class InMemoryStateStore:
                         step.finished_at = now
                     self._approvals.pop((task.task_id, step.step_id), None)
                 cancelled.append(task.task_id)
+
+        # Do not hold the state-store lock while terminating the process. The
+        # Office worker may be returning a result concurrently and must be able
+        # to observe the task's cancelled state without a lock inversion.
+        try:
+            from app.office_worker_process import cancel_office_work_for_visit
+
+            cancel_office_work_for_visit(visit_id, cancelled)
+        except Exception:
+            # Task state is already fenced. Worker termination is best effort and
+            # its hard operation timeout remains the final safety boundary.
+            pass
         return cancelled
 
     def set_status(
