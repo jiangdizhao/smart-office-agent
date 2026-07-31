@@ -1,11 +1,11 @@
 """Smart Office Backend package runtime services."""
 
-import multiprocessing
+import os
 
-# Windows Office worker processes import the ``app`` package under the spawn
-# start method. They must not create a second task watchdog thread. The main
-# Backend process owns the single watchdog service.
-if multiprocessing.current_process().name == "MainProcess":
+# Office worker processes receive this marker before Windows ``spawn`` imports
+# the package. Every real Backend process, including uvicorn reload/workers, owns
+# its normal task watchdog.
+if os.getenv("SMART_OFFICE_WORKER_CHILD", "").strip() != "1":
     from app.task_watchdog import task_watchdog
 else:
     task_watchdog = None
