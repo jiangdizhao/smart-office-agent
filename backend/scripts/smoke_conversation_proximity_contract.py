@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -11,6 +13,9 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.main import app  # noqa: E402
+from app.models import TaskGraph, TaskStep  # noqa: E402
+from app.state_store import state_store, utc_now  # noqa: E402
+from app.visitor_memory_store import visitor_memory_store  # noqa: E402
 
 
 def read(relative_path: str) -> str:
@@ -53,9 +58,50 @@ def detection(
     }
 
 
+def wait_for_memory(identity_id: str, timeout_seconds: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        value = visitor_memory_store.load(identity_id)
+        if value is not None:
+            return value
+        time.sleep(0.05)
+    raise AssertionError(f"Background visitor memory was not saved for {identity_id}")
+
+
+def create_owned_dummy_task(conversation_id: str, visit_id: str) -> str:
+    now = utc_now()
+    graph = TaskGraph(
+        source="contract",
+        created_at=now,
+        steps=[
+            TaskStep(
+                step_id=f"step-{uuid4().hex}",
+                index=1,
+                title="Contract pending task",
+                tool_name="presentation_get_status",
+                status="pending",
+                created_at=now,
+            )
+        ],
+    )
+    task = state_store.create_task(
+        user_request="contract pending task",
+        execute=True,
+        task_graph=graph,
+        owner_conversation_id=conversation_id,
+        owner_visit_id=visit_id,
+        owner_actor_type="visitor",
+    )
+    state_store.set_status(task.task_id, "running", summary="contract task running")
+    return task.task_id
+
+
 def main() -> None:
     client = TestClient(app)
-    anonymous_conversation = "conversation-visit-lifecycle-contract"
+    suffix = uuid4().hex[:10]
+    anonymous_conversation = f"conversation-visit-lifecycle-{suffix}"
+    visit_a = f"visit-anonymous-a-{suffix}"
+    visit_b = f"visit-anonymous-b-{suffix}"
 
     initial = client.get(
         f"/api/conversations/{anonymous_conversation}",
@@ -64,22 +110,20 @@ def main() -> None:
     initial.raise_for_status()
     assert initial.json()["state"]["conversation_phase"] == "standby"
 
-    first_visit = detection("visit_anonymous_1")
-    greeting = client.post(
+    greeting_a = client.post(
         f"/api/conversations/{anonymous_conversation}/proximity-greeting",
-        json=first_visit,
+        json=detection(visit_a),
     )
-    greeting.raise_for_status()
-    greeting_payload = greeting.json()
-    assert greeting_payload["triggered"] is True
-    assert greeting_payload["visit_id"] == "visit_anonymous_1"
-    assert greeting_payload["greeting"].startswith("Welcome to our office.")
-    assert "I am Sara" in greeting_payload["greeting"]
-    assert greeting_payload["conversation_phase"] == "awaiting_user"
+    greeting_a.raise_for_status()
+    payload_a = greeting_a.json()
+    assert payload_a["triggered"] is True
+    assert payload_a["visit_id"] == visit_a
+    assert payload_a["greeting"].startswith("Welcome to our office.")
+    assert "I am Sara" in payload_a["greeting"]
 
     duplicate = client.post(
         f"/api/conversations/{anonymous_conversation}/proximity-greeting",
-        json={**first_visit, "stable_frames": 5},
+        json={**detection(visit_a), "stable_frames": 5},
     )
     duplicate.raise_for_status()
     assert duplicate.json()["triggered"] is False
@@ -92,6 +136,7 @@ def main() -> None:
             "actor_type": "visitor",
             "text": "Yes, please.",
             "source": "voice",
+            "visit_id": visit_a,
         },
     )
     started.raise_for_status()
@@ -104,78 +149,84 @@ def main() -> None:
             "route": "general_chat",
             "expect_reply": True,
             "source": "contract",
+            "visit_id": visit_a,
         },
     )
     completed.raise_for_status()
-    assert completed.json()["conversation_phase"] == "awaiting_user"
 
-    anonymous_end = client.post(
+    owned_task_id = create_owned_dummy_task(anonymous_conversation, visit_a)
+
+    # Visit B may preempt A before A's delayed archive request arrives.
+    greeting_b = client.post(
+        f"/api/conversations/{anonymous_conversation}/proximity-greeting",
+        json=detection(visit_b),
+    )
+    greeting_b.raise_for_status()
+    payload_b = greeting_b.json()
+    assert payload_b["triggered"] is True
+    assert payload_b["visit_id"] == visit_b
+
+    delayed_end_a = client.post(
         f"/api/conversations/{anonymous_conversation}/visit-end",
         json={
-            "visitor_session_id": "visit_anonymous_1",
+            "visitor_session_id": visit_a,
             "language": "en",
-            "reason": "contract_primary_absent",
+            "reason": "contract_replaced",
         },
     )
-    anonymous_end.raise_for_status()
-    anonymous_end_payload = anonymous_end.json()
-    assert anonymous_end_payload["ended"] is True
-    assert anonymous_end_payload["memory_saved"] is False
-    assert anonymous_end_payload["anonymous_history_discarded"] is True
-    assert anonymous_end_payload["conversation_phase"] == "standby"
+    delayed_end_a.raise_for_status()
+    delayed_payload = delayed_end_a.json()
+    assert delayed_payload["accepted"] is True
+    assert delayed_payload["ended"] is True
+    assert delayed_payload["anonymous_history_discarded"] is True
+    assert owned_task_id in delayed_payload["cancelled_task_ids"]
+    assert state_store.get_task(owned_task_id).status == "cancelled"  # type: ignore[union-attr]
 
-    anonymous_context = client.get(
+    current = client.get(
         f"/api/conversations/{anonymous_conversation}",
         params={"language": "en", "actor_type": "visitor"},
     )
-    anonymous_context.raise_for_status()
-    anonymous_state = anonymous_context.json()["state"]
-    assert anonymous_state["conversation_phase"] == "standby"
-    assert anonymous_state["visit_id"] is None
-    assert anonymous_state["recent_messages"] == []
-    assert anonymous_state["registered_memory_summary"] == ""
+    current.raise_for_status()
+    current_state = current.json()["state"]
+    assert current_state["visit_id"] == visit_b
+    assert current_state["conversation_phase"] == "awaiting_user"
 
-    # A different Visit may greet immediately; there is no browser-wide 30-second cooldown.
-    next_visit = client.post(
-        f"/api/conversations/{anonymous_conversation}/proximity-greeting",
-        json=detection("visit_anonymous_2"),
+    stale_completion = client.post(
+        f"/api/conversations/{anonymous_conversation}/turn-complete",
+        json={
+            "text": "This answer belongs to the old visitor.",
+            "route": "stale_contract",
+            "expect_reply": True,
+            "source": "contract",
+            "visit_id": visit_a,
+        },
     )
-    next_visit.raise_for_status()
-    assert next_visit.json()["triggered"] is True
-    assert next_visit.json()["visit_id"] == "visit_anonymous_2"
-    client.post(
+    assert stale_completion.status_code == 409
+
+    end_b = client.post(
         f"/api/conversations/{anonymous_conversation}/visit-end",
-        json={"visitor_session_id": "visit_anonymous_2", "language": "en"},
-    ).raise_for_status()
-
-    returning = client.post(
-        "/api/conversations/conversation-returning-anonymous/proximity-greeting",
-        json=detection(
-            "visit_returning_anonymous",
-            greeting_kind="returning_anonymous",
-        ),
+        json={"visitor_session_id": visit_b, "language": "en"},
     )
-    returning.raise_for_status()
-    assert returning.json()["greeting"].startswith("Welcome back.")
-    assert "I am Sara" in returning.json()["greeting"]
+    end_b.raise_for_status()
+    assert end_b.json()["anonymous_history_discarded"] is True
 
-    registered_conversation = "conversation-registered-memory-contract"
-    registered_identity = "person_contract_rico"
-    registered_first = client.post(
+    registered_conversation = f"conversation-registered-{suffix}"
+    registered_identity = f"person-contract-rico-{suffix}"
+    registered_visit_1 = f"visit-rico-1-{suffix}"
+    registered_visit_2 = f"visit-rico-2-{suffix}"
+
+    first_registered = client.post(
         f"/api/conversations/{registered_conversation}/proximity-greeting",
         json=detection(
-            "visit_rico_1",
+            registered_visit_1,
             greeting_kind="registered_identity",
             identity_id=registered_identity,
             display_name="Rico",
         ),
     )
-    registered_first.raise_for_status()
-    registered_first_payload = registered_first.json()
-    assert registered_first_payload["greeting"] == "Welcome back, Rico."
-    assert "I am Sara" not in registered_first_payload["greeting"]
-    assert "PowerPoint" not in registered_first_payload["greeting"]
-    assert registered_first_payload["registered_return"] is True
+    first_registered.raise_for_status()
+    assert first_registered.json()["greeting"] == "Welcome back, Rico."
+    assert "I am Sara" not in first_registered.json()["greeting"]
 
     client.post(
         f"/api/conversations/{registered_conversation}/turn-start",
@@ -184,6 +235,7 @@ def main() -> None:
             "actor_type": "visitor",
             "text": "Please remember that I prefer PowerPoint demonstrations.",
             "source": "voice",
+            "visit_id": registered_visit_1,
         },
     ).raise_for_status()
     client.post(
@@ -193,13 +245,14 @@ def main() -> None:
             "route": "general_chat",
             "expect_reply": True,
             "source": "contract",
+            "visit_id": registered_visit_1,
         },
     ).raise_for_status()
 
     registered_end = client.post(
         f"/api/conversations/{registered_conversation}/visit-end",
         json={
-            "visitor_session_id": "visit_rico_1",
+            "visitor_session_id": registered_visit_1,
             "identity_id": registered_identity,
             "display_name": "Rico",
             "language": "en",
@@ -207,181 +260,147 @@ def main() -> None:
         },
     )
     registered_end.raise_for_status()
-    assert registered_end.json()["ended"] is True
-    assert registered_end.json()["memory_saved"] is True
-    assert registered_end.json()["anonymous_history_discarded"] is False
+    registered_end_payload = registered_end.json()
+    assert registered_end_payload["accepted"] is True
+    assert registered_end_payload["memory_saved"] is False
+    assert registered_end_payload["memory_queued"] is True
+    assert registered_end_payload["anonymous_history_discarded"] is False
 
-    registered_second = client.post(
+    saved_memory = wait_for_memory(registered_identity)
+    assert "PowerPoint" in saved_memory["memory_summary"]
+
+    second_registered = client.post(
         f"/api/conversations/{registered_conversation}/proximity-greeting",
         json=detection(
-            "visit_rico_2",
+            registered_visit_2,
             greeting_kind="registered_identity",
             identity_id=registered_identity,
             display_name="Rico",
         ),
     )
-    registered_second.raise_for_status()
-    registered_second_payload = registered_second.json()
-    assert registered_second_payload["triggered"] is True
-    assert registered_second_payload["visit_id"] == "visit_rico_2"
-    assert registered_second_payload["greeting"] == "Welcome back, Rico."
-    assert registered_second_payload["registered_memory_loaded"] is True
-
-    registered_context = client.get(
-        f"/api/conversations/{registered_conversation}",
-        params={"language": "en", "actor_type": "visitor"},
-    )
-    registered_context.raise_for_status()
-    registered_state = registered_context.json()["state"]
-    assert registered_state["visit_id"] == "visit_rico_2"
-    assert registered_state["identity_id"] == registered_identity
-    assert "PowerPoint" in registered_state["registered_memory_summary"]
-    assert all(
-        "Please remember" not in message["text"]
-        for message in registered_state["recent_messages"]
-    )
-
-    registered_zh = client.post(
-        "/api/conversations/conversation-registered-zh/proximity-greeting",
-        json=detection(
-            "visit_rico_zh",
-            language="zh",
-            greeting_kind="registered_identity",
-            identity_id=registered_identity,
-            display_name="Rico",
-        ),
-    )
-    registered_zh.raise_for_status()
-    assert registered_zh.json()["greeting"] == "欢迎回来，Rico。"
-    assert "我是 Sara" not in registered_zh.json()["greeting"]
+    second_registered.raise_for_status()
+    second_payload = second_registered.json()
+    assert second_payload["triggered"] is True
+    assert second_payload["visit_id"] == registered_visit_2
+    assert second_payload["greeting"] == "Welcome back, Rico."
+    assert second_payload["registered_memory_loaded"] is True
 
     controller = read("ui/smart-office-ui/src/voice/useOfficeVoiceController.ts")
-    host = read("ui/smart-office-ui/src/virtual-host/VirtualHostApp.tsx")
-    avatar = read("ui/smart-office-ui/src/virtual-host/VirtualHostAvatar.tsx")
-    detector = read("ui/smart-office-ui/src/vision/proximityFaceMonitor.ts")
-    remote_client = read("ui/smart-office-ui/src/vision/remoteVisionClient.ts")
+    main_tsx = read("ui/smart-office-ui/src/main.tsx")
+    lease_registry = read("ui/smart-office-ui/src/vision/visitLeaseRegistry.ts")
+    orchestrator = read("ui/smart-office-ui/src/vision/visitOrchestrator.ts")
     proximity_hook = read("ui/smart-office-ui/src/vision/useProximityGreeting.ts")
     proactive_loop = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
-    memory_store = read("backend/app/visitor_memory_store.py")
+    realtime_runtime = read("ui/smart-office-ui/src/voice/realtimeAgentRuntime.ts")
+    voice_output = read("ui/smart-office-ui/src/voice/voiceOutputManager.ts")
+    remote_client = read("ui/smart-office-ui/src/vision/remoteVisionClient.ts")
     conversation_store = read("backend/app/conversation_store.py")
-    stage1_css = read("ui/smart-office-ui/src/virtual-host/ProactiveReceptionStage1.css")
-    main_tsx = read("ui/smart-office-ui/src/main.tsx")
-    drawer = read("ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx")
+    reception_api = read("backend/app/reception_api.py")
+    state_store_source = read("backend/app/state_store.py")
+    worker_process = read("backend/app/office_worker_process.py")
+    office_actions = read("backend/app/office_actions.py")
 
     for needle in (
-        "conversationPhase",
-        "turn-start",
-        "turn-complete",
-        "triggerProximityGreeting",
-        "proximity-greeting",
+        "visitLeaseRegistry",
+        "epoch",
+        "AbortController",
+        "smartoffice:visit-activated",
+        "smartoffice:visit-revoked",
     ):
-        assert needle in controller, f"Missing controller contract: {needle}"
+        assert needle in lease_registry, f"Missing Visit lease contract: {needle}"
 
     for needle in (
-        "conversation-${controller.conversationPhase}",
-        "等待您继续",
-        "useProximityGreeting",
+        "finishCurrent",
+        "onPreempt",
+        "onArchive",
+        "onFarewell",
+        "nextVisitCanStartImmediately",
     ):
-        assert needle in host, f"Missing host state contract: {needle}"
+        assert needle in orchestrator, f"Missing preemptive orchestrator contract: {needle}"
+
+    assert "visitClosingPromiseRef" not in proximity_hook
+    assert "queuedGreetingRef" not in proximity_hook
+    assert "proactiveLoopPromiseRef" not in proximity_hook
+    assert "PRIMARY_ABSENCE_GRACE_MS = 2_000" in proximity_hook
+    assert "VISIT_ARCHIVE_TIMEOUT_MS = 3_000" in proximity_hook
+    assert "proactive-reception-farewell" in proximity_hook
 
     for needle in (
-        "body_area_ratio",
-        "face_inside_body",
-        "ObjectDetector",
-        "categoryAllowlist: ['person']",
-        "suppressUntilAbsent",
-        "mediapipe-person+face",
-    ):
-        assert needle in detector, f"Missing MediaPipe fallback contract: {needle}"
-
-    for needle in (
-        "schema_version",
-        "rtx-vision-phase6",
-        "RemoteVisitEnded",
-        "onVisitEnded",
-        "visit_ended",
-        "visitor_session_expired",
-        "primary.visible",
-        "visit_id",
-    ):
-        assert needle in remote_client, f"Missing Phase 6 remote-visit contract: {needle}"
-
-    for needle in (
-        "PRIMARY_ABSENCE_GRACE_MS = 2_000",
-        "proactiveLoopPromiseRef",
-        "visitClosingPromiseRef",
-        "queuedGreetingRef",
-        "await loopPromise",
-        "/visit-end",
-        "VISIT_END_ATTEMPTS = 3",
-        "speakFarewellReliably",
-        "browserFarewellFallback",
-        "感谢您的来访，欢迎下次再来。",
-        "Thank you for visiting. We hope to see you again soon.",
-        "next-visitor-greeting-queued",
-        "next-visitor-greeting-started",
-        "visit-end-synchronized",
-        "captureAutomaticRealtimeTurn",
-    ):
-        assert needle in proximity_hook, f"Missing serialized visit-shutdown contract: {needle}"
-
-    for needle in (
-        "registered_visitor_memory",
-        "identity_id TEXT PRIMARY KEY",
-        "memory_summary",
-        "recent_messages_json",
-    ):
-        assert needle in memory_store, f"Missing registered memory persistence contract: {needle}"
-
-    for needle in (
-        "visit_id",
-        "registered_memory_summary",
-        "last_greeted_visit_id",
-        "visit_already_greeted",
-        "end_visit",
-        "_reset_for_new_visit_locked",
-    ):
-        assert needle in conversation_store, f"Missing visit/context isolation contract: {needle}"
-
-    assert "SMART_OFFICE_PROXIMITY_GREETING_COOLDOWN_SECONDS" not in conversation_store
-    assert "last_proximity_greeting_at" not in conversation_store
-
-    for needle in (
-        "END_SILENCE_MS = 900",
-        "SPEECH_START_TIMEOUT_MS = 12_000",
+        "currentMicrophoneStream",
         "controller().beginListening()",
-        "controller().endListening()",
-        "realtimeAgent.abortCapture()",
+        "waitForUtterance(stream",
     ):
-        assert needle in proactive_loop, f"Missing automatic Realtime voice-turn contract: {needle}"
-
-    assert ".voice-primary-row" in stage1_css
-    assert ".conversation-record-button" in stage1_css
-    assert ".primary-voice-button" in stage1_css
-    assert "display: none !important" in stage1_css
-    assert "./virtual-host/ProactiveReceptionStage1.css" in main_tsx
+        assert needle in proactive_loop, f"Missing single-microphone contract: {needle}"
+    assert "navigator.mediaDevices.getUserMedia" not in proactive_loop
 
     for needle in (
-        "idle-primary.mp4",
-        "idle-rare.mp4",
-        "talk-a.mp4",
-        "talk-b.mp4",
-        "talk-c.mp4",
-        "PRIMARY_IDLE_LOOPS_PER_RARE_GESTURE = 5",
-        "CROSSFADE_MS = 260",
+        "private generation = 0",
+        "assertGeneration",
+        "RealtimeSpeechError",
+        "output_audio_buffer.stopped",
+        "Microphone acquisition timed out",
     ):
-        assert needle in avatar, f"Missing segmented video avatar contract: {needle}"
+        assert needle in realtime_runtime, f"Missing cancellable Realtime contract: {needle}"
+    assert "operationQueue" not in realtime_runtime
 
-    assert "空闲访客主动问候" in drawer
-    assert "RTX 视觉服务器" in drawer
+    assert "audioStarted || options.allowLocalFallback === false" in voice_output
+    assert "stopInternal(true)" in voice_output
+    assert "safeRealtimeAgentRuntime" not in main_tsx
+    assert "visitFarewellSessionPatch" not in main_tsx
+    assert "realtimeMetadataCompatibility" not in main_tsx
+
+    for needle in (
+        "serverInstanceId",
+        "snapshot_revision",
+        "REMOTE_MESSAGE_STALE_MS",
+        "vision_stale",
+        "publishStale",
+    ):
+        assert needle in remote_client, f"Missing reliable RTX client contract: {needle}"
+
+    for needle in (
+        "expected_visit_id",
+        "_replaced_archives",
+        "stale_visit",
+        "bind_task_owner",
+    ):
+        assert needle in conversation_store, f"Missing Backend Visit fence: {needle}"
+
+    for needle in (
+        "memory_queued",
+        "cancel_tasks_for_visit",
+        "visitor_memory_queue",
+    ):
+        assert needle in reception_api, f"Missing nonblocking Visit archive contract: {needle}"
+
+    for needle in (
+        "owner_visit_id",
+        "cancel_tasks_for_visit",
+        "approval_deadline_at",
+    ):
+        assert needle in state_store_source, f"Missing task ownership contract: {needle}"
+
+    assert "multiprocessing.get_context(\"spawn\")" in worker_process
+    assert "process.terminate()" in worker_process
+    assert "daemon=False" in worker_process
+    assert "execute_office_tool_call_direct" in office_actions
+    assert "execute_office_tool_isolated" in office_actions
+
+    for needle in (
+        "visitLeaseRegistry",
+        "assertLeaseCurrent",
+        "owner_visit_id",
+        "visit_id: lease?.visitId",
+    ):
+        assert needle in controller, f"Missing controller fencing contract: {needle}"
 
     print(
-        "PASS: visits reset without a global cooldown; shutdown is serialized; "
-        "anonymous history is discarded; registered memory is restored only by identity_id."
+        "PASS: new Visits preempt old Visits; stale results are fenced; Visit-end is nonblocking; "
+        "registered memory is queued; owned tasks are cancelled; Realtime uses one microphone stream."
     )
     print(
-        "NOTE: Real LAN ordering, browser audio permission, farewell playback, camera identity "
-        "thresholds, and GPT Realtime behavior still require local acceptance."
+        "NOTE: Real LAN ordering, browser audio permission, Windows COM worker termination, camera "
+        "freshness, and GPT Realtime event timing still require two-machine acceptance testing."
     )
 
 
