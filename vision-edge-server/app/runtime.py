@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.camera_selection import select_startup_camera
 from app.config import AppConfig
 from app.events import EventFactory, WebSocketHub
 from app.gpu_probe import probe_gpu
@@ -23,9 +24,11 @@ class VisionRuntime:
         self.started_monotonic = time.monotonic()
         self.gpu: dict[str, Any] | None = None
         self.camera: dict[str, Any] | None = None
+        self.camera_selection: dict[str, Any] | None = None
         self.probe_running = False
         self._probe_lock = asyncio.Lock()
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._camera_selection_done = False
         server_root = Path(__file__).resolve().parents[1]
         self.vision = VisionPipeline(config, server_root, self._emit_from_thread)
 
@@ -42,7 +45,16 @@ class VisionRuntime:
     def uptime_seconds(self) -> float:
         return round(time.monotonic() - self.started_monotonic, 3)
 
+    async def _select_camera_once(self) -> None:
+        if self._camera_selection_done or not self.config.camera.enabled:
+            return
+        self.camera_selection = await asyncio.to_thread(
+            select_startup_camera, self.config.camera
+        )
+        self._camera_selection_done = True
+
     async def start_vision(self) -> dict[str, Any]:
+        await self._select_camera_once()
         await asyncio.to_thread(self.vision.start)
         return self.vision.status()
 
@@ -51,7 +63,10 @@ class VisionRuntime:
         return self.vision.status()
 
     async def restart_vision(self) -> dict[str, Any]:
-        await asyncio.to_thread(self.vision.restart)
+        await asyncio.to_thread(self.vision.stop)
+        self._camera_selection_done = False
+        await self._select_camera_once()
+        await asyncio.to_thread(self.vision.start)
         return self.vision.status()
 
     def readiness(self) -> tuple[bool, list[str]]:
@@ -81,6 +96,7 @@ class VisionRuntime:
             "probe_running": self.probe_running,
             "websocket_clients": self.hub.client_count,
             "gpu": self.gpu,
+            "camera_selection": self.camera_selection,
             "camera_probe": self.camera,
             "vision": self.vision.status(),
         }
