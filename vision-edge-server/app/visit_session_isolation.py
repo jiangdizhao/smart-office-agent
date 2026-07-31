@@ -7,6 +7,8 @@ import numpy as np
 import app.visitor_session as visitor_session_module
 from app.visitor_session import VisitorSession
 
+VISIT_ABSENCE_SECONDS = 2.0
+
 
 class IsolatedVisitorSessionRuntime(visitor_session_module.VisitorSessionRuntime):
     """Visit runtime that never lends a registered identity to an unverified track."""
@@ -21,7 +23,7 @@ class IsolatedVisitorSessionRuntime(visitor_session_module.VisitorSessionRuntime
         return [
             session
             for session in self.sessions.values()
-            if now - session.last_seen_monotonic <= self.settings.ttl_seconds
+            if now - session.last_seen_monotonic <= VISIT_ABSENCE_SECONDS
             and session.visitor_session_id not in assigned_sessions
             and session.visitor_session_id not in excluded_session_ids
             and session.active_track_id is None
@@ -110,6 +112,25 @@ class IsolatedVisitorSessionRuntime(visitor_session_module.VisitorSessionRuntime
         # track must earn identity through IdentityRuntime/SFace confirmation.
         item.pop("identity_source", None)
         return item
+
+    def _expire(self, now: float) -> list[VisitorSession]:
+        expired: list[VisitorSession] = []
+        for session_id, session in list(self.sessions.items()):
+            if now - session.last_seen_monotonic <= VISIT_ABSENCE_SECONDS:
+                continue
+            expired.append(session)
+            self._discard_session(session_id)
+        self.expired_count += len(expired)
+        return expired
+
+    def snapshot(self, now: float | None = None) -> dict[str, Any]:
+        payload = super().snapshot(now)
+        payload["configured_session_ttl_seconds"] = payload.get("ttl_seconds")
+        payload["ttl_seconds"] = VISIT_ABSENCE_SECONDS
+        payload["visit_absence_seconds"] = VISIT_ABSENCE_SECONDS
+        payload["registered_identity_inheritance"] = False
+        payload["registered_recovery_requires_independent_identity"] = True
+        return payload
 
 
 def install_visit_session_isolation() -> None:
