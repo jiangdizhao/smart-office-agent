@@ -15,9 +15,12 @@ export type VisitorGreetingKind =
 export type RemoteVisionDetection = ProximityDetection & {
   track_id: number
   visitor_session_id: string
+  visit_id?: string | null
+  visit_state?: string | null
   provisional_session_id?: string | null
   session_stable: boolean
   session_age_seconds: number
+  session_last_seen_age_seconds?: number
   session_recovery_count: number
   returning_visitor: boolean
   greeting_kind: VisitorGreetingKind
@@ -39,6 +42,16 @@ export type RemoteVisionDetection = ProximityDetection & {
   visitor_count?: number
   source_event: string
   updated_at: string
+}
+
+export type RemoteVisitEnded = {
+  visitor_session_id: string
+  visit_id: string
+  last_track_id?: number | null
+  identity_id?: string | null
+  display_name?: string | null
+  sequence: number
+  source_event: string
 }
 
 export function isRemoteVisionDetection(
@@ -67,9 +80,12 @@ type RemoteIdentity = {
 type RemoteVisitor = {
   track_id?: number
   visitor_session_id?: string | null
+  visit_id?: string | null
+  visit_state?: string | null
   provisional_session_id?: string | null
   session_stable?: boolean
   session_age_seconds?: number
+  session_last_seen_age_seconds?: number
   session_recovery_count?: number
   returning_visitor?: boolean
   greeting_kind?: VisitorGreetingKind
@@ -92,6 +108,7 @@ type ClientState = {
   scene_state?: string
   person_count?: number
   primary?: RemoteVisitor | null
+  retained_primary?: RemoteVisitor | null
   visitors?: RemoteVisitor[]
 }
 
@@ -109,6 +126,7 @@ type RemoteVisionClientOptions = {
   onDetection: (detection: RemoteVisionDetection | null) => void
   onGreetingCandidate: (detection: RemoteVisionDetection) => void
   onSessionExpired?: (visitorSessionId: string) => void
+  onVisitEnded?: (visit: RemoteVisitEnded) => void
 }
 
 const STATE_POLL_MS = 750
@@ -148,7 +166,7 @@ function toDetection(
   sourceEvent: string,
   state: ClientState,
 ): RemoteVisionDetection | null {
-  const sessionId = String(visitor.visitor_session_id ?? '').trim()
+  const sessionId = String(visitor.visitor_session_id ?? visitor.visit_id ?? '').trim()
   const trackId = Number(visitor.track_id)
   if (!Number.isFinite(trackId) || trackId <= 0) return null
   const face = visitor.face ?? {}
@@ -166,12 +184,18 @@ function toDetection(
     center_x: clamp(visitor.center_x),
     center_y: clamp(visitor.center_y),
     stable_frames: Math.max(1, Number(face.stable_frames) || 1),
-    detector: 'rtx-vision-phase5',
+    detector: 'rtx-vision-phase6',
     track_id: trackId,
     visitor_session_id: sessionId,
+    visit_id: visitor.visit_id ?? sessionId,
+    visit_state: visitor.visit_state ?? null,
     provisional_session_id: visitor.provisional_session_id ?? null,
     session_stable: Boolean(visitor.session_stable),
     session_age_seconds: Math.max(0, Number(visitor.session_age_seconds) || 0),
+    session_last_seen_age_seconds: Math.max(
+      0,
+      Number(visitor.session_last_seen_age_seconds) || 0,
+    ),
     session_recovery_count: Math.max(0, Number(visitor.session_recovery_count) || 0),
     returning_visitor: Boolean(visitor.returning_visitor),
     greeting_kind: greetingKind(visitor.greeting_kind),
@@ -264,7 +288,9 @@ export class RemoteVisionClient {
     socket.onclose = (event) => {
       if (this.socket === socket) this.socket = null
       this.clearLiveTimers()
-      if (!this.stopped) this.scheduleReconnect(`closed ${event.code}${event.reason ? `: ${event.reason}` : ''}`)
+      if (!this.stopped) {
+        this.scheduleReconnect(`closed ${event.code}${event.reason ? `: ${event.reason}` : ''}`)
+      }
     }
   }
 
@@ -332,26 +358,43 @@ export class RemoteVisionClient {
     if (
       eventType === 'visitor_engaged' ||
       eventType === 'visitor_identified' ||
+      eventType === 'visitor_session_started' ||
       eventType === 'visitor_session_recovered' ||
       eventType === 'primary_visitor_changed'
     ) {
       this.requestState()
       return
     }
-    if (eventType === 'visitor_session_expired') {
-      const sessionId = String(payload.visitor_session_id ?? '')
-      if (sessionId) this.options.onSessionExpired?.(sessionId)
+    if (eventType === 'visit_ended' || eventType === 'visitor_session_expired') {
+      const sessionId = String(
+        payload.visit_id ?? payload.visitor_session_id ?? '',
+      ).trim()
+      if (!sessionId) return
+      const visit: RemoteVisitEnded = {
+        visitor_session_id: sessionId,
+        visit_id: sessionId,
+        last_track_id: optionalNumber(payload.last_track_id),
+        identity_id: String(payload.identity_id ?? '').trim() || null,
+        display_name: String(payload.display_name ?? '').trim() || null,
+        sequence: Math.max(0, Number(envelope.sequence) || 0),
+        source_event: eventType,
+      }
+      this.options.onVisitEnded?.(visit)
+      this.options.onSessionExpired?.(sessionId)
     }
   }
 
   private handleClientState(state: ClientState): void {
     const primary = state.primary
-    if (!primary) {
+    if (!primary || !primary.visible) {
       this.options.onDetection(null)
       return
     }
     const detection = toDetection(primary, 'client_state_snapshot', state)
-    if (!detection) return
+    if (!detection) {
+      this.options.onDetection(null)
+      return
+    }
     this.options.onDetection(detection)
     if (
       primary.greeting_eligible &&
