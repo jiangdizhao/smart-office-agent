@@ -61,6 +61,19 @@ class ProximityDetectionRequest(BaseModel):
     identity_similarity: float | None = Field(default=None, ge=-1.0, le=1.0)
 
 
+def _proactive_reception_intro(language: Language) -> str:
+    if language == "en":
+        return (
+            "I am Sara, your Smart Office virtual host. I can demonstrate voice-controlled "
+            "PowerPoint, assist with Outlook, and answer general questions. Would you like "
+            "to try a quick demonstration?"
+        )
+    return (
+        "我是 Sara，Smart Office 虚拟接待员。我可以为您演示 PowerPoint 语音控制、"
+        "Outlook 助手，也可以回答一般问题。您愿意体验一个快速演示吗？"
+    )
+
+
 @router.get("/api/reception/status")
 def reception_status() -> dict:
     return reception_knowledge.status()
@@ -186,20 +199,25 @@ def proximity_greeting(
         detection=detection,
     )
 
-    # A proximity greeting is a visual attention cycle, not a user turn. Once the
-    # greeting has been accepted, return the conversation to standby immediately.
-    # The frontend owns presence-episode rearm and only requests another greeting
-    # after the visitor has been absent or a different stable visitor becomes primary.
+    spoken_text = greeting
     if triggered:
-        state.last_proximity_greeting_at = None
-        state = conversation_store.mark_standby(conversation_id)
+        intro = _proactive_reception_intro(request.language)
+        state = conversation_store.complete_assistant_turn(
+            conversation_id,
+            text=intro,
+            route="proactive_reception_opening",
+            expect_reply=True,
+            source="virtual_host",
+        )
+        spoken_text = f"{greeting} {intro}".strip()
 
     return {
         "ok": True,
         "triggered": triggered,
-        "greeting": greeting,
+        "greeting": spoken_text,
         "reason": reason,
         "conversation_phase": state.conversation_phase,
+        "proactive_reception": triggered,
     }
 
 
