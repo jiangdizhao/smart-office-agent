@@ -1,3 +1,5 @@
+import { appendFile, mkdir } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -9,6 +11,11 @@ const MEDIAPIPE_FACE_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite'
 const MEDIAPIPE_OBJECT_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite'
+const PROXIMITY_LOG_DIRECTORY = resolve(process.cwd(), 'logs')
+const PROXIMITY_TIMELINE_PATH = resolve(
+  PROXIMITY_LOG_DIRECTORY,
+  'proximity_voice_timeline.jsonl',
+)
 
 async function proxyAsset(
   url: string,
@@ -76,6 +83,27 @@ function proximityTerminalLogger(): Plugin {
             const time = payload.time || new Date().toISOString()
             const details = payload.data ? ` ${JSON.stringify(payload.data)}` : ''
             console.log(`[ProximityDebug][${time}] ${event}${details}`)
+
+            const timelineRecord = {
+              received_at: new Date().toISOString(),
+              browser_time: time,
+              event,
+              data: payload.data ?? {},
+            }
+            void mkdir(PROXIMITY_LOG_DIRECTORY, { recursive: true })
+              .then(() =>
+                appendFile(
+                  PROXIMITY_TIMELINE_PATH,
+                  `${JSON.stringify(timelineRecord)}\n`,
+                  'utf8',
+                ),
+              )
+              .catch((error) => {
+                console.error(
+                  `[ProximityDebug] could not append timeline file ${PROXIMITY_TIMELINE_PATH}`,
+                  error,
+                )
+              })
           } catch (error) {
             console.error('[ProximityDebug] malformed browser diagnostic', error, body)
           }
