@@ -39,8 +39,10 @@ type BrowserSpeechRecognition = {
 }
 
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition
-
 type TranscriptListener = (partial: string) => void
+
+const START_TIMEOUT_MS = 5_000
+const STOP_TIMEOUT_MS = 4_000
 
 function recognitionConstructor(): BrowserSpeechRecognitionConstructor | null {
   const speechWindow = window as Window & {
@@ -59,12 +61,22 @@ function joinTranscript(...parts: string[]): string {
     .trim()
 }
 
+function abortError(message: string): Error {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
+
 export class BrowserSpeechCapture {
   private recognition: BrowserSpeechRecognition | null = null
   private finalTranscript = ''
   private interimTranscript = ''
+  private resolveStart: (() => void) | null = null
+  private rejectStart: ((error: Error) => void) | null = null
   private resolveStop: ((transcript: string) => void) | null = null
   private rejectStop: ((error: Error) => void) | null = null
+  private startTimer: number | null = null
+  private stopTimer: number | null = null
   private onTranscript: TranscriptListener | null = null
   private active = false
 
@@ -73,7 +85,9 @@ export class BrowserSpeechCapture {
   }
 
   begin(language: VoiceLanguage, onTranscript: TranscriptListener): Promise<void> {
-    if (this.active) return Promise.reject(new Error('Browser speech capture is already active.'))
+    if (this.active || this.recognition) {
+      return Promise.reject(new Error('Browser speech capture is already active.'))
+    }
     const Recognition = recognitionConstructor()
     if (!Recognition) {
       return Promise.reject(
@@ -84,25 +98,39 @@ export class BrowserSpeechCapture {
     this.finalTranscript = ''
     this.interimTranscript = ''
     this.onTranscript = onTranscript
-    this.recognition = new Recognition()
-    this.recognition.lang = language === 'en' ? 'en-AU' : 'zh-CN'
-    this.recognition.continuous = true
-    this.recognition.interimResults = true
-    this.recognition.maxAlternatives = 1
+    const recognition = new Recognition()
+    this.recognition = recognition
+    recognition.lang = language === 'en' ? 'en-AU' : 'zh-CN'
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.maxAlternatives = 1
 
     return new Promise((resolve, reject) => {
-      const recognition = this.recognition
-      if (!recognition) {
-        reject(new Error('Browser speech recognizer could not be created.'))
-        return
-      }
+      this.resolveStart = resolve
+      this.rejectStart = reject
+      this.startTimer = window.setTimeout(() => {
+        const error = new Error('Browser speech recognition did not start in time.')
+        try {
+          recognition.abort()
+        } catch {
+          // Ignore browser abort failures; the Promise still must settle.
+        }
+        this.rejectStart?.(error)
+        this.cleanup()
+      }, START_TIMEOUT_MS)
 
       recognition.onstart = () => {
+        if (recognition !== this.recognition) return
+        this.clearStartTimer()
         this.active = true
+        const resolveStart = this.resolveStart
+        this.resolveStart = null
+        this.rejectStart = null
         window.dispatchEvent(new CustomEvent('smartoffice:browser-listening-start'))
-        resolve()
+        resolveStart?.()
       }
       recognition.onresult = (event) => {
+        if (recognition !== this.recognition) return
         let finalDelta = ''
         let interim = ''
         for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -116,49 +144,106 @@ export class BrowserSpeechCapture {
         this.onTranscript?.(joinTranscript(this.finalTranscript, this.interimTranscript))
       }
       recognition.onerror = (event) => {
+        if (recognition !== this.recognition) return
         const error = new Error(event.message || `Browser speech recognition failed: ${event.error}`)
-        if (!this.active) reject(error)
-        this.rejectStop?.(error)
+        const rejectStart = this.rejectStart
+        const rejectStop = this.rejectStop
         this.cleanup()
+        rejectStart?.(error)
+        rejectStop?.(error)
       }
       recognition.onend = () => {
+        if (recognition !== this.recognition) return
         const transcript = joinTranscript(this.finalTranscript, this.interimTranscript)
-        this.resolveStop?.(transcript)
+        const resolveStop = this.resolveStop
+        const rejectStart = this.rejectStart
+        const started = this.active
         this.cleanup()
+        if (!started && rejectStart) {
+          rejectStart(new Error('Browser speech recognition ended before it started.'))
+        } else {
+          resolveStop?.(transcript)
+        }
       }
 
       try {
         recognition.start()
       } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error))
         this.cleanup()
-        reject(error instanceof Error ? error : new Error(String(error)))
+        reject(normalized)
       }
     })
   }
 
   end(): Promise<string> {
-    if (!this.recognition || !this.active) {
+    const recognition = this.recognition
+    if (!recognition || !this.active) {
       return Promise.reject(new Error('Browser speech capture is not active.'))
+    }
+    if (this.resolveStop || this.rejectStop) {
+      return Promise.reject(new Error('Browser speech capture is already stopping.'))
     }
     return new Promise((resolve, reject) => {
       this.resolveStop = resolve
       this.rejectStop = reject
-      this.recognition?.stop()
+      this.stopTimer = window.setTimeout(() => {
+        const error = new Error('Browser speech recognition did not stop in time.')
+        try {
+          recognition.abort()
+        } catch {
+          // Ignore browser abort failures; the Promise still must settle.
+        }
+        const rejectStop = this.rejectStop
+        this.cleanup()
+        rejectStop?.(error)
+      }, STOP_TIMEOUT_MS)
+      try {
+        recognition.stop()
+      } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error))
+        this.cleanup()
+        reject(normalized)
+      }
     })
   }
 
   abort(): void {
-    this.recognition?.abort()
+    const recognition = this.recognition
+    const rejectStart = this.rejectStart
+    const rejectStop = this.rejectStop
+    try {
+      recognition?.abort()
+    } catch {
+      // Cleanup and rejection below remain authoritative.
+    }
     this.cleanup()
+    const error = abortError('Browser speech recognition was aborted.')
+    rejectStart?.(error)
+    rejectStop?.(error)
   }
 
   isActive(): boolean {
     return this.active
   }
 
+  private clearStartTimer(): void {
+    if (this.startTimer !== null) window.clearTimeout(this.startTimer)
+    this.startTimer = null
+  }
+
+  private clearStopTimer(): void {
+    if (this.stopTimer !== null) window.clearTimeout(this.stopTimer)
+    this.stopTimer = null
+  }
+
   private cleanup(): void {
+    this.clearStartTimer()
+    this.clearStopTimer()
     this.active = false
     this.recognition = null
+    this.resolveStart = null
+    this.rejectStart = null
     this.resolveStop = null
     this.rejectStop = null
     this.onTranscript = null
