@@ -32,19 +32,25 @@ class GeneralChatResponse(BaseModel):
     content_url: str | None = None
 
 
-def _history_text(context: dict[str, Any], current_text: str) -> str:
-    messages = context.get("recent_messages")
-    if not isinstance(messages, list):
-        return "(none)"
+def _history_text(context: dict[str, Any], current_text: str, language: Language) -> str:
     lines: list[str] = []
-    for item in messages[-12:]:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "user")
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        lines.append(f"{role.upper()}: {text}")
+    registered_memory = " ".join(
+        str(context.get("registered_memory_summary") or "").strip().split()
+    )
+    if registered_memory:
+        label = "REGISTERED VISITOR MEMORY" if language == "en" else "注册访客长期记忆"
+        lines.append(f"{label}: {registered_memory}")
+
+    messages = context.get("recent_messages")
+    if isinstance(messages, list):
+        for item in messages[-12:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "user")
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            lines.append(f"{role.upper()}: {text}")
     if lines and lines[-1].endswith(current_text.strip()):
         lines = lines[:-1]
     return "\n".join(lines) if lines else "(none)"
@@ -55,7 +61,8 @@ def _instructions(language: Language) -> str:
         return """
 You are the general conversational intelligence of a Smart Office virtual host.
 Answer ordinary questions across general knowledge, science, technology, daily life, education, travel, culture, and other legitimate topics. Do not limit yourself to company information or self-introduction.
-Use the conversation history when it is relevant. Give a direct, useful, naturally spoken answer in English.
+Use the conversation history when it is relevant. A line labelled REGISTERED VISITOR MEMORY is a trusted summary from an earlier visit by the same consented registered identity. Use it only when useful and do not reveal that it came from biometric recognition unless the visitor asks.
+Give a direct, useful, naturally spoken answer in English.
 When the recent assistant message introduced Sara and asked whether the visitor would like a quick demonstration, treat a brief affirmative reply such as yes, sure, okay, or why not as acceptance. Acknowledge it warmly and ask the visitor to choose PowerPoint voice control, Outlook assistance, or a general question.
 When that invitation is followed by a clear refusal such as no, no thanks, not now, or maybe later, give a brief polite farewell without pressure and do not ask another question.
 If the visitor directly requests a supported Office action instead of saying yes, respond naturally and let the deterministic Office router handle the action.
@@ -67,7 +74,8 @@ Return only the final answer, without labels, JSON, or Markdown fences.
     return """
 你是 Smart Office 虚拟接待员的通用对话智能层。
 用户可以询问一般知识、科学技术、日常生活、教育、旅行、文化及其他正当话题。回答范围不得局限于公司业务或自我介绍。
-在相关时使用最近对话上下文，以自然、直接、适合朗读的中文回答；用户明确要求详细解释时可以展开。
+在相关时使用最近对话上下文。标记为“注册访客长期记忆”的内容，是同一个经过同意的注册身份在上一次到访中留下的摘要；仅在有帮助时自然使用，不要主动透露这是通过人脸身份识别加载的。
+以自然、直接、适合朗读的中文回答；用户明确要求详细解释时可以展开。
 如果最近一条助手消息刚刚介绍了 Sara，并询问访客是否愿意体验快速演示，那么“可以”“好”“愿意”“行”“试一下”等简短肯定回答表示接受。应亲切确认，并请访客从 PowerPoint 语音控制、Outlook 助手或一般问题中选择一项。
 如果访客明确回答“不用了”“不了”“不需要”“暂时不用”或类似拒绝，应礼貌、简短地结束，不施压，也不要继续追问。
 如果访客没有先回答“愿意”，而是直接提出支持的 Office 操作，应自然衔接，并交给确定性 Office 路由执行。
@@ -90,7 +98,7 @@ async def generate_general_chat_answer(
         language=language,
         actor_type=actor_type,
     )
-    history = _history_text(context, clean)
+    history = _history_text(context, clean, language)
     input_text = (
         f"Recent conversation:\n{history}\n\nCurrent user message:\n{clean}"
         if language == "en"
