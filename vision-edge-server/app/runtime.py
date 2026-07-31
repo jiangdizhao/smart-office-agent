@@ -31,6 +31,8 @@ class VisionRuntime:
         self._camera_selection_done = False
         self._vision_stale = False
         self._last_watchdog_monotonic = 0.0
+        self._last_processed_frames = 0
+        self._last_pipeline_progress_monotonic = time.monotonic()
         server_root = Path(__file__).resolve().parents[1]
         self.vision = VisionPipeline(config, server_root, self._emit_from_thread)
 
@@ -65,29 +67,46 @@ class VisionRuntime:
 
     async def start_vision(self) -> dict[str, Any]:
         await self._select_camera_once()
+        self._last_processed_frames = 0
+        self._last_pipeline_progress_monotonic = time.monotonic()
+        self._vision_stale = False
         await asyncio.to_thread(self.vision.start)
         return self.vision.status()
 
     async def stop_vision(self) -> dict[str, Any]:
         await asyncio.to_thread(self.vision.stop)
+        self._vision_stale = False
         return self.vision.status()
 
     async def restart_vision(self) -> dict[str, Any]:
         await asyncio.to_thread(self.vision.stop)
         self._camera_selection_done = False
         await self._select_camera_once()
+        self._last_processed_frames = 0
+        self._last_pipeline_progress_monotonic = time.monotonic()
+        self._vision_stale = False
         await asyncio.to_thread(self.vision.start)
         return self.vision.status()
 
     async def visit_watchdog_tick(self) -> None:
-        """Expire Visits and detect frozen camera/pipeline state without new frames."""
+        """Expire Visits and detect frozen camera or inference without new frames."""
         now = time.monotonic()
         self._last_watchdog_monotonic = now
         for event_type, payload in self.vision.visitor_sessions.expire_due(now):
             await self.hub.broadcast(self.event_factory.build(event_type, payload))
 
         camera_status = self.vision.camera.status()
+        vision_status = self.vision.status()
+        processed_frames = int(vision_status.get("processed_frames") or 0)
+        if processed_frames != self._last_processed_frames:
+            self._last_processed_frames = processed_frames
+            self._last_pipeline_progress_monotonic = now
+
         frame_age_ms = camera_status.get("frame_age_ms")
+        pipeline_progress_age_ms = max(
+            now - self._last_pipeline_progress_monotonic,
+            0.0,
+        ) * 1000.0
         stale_threshold_ms = max(
             2_500.0,
             4_000.0 / max(float(self.config.detection.inference_hz), 1.0),
@@ -98,6 +117,7 @@ class VisionRuntime:
                 frame_age_ms is None
                 or float(frame_age_ms) > stale_threshold_ms
                 or not bool(camera_status.get("open"))
+                or pipeline_progress_age_ms > stale_threshold_ms
             )
         )
         if stale == self._vision_stale:
@@ -109,6 +129,8 @@ class VisionRuntime:
                 event_type,
                 {
                     "frame_age_ms": frame_age_ms,
+                    "pipeline_progress_age_ms": round(pipeline_progress_age_ms, 3),
+                    "processed_frames": processed_frames,
                     "stale_threshold_ms": stale_threshold_ms,
                     "camera_open": bool(camera_status.get("open")),
                     "camera_running": bool(camera_status.get("running")),
@@ -127,7 +149,7 @@ class VisionRuntime:
                     f"vision pipeline is not ready (status={vision_status.get('status')})"
                 )
             if self._vision_stale:
-                reasons.append("vision frames are stale")
+                reasons.append("vision frames or inference progress are stale")
         elif self.config.camera.enabled and self.camera is not None and not self.camera.get("ok"):
             camera_status = str(self.camera.get("status") or "unknown")
             reasons.append(f"camera is not realtime-ready (status={camera_status})")
@@ -146,6 +168,12 @@ class VisionRuntime:
             "probe_running": self.probe_running,
             "websocket_clients": self.hub.client_count,
             "vision_stale": self._vision_stale,
+            "processed_frames": self._last_processed_frames,
+            "pipeline_progress_age_ms": round(
+                max(time.monotonic() - self._last_pipeline_progress_monotonic, 0.0)
+                * 1000.0,
+                3,
+            ),
             "watchdog_age_ms": round(
                 max(time.monotonic() - self._last_watchdog_monotonic, 0.0) * 1000.0,
                 3,
