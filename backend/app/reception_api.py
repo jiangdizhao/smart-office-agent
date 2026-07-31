@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.conversation_store import ActorType, Language, conversation_store
 from app.reception_knowledge import reception_knowledge
+from app.visitor_memory_store import visitor_memory_store
 
 router = APIRouter(tags=["reception"])
 
@@ -34,6 +35,14 @@ class ConversationTaskStateRequest(BaseModel):
     final_text: str = Field("", max_length=12_000)
 
 
+class VisitEndRequest(BaseModel):
+    visitor_session_id: str | None = Field(default=None, max_length=160)
+    identity_id: str | None = Field(default=None, max_length=160)
+    display_name: str | None = Field(default=None, max_length=120)
+    language: Language = "zh"
+    reason: str = Field("primary_absent", max_length=120)
+
+
 class ProximityDetectionRequest(BaseModel):
     language: Language = "zh"
     actor_type: ActorType = "visitor"
@@ -46,6 +55,7 @@ class ProximityDetectionRequest(BaseModel):
     detector: str = Field("unknown", max_length=80)
     track_id: int | None = Field(default=None, ge=1)
     visitor_session_id: str | None = Field(default=None, max_length=120)
+    visit_id: str | None = Field(default=None, max_length=120)
     provisional_session_id: str | None = Field(default=None, max_length=120)
     session_stable: bool | None = None
     session_age_seconds: float | None = Field(default=None, ge=0.0)
@@ -183,6 +193,40 @@ def conversation_standby(conversation_id: str) -> dict:
     return {"ok": True, "conversation_phase": state.conversation_phase}
 
 
+@router.post("/api/conversations/{conversation_id}/visit-end")
+def conversation_visit_end(
+    conversation_id: str,
+    request: VisitEndRequest,
+) -> dict:
+    archive = conversation_store.end_visit(
+        conversation_id,
+        visit_id=request.visitor_session_id,
+    )
+    identity_id = str(request.identity_id or archive.get("identity_id") or "").strip()
+    display_name = str(request.display_name or archive.get("display_name") or "").strip()
+    memory_saved = False
+    if archive.get("ended") and identity_id:
+        visitor_memory_store.save(
+            identity_id=identity_id,
+            display_name=display_name or identity_id,
+            memory_summary=str(archive.get("conversation_summary") or ""),
+            recent_messages=list(archive.get("recent_messages") or []),
+            visit_id=str(archive.get("visit_id") or request.visitor_session_id or "") or None,
+        )
+        memory_saved = True
+    return {
+        "ok": True,
+        "conversation_phase": "standby",
+        "visit_id": archive.get("visit_id") or request.visitor_session_id,
+        "identity_id": identity_id or None,
+        "memory_saved": memory_saved,
+        "anonymous_history_discarded": not bool(identity_id),
+        "end_reason": request.reason,
+        "ended": bool(archive.get("ended")),
+        "archive_reason": archive.get("reason"),
+    }
+
+
 @router.post("/api/conversations/{conversation_id}/proximity-greeting")
 def proximity_greeting(
     conversation_id: str,
@@ -192,11 +236,17 @@ def proximity_greeting(
         exclude={"language", "actor_type"},
         mode="json",
     )
+    registered_memory = (
+        visitor_memory_store.load(request.identity_id)
+        if request.greeting_kind == "registered_identity" and request.identity_id
+        else None
+    )
     triggered, greeting, reason, state = conversation_store.proximity_greeting(
         conversation_id,
         language=request.language,
         actor_type=request.actor_type,
         detection=detection,
+        registered_memory=registered_memory,
     )
 
     spoken_text = greeting
@@ -220,6 +270,9 @@ def proximity_greeting(
         "conversation_phase": state.conversation_phase,
         "proactive_reception": triggered,
         "registered_return": registered_return,
+        "visit_id": state.visit_id,
+        "identity_id": state.identity_id,
+        "registered_memory_loaded": bool(registered_memory),
     }
 
 
