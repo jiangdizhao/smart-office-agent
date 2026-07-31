@@ -351,8 +351,13 @@ export class RemoteVisionClient {
       return
     }
     const detection = toDetection(primary, 'client_state_snapshot', state)
+    if (!detection) {
+      // A primary visitor can temporarily have no published session while the RTX
+      // server is resolving an anonymous rebind. This is presence, not absence.
+      return
+    }
     this.options.onDetection(detection)
-    if (detection && primary.greeting_eligible) {
+    if (primary.greeting_eligible) {
       this.options.onGreetingCandidate(detection)
     }
   }
