@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -108,7 +109,9 @@ def _verification(
     )
 
 
-def get_office_status() -> ToolResult:
+def get_office_status_direct() -> ToolResult:
+    """Inspect Office state inside the isolated Office worker process."""
+
     presentation = get_presentation_status()
     system = get_system_control_status()
     artifacts = office_artifact_status()
@@ -139,6 +142,21 @@ def get_office_status() -> ToolResult:
         message="Office runtime status inspected.",
         data=data,
     )
+
+
+def get_office_status() -> ToolResult:
+    """Public status inspection with a hard process deadline.
+
+    The Office child process calls the direct implementation. Every Backend
+    caller goes through the restartable broker, so a stuck COM status query never
+    consumes a Uvicorn worker indefinitely.
+    """
+
+    if os.getenv("SMART_OFFICE_WORKER_CHILD", "").strip() == "1":
+        return get_office_status_direct()
+    from app.office_worker_process import inspect_office_status_isolated
+
+    return inspect_office_status_isolated()
 
 
 def _verify_non_presentation(result: ToolResult, status: ToolResult) -> VerificationResult:
@@ -361,6 +379,8 @@ def execute_office_tool_call_direct(
     name: str,
     arguments: dict[str, Any] | None = None,
 ) -> tuple[ToolResult, VerificationResult, ToolResult]:
+    """Run inside the isolated Office worker process only."""
+
     clean = dict(arguments or {})
     internal_task_id = clean.pop("_task_id", None)
     if name in PRESENTATION_TOOL_NAMES:
@@ -386,7 +406,7 @@ def execute_office_tool_call_direct(
             },
             raw={"validation_error": f"Unregistered office capability: {name}"},
         )
-        status = get_office_status()
+        status = get_office_status_direct()
         verification = _verify_non_presentation(result, status)
         _log_office_failure(
             name=name,
@@ -423,7 +443,7 @@ def execute_office_tool_call_direct(
                 str(clean.get("recipient_key")) if clean.get("recipient_key") else None
             )
         )
-    status = get_office_status()
+    status = get_office_status_direct()
     status_data = dict(status.data)
     status_data.update(
         {
