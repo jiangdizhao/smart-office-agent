@@ -40,12 +40,14 @@ def _session_profile(track: dict[str, Any], identity: dict[str, Any] | None) -> 
     session = track.get("visitor_session") if isinstance(track.get("visitor_session"), dict) else {}
     age_seconds = max(0.0, _number(session.get("age_seconds"), 0.0))
     recovery_count = max(0, _integer(session.get("recovery_count"), 0))
+    assignment_stable = bool(session.get("assignment_stable"))
     registered = identity is not None
     returning = bool(registered or recovery_count > 0)
     stable = bool(
         raw_session_id
         and (
-            registered
+            assignment_stable
+            or registered
             or recovery_count > 0
             or age_seconds >= ANONYMOUS_SESSION_STABILIZATION_SECONDS
         )
@@ -61,6 +63,7 @@ def _session_profile(track: dict[str, Any], identity: dict[str, Any] | None) -> 
         "visitor_session_id": raw_session_id if stable else None,
         "provisional_session_id": raw_session_id if raw_session_id and not stable else None,
         "session_stable": stable,
+        "session_assignment_stable": assignment_stable,
         "session_age_seconds": age_seconds,
         "session_recovery_count": recovery_count,
         "returning_visitor": returning,
@@ -98,6 +101,7 @@ def visitor_from_track(track: dict[str, Any]) -> dict[str, Any]:
         "visitor_session_id": visitor_session_id,
         "provisional_session_id": session_profile["provisional_session_id"],
         "session_stable": session_profile["session_stable"],
+        "session_assignment_stable": session_profile["session_assignment_stable"],
         "session_age_seconds": session_profile["session_age_seconds"],
         "session_recovery_count": session_profile["session_recovery_count"],
         "returning_visitor": session_profile["returning_visitor"],
