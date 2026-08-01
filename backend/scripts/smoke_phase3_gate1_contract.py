@@ -13,13 +13,23 @@ if str(BACKEND_DIR) not in sys.path:
 from app.main import app  # noqa: E402
 
 
+CURRENT_OR_LATER_RUNTIME_PHASES = {
+    "m3a_fusion_phase_3_gate_3_5",
+    "preemptive_visit_orchestration",
+}
+
+
 def main() -> None:
     client = TestClient(app)
 
     health = client.get("/")
     health.raise_for_status()
     health_payload = health.json()
-    assert health_payload["phase"] == "m3a_fusion_phase_3_gate_3_5"
+    # The root phase describes the current whole-product runtime, not the historical
+    # phase in which this Gate 1 contract was introduced. Accept the original phase
+    # and the current Visit-orchestration phase while continuing to assert the
+    # actual bounded presentation capabilities below.
+    assert health_payload["phase"] in CURRENT_OR_LATER_RUNTIME_PHASES
     assert health_payload["capabilities"]["presentation_controller"] is True
     assert health_payload["capabilities"]["presentation_state_verifier"] is True
     assert health_payload["capabilities"]["presentation_execution_via_turn"] is True
@@ -76,8 +86,8 @@ def main() -> None:
     assert office_payload["artifacts"]["recipient_email"] == "jiangdizhao@gmail.com"
 
     print(
-        "PASS: Gate 1 presentation API and safety contracts remain available under "
-        "Phase 3 Gate 3-5 without enabling arbitrary Office execution through /agent/turn."
+        "PASS: Gate 1 presentation API and safety contracts remain available in the "
+        "current runtime without enabling arbitrary Office execution through /agent/turn."
     )
 
 
