@@ -13,34 +13,33 @@ import app.presentation_actions as presentation_actions  # noqa: E402
 
 
 def main() -> None:
-    stale_monitor = {
-        "target_monitor_device": r"\\.\DISPLAY2",
-        "target_monitor_available": True,
-        "slideshow_window_hwnd": None,
-        "slideshow_monitor_device": None,
-        "monitor_placement_enforced": False,
-        "monitor_error": "PowerPoint slide-show window was not found.",
+    stale_placement = {
+        "target_monitor": {"device": r"\\.\DISPLAY2"},
+        "window_found": False,
+        "placement_attempted": False,
+        "placement_verified": False,
+        "observed_monitor_device": None,
+        "window_maximized": None,
+        "error": "PowerPoint slide-show window was not found yet.",
     }
-    final_monitor = {
-        "target_monitor_device": r"\\.\DISPLAY2",
-        "target_monitor_available": True,
-        "slideshow_window_hwnd": 12345,
-        "slideshow_monitor_device": r"\\.\DISPLAY2",
-        "monitor_placement_enforced": True,
+    final_placement = {
+        "target_monitor": {"device": r"\\.\DISPLAY2"},
+        "window_found": True,
+        "placement_attempted": True,
+        "placement_verified": True,
+        "hwnd": 12345,
+        "observed_monitor_device": r"\\.\DISPLAY2",
+        "window_visible": True,
+        "window_minimized": False,
+        "window_maximized": True,
     }
 
     placement_calls = 0
-    inspection_calls = 0
 
     def fake_place(**_kwargs) -> dict:
         nonlocal placement_calls
         placement_calls += 1
-        return stale_monitor if placement_calls == 1 else final_monitor
-
-    def fake_inspect(**_kwargs) -> dict:
-        nonlocal inspection_calls
-        inspection_calls += 1
-        return stale_monitor if inspection_calls == 1 else final_monitor
+        return final_placement
 
     def fake_start() -> ToolResult:
         return ToolResult(
@@ -55,7 +54,11 @@ def main() -> None:
                     "slideshow_active": True,
                     "current_slide": 1,
                 },
+                # The first bounded attempt may run before Windows exposes the HWND.
+                "window_placement": stale_placement,
+                "window_placement_verified": False,
             },
+            raw={"window_placement": stale_placement},
         )
 
     def fake_status() -> ToolResult:
@@ -65,6 +68,7 @@ def main() -> None:
             message="Status inspected.",
             data={
                 "powerpoint_connected": True,
+                "powerpoint_process_id": 2468,
                 "presentation_open": True,
                 "slideshow_active": True,
                 "current_slide": 1,
@@ -83,15 +87,13 @@ def main() -> None:
         )
 
     originals = {
-        "start": presentation_actions.start_configured_slideshow,
-        "place": presentation_actions.place_slideshow_on_target_monitor,
-        "inspect": presentation_actions.inspect_slideshow_monitor,
+        "start": presentation_actions.start_configured_slideshow_on_content_display,
+        "place": presentation_actions.place_window_on_content_monitor,
         "verify": presentation_actions.verify_presentation_tool_result,
         "status": presentation_actions.get_presentation_status,
     }
-    presentation_actions.start_configured_slideshow = fake_start
-    presentation_actions.place_slideshow_on_target_monitor = fake_place
-    presentation_actions.inspect_slideshow_monitor = fake_inspect
+    presentation_actions.start_configured_slideshow_on_content_display = fake_start
+    presentation_actions.place_window_on_content_monitor = fake_place
     presentation_actions.verify_presentation_tool_result = fake_verify
     presentation_actions.get_presentation_status = fake_status
 
@@ -101,25 +103,26 @@ def main() -> None:
             {},
         )
     finally:
-        presentation_actions.start_configured_slideshow = originals["start"]
-        presentation_actions.place_slideshow_on_target_monitor = originals["place"]
-        presentation_actions.inspect_slideshow_monitor = originals["inspect"]
+        presentation_actions.start_configured_slideshow_on_content_display = originals["start"]
+        presentation_actions.place_window_on_content_monitor = originals["place"]
         presentation_actions.verify_presentation_tool_result = originals["verify"]
         presentation_actions.get_presentation_status = originals["status"]
 
     assert tool.ok is True
-    assert placement_calls == 2
-    assert inspection_calls >= 2
+    assert placement_calls == 1
+    assert tool.data["window_placement_verified"] is True
+    assert tool.data["window_placement"]["hwnd"] == 12345
     assert verification.ok is True
-    assert verification.raw["monitor_ok"] is True
-    assert status.data["slideshow_window_hwnd"] == 12345
-    assert status.data["slideshow_monitor_device"] == r"\\.\DISPLAY2"
+    assert verification.raw["content_display_placement_ok"] is True
+    assert status.data["powerpoint_window_monitor_device"] == r"\\.\DISPLAY2"
     assert status.data["monitor_placement_enforced"] is True
-    assert "monitor_placement_retry" in tool.raw
+    assert status.data["window_maximized"] is True
+    assert tool.raw["content_display_placement"]["placement_verified"] is True
 
     print(
         "PASS: a transient missing PowerPoint slide-show HWND no longer becomes a "
-        "permanent DISPLAY2 verification failure; final state is freshly inspected."
+        "permanent content-display failure; the unified placement layer verifies the "
+        "freshly discovered, maximized slide-show window."
     )
 
 
