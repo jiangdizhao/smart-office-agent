@@ -9,6 +9,7 @@ from app.contact_record_api import router as contact_record_router
 from app.display_role_api import router as display_role_router, start_display_role_service
 from app.enhanced_turn_api import router as enhanced_turn_router
 from app.event_bus import event_bus
+from app.exhibition_admin_mode import ExhibitionAdminModeMiddleware, exhibition_admin_enabled
 from app.executor import run_task_plan_only, run_task_with_tools
 from app.general_chat_api import router as general_chat_router
 from app.human_recording_api import router as human_recording_router
@@ -49,6 +50,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ExhibitionAdminModeMiddleware)
 
 app.include_router(realtime_router)
 app.include_router(reception_router)
@@ -96,8 +98,9 @@ def health_check():
             "reception_knowledge": True,
             "general_backend_chat": True,
             "general_chat_not_limited_to_company_topics": True,
-            "permission_gate": False,
-            "exhibition_admin_mode": True,
+            "permission_gate": not exhibition_admin_enabled(),
+            "exhibition_admin_mode": exhibition_admin_enabled(),
+            "exhibition_actor": "operator" if exhibition_admin_enabled() else None,
             "conversation_memory": True,
             "conversation_recent_message_limit": 16,
             "conversation_lifecycle_state": True,
