@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { publishSessionMessage } from '../interaction/sessionEventBus'
+import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
+import { useProximityGreeting } from '../vision/useProximityGreeting'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import {
   useOfficeVoiceController,
   type ConversationPhase,
 } from '../voice/useOfficeVoiceController'
-import { useProximityGreeting } from '../vision/useProximityGreeting'
 import ApprovalOverlay from './ApprovalOverlay'
 import LiveCaption from './LiveCaption'
 import OperatorDrawer from './OperatorDrawer'
@@ -13,8 +15,10 @@ import './VirtualHost.css'
 import './VirtualHostPhase3.css'
 import './VirtualHostPhase4.css'
 import './ConversationRecording.css'
+import './ContinuousVoice.css'
 
 const ACTIVE_TASK_STATUSES = ['created', 'planning', 'running']
+type VadUiState = 'idle' | 'listening' | 'processing'
 
 function stateText(
   visualState: VirtualHostVisualState,
@@ -31,11 +35,10 @@ function stateText(
     }
     return idleLabels[conversationPhase][language]
   }
-
   const labels: Record<VirtualHostVisualState, { zh: string; en: string }> = {
     idle: { zh: '随时为您服务', en: 'Ready to help' },
     connecting: { zh: '正在连接语音服务', en: 'Connecting voice service' },
-    listening: { zh: '麦克风已开启，正在聆听', en: 'Microphone on — listening' },
+    listening: { zh: '正在聆听', en: 'Listening' },
     processing: { zh: '正在理解您的请求', en: 'Understanding your request' },
     speaking: { zh: '正在为您说明', en: 'Speaking' },
     executing: { zh: '正在执行办公任务', en: 'Working on your office task' },
@@ -45,7 +48,7 @@ function stateText(
   return labels[visualState][language]
 }
 
-function visualStateFromController(
+function controllerVisualState(
   panel: string,
   taskStatus: string | null,
   active: boolean,
@@ -56,64 +59,93 @@ function visualStateFromController(
   if (panel === 'listening') return 'listening'
   if (panel === 'processing') return 'processing'
   if (panel === 'speaking') return 'speaking'
-  if (active || (taskStatus !== null && ACTIVE_TASK_STATUSES.includes(taskStatus))) {
-    return 'executing'
-  }
+  if (active || (taskStatus !== null && ACTIVE_TASK_STATUSES.includes(taskStatus))) return 'executing'
   return 'idle'
 }
 
 function welcomeText(language: VoiceLanguage): string {
   return language === 'zh'
-    ? '您好，我是您的 Smart Office 虚拟助手。您可以让我处理办公任务，也可以询问一般问题。'
-    : 'Hello, I am your Smart Office virtual assistant. You can ask general questions or request an office task.'
+    ? '您好，我是您的 Smart Office 虚拟助手。访客靠近后，手持麦克风会自动进入对话状态。'
+    : 'Hello, I am your Smart Office virtual assistant. The handheld microphone becomes active when a visitor approaches.'
 }
 
-function micButtonText(
-  visualState: VirtualHostVisualState,
-  language: VoiceLanguage,
-): string {
-  const labels: Record<VirtualHostVisualState, { zh: string; en: string }> = {
-    idle: { zh: '点击说话', en: 'Tap to speak' },
-    connecting: { zh: '正在连接', en: 'Connecting' },
-    listening: { zh: '结束说话', en: 'Finish speaking' },
-    processing: { zh: '正在处理', en: 'Processing' },
-    speaking: { zh: '停止朗读', en: 'Stop speaking' },
-    executing: { zh: '任务执行中', en: 'Task in progress' },
-    'waiting-approval': { zh: '请先确认操作', en: 'Confirmation required' },
-    error: { zh: '重新尝试', en: 'Try again' },
+function publicError(message: string, language: VoiceLanguage): string {
+  const clean = message.trim()
+  if (!clean) return ''
+  if (/GPT Realtime|audio did not|response timed out|data channel/i.test(clean)) {
+    return language === 'zh'
+      ? '语音服务刚才没有顺利完成，系统已经恢复。请直接对着手持麦克风再说一次。'
+      : 'The voice service did not complete that turn and has recovered. Please speak into the handheld microphone again.'
   }
-  return labels[visualState][language]
-}
-
-function formatRecordingDuration(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  return clean
 }
 
 export default function VirtualHostApp() {
   const controller = useOfficeVoiceController()
   const proximity = useProximityGreeting(controller)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [textComposerOpen, setTextComposerOpen] = useState(false)
   const [lastUserText, setLastUserText] = useState('')
   const [lastAssistantText, setLastAssistantText] = useState('')
+  const [vadUiState, setVadUiState] = useState<VadUiState>('idle')
+  const lastPublishedAnswer = useRef('')
 
-  const visualState = visualStateFromController(
+  useEffect(() => {
+    if (controller.actor !== 'operator') controller.setActor('operator')
+  }, [controller.actor])
+
+  useEffect(() => {
+    const onSpeechStarted = () => setVadUiState('listening')
+    const onSpeechStopped = () => setVadUiState('processing')
+    const onUtterance = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null
+      const transcript = String(detail?.transcript ?? '').trim()
+      if (transcript) setLastUserText(transcript)
+      setVadUiState('processing')
+    }
+    const onDirectAssistant = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null
+      const text = String(detail?.text ?? '').trim()
+      if (text) setLastAssistantText(text)
+    }
+    const onSpeakingStopped = () => setVadUiState('idle')
+    const onContinuousStopped = () => setVadUiState('idle')
+    window.addEventListener('smartoffice:realtime-vad-speech-started', onSpeechStarted)
+    window.addEventListener('smartoffice:realtime-vad-speech-stopped', onSpeechStopped)
+    window.addEventListener('smartoffice:realtime-continuous-utterance', onUtterance)
+    window.addEventListener('smartoffice:continuous-user-transcript', onUtterance)
+    window.addEventListener('smartoffice:direct-assistant-caption', onDirectAssistant)
+    window.addEventListener('smartoffice:realtime-speaking-stop', onSpeakingStopped)
+    window.addEventListener('smartoffice:realtime-continuous-listening-stop', onContinuousStopped)
+    return () => {
+      window.removeEventListener('smartoffice:realtime-vad-speech-started', onSpeechStarted)
+      window.removeEventListener('smartoffice:realtime-vad-speech-stopped', onSpeechStopped)
+      window.removeEventListener('smartoffice:realtime-continuous-utterance', onUtterance)
+      window.removeEventListener('smartoffice:continuous-user-transcript', onUtterance)
+      window.removeEventListener('smartoffice:direct-assistant-caption', onDirectAssistant)
+      window.removeEventListener('smartoffice:realtime-speaking-stop', onSpeakingStopped)
+      window.removeEventListener('smartoffice:realtime-continuous-listening-stop', onContinuousStopped)
+    }
+  }, [])
+
+  const baseVisualState = controllerVisualState(
     controller.panel,
     controller.taskStatus,
     controller.active,
   )
+  const visualState: VirtualHostVisualState = baseVisualState === 'idle'
+    ? vadUiState === 'listening'
+      ? 'listening'
+      : vadUiState === 'processing'
+        ? 'processing'
+        : 'idle'
+    : baseVisualState
+
   const isWaitingApproval = controller.taskStatus === 'waiting_approval'
   const isSendApproval = controller.pendingApprovalTool === 'outlook_send_approved_draft'
   const currentTranscript = controller.transcript.trim()
-  const userCaption =
-    currentTranscript || (visualState === 'listening' ? '' : lastUserText)
+  const userCaption = currentTranscript || lastUserText
   const assistantCaption = controller.answer.trim() || lastAssistantText
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
-  const humanSummaryAvailable = Boolean(
-    controller.contentUrl?.startsWith('/api/human-recordings/artifacts/'),
-  )
   const recipientName = useMemo(() => {
     const key = controller.pendingRecipientKey
     const entry = controller.office?.recipient_catalog?.find((item) => item.key === key)
@@ -127,8 +159,18 @@ export default function VirtualHostApp() {
 
   useEffect(() => {
     const answer = controller.answer.trim()
-    if (answer) setLastAssistantText(answer)
-  }, [controller.answer])
+    if (!answer) return
+    setLastAssistantText(answer)
+    if (answer === lastPublishedAnswer.current) return
+    lastPublishedAnswer.current = answer
+    publishSessionMessage({
+      conversationId: controller.conversationId,
+      visitId: visitLeaseRegistry.current()?.visitId ?? null,
+      role: 'assistant',
+      text: answer,
+      source: 'virtual_host_answer',
+    })
+  }, [controller.answer, controller.conversationId])
 
   useEffect(() => {
     if (!drawerOpen) return
@@ -143,60 +185,27 @@ export default function VirtualHostApp() {
     }
   }, [drawerOpen])
 
-  async function handlePrimaryAction(): Promise<void> {
-    if (visualState === 'listening') {
-      await controller.endListening()
-      return
-    }
-    if (visualState === 'speaking') {
-      await controller.stopSpeaking()
-      return
-    }
-    if (visualState === 'error') controller.clearError()
-    setLastUserText('')
-    setLastAssistantText('')
-    await controller.beginListening()
-  }
-
-  async function handleRecordingAction(): Promise<void> {
-    if (controller.recordingSaving) return
-    if (controller.recordingActive) {
-      await controller.stopRecording()
-      return
-    }
-    await controller.startRecording()
-  }
-
-  async function handleTextSubmit(): Promise<void> {
-    const text = controller.input.trim()
-    if (!text) return
-    setLastUserText(text)
-    setLastAssistantText('')
-    await controller.submit(text)
-    controller.setInput('')
-    setTextComposerOpen(false)
-  }
-
   async function toggleFullscreen(): Promise<void> {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen()
-      return
-    }
-    await document.documentElement.requestFullscreen()
+    if (document.fullscreenElement) await document.exitFullscreen()
+    else await document.documentElement.requestFullscreen()
   }
 
-  const primaryDisabled =
-    visualState === 'connecting' ||
-    visualState === 'processing' ||
-    visualState === 'executing' ||
-    visualState === 'waiting-approval' ||
-    controller.recordingActive ||
-    controller.recordingSaving
+  const continuousStatus = controller.runtime.continuousListening
+    ? visualState === 'listening'
+      ? controller.language === 'zh' ? '正在听取手持麦克风' : 'Listening to the handheld microphone'
+      : visualState === 'processing'
+        ? controller.language === 'zh' ? '正在理解您的问题' : 'Understanding your question'
+        : visualState === 'speaking'
+          ? controller.language === 'zh' ? '您可以直接说话打断 Sara' : 'Speak to interrupt Sara at any time'
+          : controller.language === 'zh' ? '手持麦克风已就绪，请直接说话' : 'Handheld microphone ready — just speak'
+    : controller.language === 'zh'
+      ? '访客靠近后自动开启手持麦克风'
+      : 'The handheld microphone activates when a visitor approaches'
+
+  const shownError = publicError(controller.error, controller.language)
 
   return (
-    <main
-      className={`virtual-host-shell state-${visualState} conversation-${controller.conversationPhase}`}
-    >
+    <main className={`virtual-host-shell state-${visualState} conversation-${controller.conversationPhase}`}>
       <div className="virtual-host-background" aria-hidden="true">
         <span className="background-glow glow-one" />
         <span className="background-glow glow-two" />
@@ -205,58 +214,28 @@ export default function VirtualHostApp() {
 
       <header className="virtual-host-header">
         <div className="virtual-host-brand">
-          <span className="brand-symbol" aria-hidden="true">
-            SO
-          </span>
-          <div>
-            <strong>Smart Office</strong>
-            <span>Virtual Host</span>
-          </div>
+          <span className="brand-symbol" aria-hidden="true">SO</span>
+          <div><strong>Smart Office</strong><span>Virtual Host</span></div>
         </div>
         <div className="virtual-host-header-actions">
           <span className={`system-ready ${controller.runtime.connected ? 'connected' : ''}`}>
             <i />
             {controller.runtime.connected
-              ? controller.language === 'zh'
-                ? '语音已连接'
-                : 'Voice connected'
-              : controller.language === 'zh'
-                ? '系统就绪'
-                : 'System ready'}
+              ? controller.language === 'zh' ? '语音已连接' : 'Voice connected'
+              : controller.language === 'zh' ? '系统就绪' : 'System ready'}
           </span>
-          <button
-            type="button"
-            className="header-button language-button"
-            onClick={() => controller.setLanguage(controller.language === 'zh' ? 'en' : 'zh')}
-            aria-label="切换语言"
-          >
+          <button type="button" className="header-button language-button" onClick={() => controller.setLanguage(controller.language === 'zh' ? 'en' : 'zh')} aria-label="切换语言">
             {controller.language === 'zh' ? '中文' : 'EN'}
           </button>
-          <button
-            type="button"
-            className="header-button"
-            onClick={() => void toggleFullscreen()}
-            aria-label="切换全屏"
-          >
-            ⛶
-          </button>
-          <button
-            type="button"
-            className="header-button"
-            onClick={() => setDrawerOpen(true)}
-            aria-label="打开控制设置"
-          >
-            ⚙
-          </button>
+          <button type="button" className="header-button" onClick={() => void toggleFullscreen()} aria-label="切换全屏">⛶</button>
+          <button type="button" className="header-button" onClick={() => setDrawerOpen(true)} aria-label="打开控制设置">⚙</button>
         </div>
       </header>
 
       <section className="virtual-host-stage">
         <div className="virtual-host-status" aria-live="polite">
           <span className={`status-dot status-${visualState}`} />
-          <span>
-            {stateText(visualState, controller.conversationPhase, controller.language)}
-          </span>
+          <span>{stateText(visualState, controller.conversationPhase, controller.language)}</span>
         </div>
 
         <VirtualHostAvatar state={visualState} />
@@ -269,136 +248,16 @@ export default function VirtualHostApp() {
           welcomeText={welcomeText(controller.language)}
         />
 
-        <div className="voice-dock">
-          <div className="voice-primary-row">
-            <button
-              type="button"
-              className={`conversation-record-button ${controller.recordingActive ? 'recording-active' : ''}`}
-              disabled={controller.recordingSaving || controller.listening || controller.busy}
-              onClick={() => void handleRecordingAction()}
-              aria-pressed={controller.recordingActive}
-              aria-label={
-                controller.language === 'zh'
-                  ? controller.recordingActive
-                    ? '停止现场人员对话录音'
-                    : '开始现场人员对话录音'
-                  : controller.recordingActive
-                    ? 'Stop human conversation recording'
-                    : 'Start human conversation recording'
-              }
-            >
-              <span className="record-button-dot" aria-hidden="true">
-                {controller.recordingActive ? '■' : '●'}
-              </span>
-              <span>
-                {controller.recordingSaving
-                  ? controller.language === 'zh'
-                    ? '正在保存录音'
-                    : 'Saving recording'
-                  : controller.recordingActive
-                    ? controller.language === 'zh'
-                      ? `停止录音 ${formatRecordingDuration(controller.recordingDurationSeconds)}`
-                      : `Stop ${formatRecordingDuration(controller.recordingDurationSeconds)}`
-                    : controller.language === 'zh'
-                      ? '开始现场录音'
-                      : 'Record people'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              className={`primary-voice-button primary-${visualState}`}
-              disabled={primaryDisabled}
-              onClick={() => void handlePrimaryAction()}
-            >
-              <span className="primary-voice-icon" aria-hidden="true">
-                {visualState === 'listening' ? '■' : visualState === 'speaking' ? 'Ⅱ' : '●'}
-              </span>
-              <span>{micButtonText(visualState, controller.language)}</span>
-            </button>
-          </div>
-
-          <div className="voice-secondary-row">
-            <button
-              type="button"
-              className="text-input-toggle"
-              disabled={controller.busy || controller.listening || controller.recordingActive}
-              onClick={() => setTextComposerOpen((open) => !open)}
-            >
-              {controller.language === 'zh' ? '文字输入' : 'Type instead'}
-            </button>
-            {controller.recordingAvailable && !controller.recordingActive ? (
-              <button
-                type="button"
-                className="recording-download-button"
-                onClick={controller.downloadRecording}
-              >
-                {controller.language === 'zh' ? '下载现场录音' : 'Download recording'}
-              </button>
-            ) : null}
-            {humanSummaryAvailable ? (
-              <button
-                type="button"
-                className="recording-download-button"
-                onClick={controller.openArtifact}
-              >
-                {controller.language === 'zh' ? '打开 DOCX 总结稿' : 'Open DOCX summary'}
-              </button>
-            ) : null}
-          </div>
-
-          {controller.recordingActive ? (
-            <span className="recording-inline-status" aria-live="polite">
-              {controller.language === 'zh'
-                ? '正在录制现场人员之间的对话。Agent 不参与录音；请结束谈话后点击停止录音。'
-                : 'Recording the conversation between people in the room. The Agent is not a participant.'}
-            </span>
-          ) : controller.recordingSaving ? (
-            <span className="recording-inline-status" aria-live="polite">
-              {controller.language === 'zh'
-                ? '正在生成并保存语音文件，请稍候。'
-                : 'Creating and saving the audio file.'}
-            </span>
-          ) : controller.recordingError ? (
-            <span className="recording-inline-status" role="alert">
-              {controller.recordingError}
-            </span>
-          ) : controller.recordingAvailable ? (
-            <span className="recording-inline-status" aria-live="polite">
-              {controller.language === 'zh'
-                ? '现场对话录音已保存。现在可以对 Agent 说：“总结一下刚才的录音。”'
-                : 'The human conversation recording is saved. Ask the Agent to summarize it.'}
-            </span>
-          ) : null}
+        <div className={`continuous-voice-card ${vadUiState}`} aria-live="polite">
+          <i aria-hidden="true" />
+          <strong>{continuousStatus}</strong>
         </div>
-
-        {textComposerOpen ? (
-          <div className="text-composer">
-            <input
-              autoFocus
-              value={controller.input}
-              onChange={(event) => controller.setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void handleTextSubmit()
-                if (event.key === 'Escape') setTextComposerOpen(false)
-              }}
-              placeholder={
-                controller.language === 'zh'
-                  ? '输入办公任务或一般问题'
-                  : 'Enter an office task or a general question'
-              }
-            />
-            <button type="button" onClick={() => void handleTextSubmit()}>
-              {controller.language === 'zh' ? '发送' : 'Send'}
-            </button>
-          </div>
-        ) : null}
       </section>
 
-      {controller.error ? (
+      {shownError ? (
         <button type="button" className="host-error-toast" onClick={controller.clearError}>
-          <strong>{controller.language === 'zh' ? '操作未完成' : 'Action not completed'}</strong>
-          <span>{controller.error}</span>
+          <strong>{controller.language === 'zh' ? '本轮未完成' : 'Turn not completed'}</strong>
+          <span>{shownError}</span>
         </button>
       ) : null}
 
@@ -416,11 +275,7 @@ export default function VirtualHostApp() {
       ) : null}
 
       {drawerOpen ? (
-        <OperatorDrawer
-          controller={controller}
-          proximity={proximity}
-          onClose={() => setDrawerOpen(false)}
-        />
+        <OperatorDrawer controller={controller} proximity={proximity} onClose={() => setDrawerOpen(false)} />
       ) : null}
     </main>
   )
