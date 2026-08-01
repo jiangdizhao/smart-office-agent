@@ -262,6 +262,111 @@ function applyResolvedRecipient(
   }
 }
 
+function normaliseOfficeCommand(text: string): string {
+  return text
+    .toLocaleLowerCase()
+    .replace(/\bp\s*[.\-_]?\s*p\s*[.\-_]?\s*t\b/gi, 'ppt')
+    .replace(/\bpower\s+point\b/gi, 'powerpoint')
+    .replace(/幻\s*灯\s*片/g, '幻灯片')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function boundedPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function numericValue(text: string): number | null {
+  const match = text.match(/(?:百分之\s*)?(\d{1,3})(?:\s*%|\s*percent)?/i)
+  if (!match) return null
+  return boundedPercent(Number(match[1]))
+}
+
+function officePlan(steps: Array<Record<string, unknown>>): RealtimeOfficeDecision {
+  const toolCall: RealtimeOfficeToolCall = {
+    name: 'office_plan',
+    arguments: { steps },
+    call_id: null,
+    source: 'gpt_realtime',
+  }
+  console.info('[OfficePlan]', {
+    source: 'deterministic_common_command',
+    steps,
+  })
+  return { kind: 'tool_call', toolCall }
+}
+
+function deterministicCommonOfficeDecision(text: string): RealtimeOfficeDecision | null {
+  const clean = normaliseOfficeCommand(text)
+  const number = numericValue(clean)
+
+  const volumeMentioned = /音量|系统声音|电脑声音|扬声器声音|\bvolume\b|\baudio volume\b/i.test(clean)
+  if (volumeMentioned || /静音|取消静音|\bmute\b|\bunmute\b/i.test(clean)) {
+    if (/取消静音|\bunmute\b/i.test(clean) && number === null) {
+      return {
+        kind: 'clarify',
+        clarification: /[\u3400-\u9fff]/.test(clean)
+          ? '请告诉我取消静音后希望设置到多少音量，例如 40%。'
+          : 'What volume should I restore, for example 40 percent?',
+      }
+    }
+    if (/静音|\bmute\b/i.test(clean) && !/取消静音|\bunmute\b/i.test(clean)) {
+      return officePlan([{ name: 'system_set_volume', value_percent: 0 }])
+    }
+    const absolute =
+      number !== null &&
+      (/(?:调|设|改|设置|调整).{0,6}(?:到|为|至)|百分之|%|\bto\b|\bat\b/i.test(clean) ||
+        !/(调大|提高|增大|升高|调小|降低|减小|turn up|turn down|increase|decrease|raise|lower)/i.test(clean))
+    if (absolute && number !== null) {
+      return officePlan([{ name: 'system_set_volume', value_percent: number }])
+    }
+    if (/(调大|提高|增大|升高|大一点|turn up|increase|raise|louder|higher)/i.test(clean)) {
+      return officePlan([{ name: 'system_adjust_volume', delta_percent: number ?? 10 }])
+    }
+    if (/(调小|降低|减小|小一点|turn down|decrease|lower|quieter)/i.test(clean)) {
+      return officePlan([{ name: 'system_adjust_volume', delta_percent: -(number ?? 10) }])
+    }
+    if (/多少|几|当前|what|current/i.test(clean)) {
+      return officePlan([{ name: 'system_get_status' }])
+    }
+  }
+
+  const pptMentioned = /ppt|powerpoint|幻灯片|演示文稿|presentation|slides?/i.test(clean)
+  const startShow = /开始演示|开始放映|启动演示|启动放映|进入演示|进入放映|播放幻灯片|演示ppt|放映ppt|播放ppt|start (?:the )?(?:slide ?show|slideshow|presentation)|present (?:the )?(?:ppt|powerpoint|presentation)/i.test(clean)
+  const openPpt = /打开|开启|open|launch/i.test(clean) && pptMentioned
+  if (openPpt && startShow) {
+    return officePlan([
+      { name: 'presentation_open_configured' },
+      { name: 'presentation_start_slideshow' },
+    ])
+  }
+  if (startShow) return officePlan([{ name: 'presentation_start_slideshow' }])
+  if (openPpt) return officePlan([{ name: 'presentation_open_configured' }])
+  if (/下一页|下一张|后一页|后一张|向后翻|往后翻|next slide/i.test(clean)) {
+    return officePlan([{ name: 'presentation_next_slide' }])
+  }
+  if (/上一页|上一张|前一页|前一张|向前翻|往前翻|previous slide/i.test(clean)) {
+    return officePlan([{ name: 'presentation_previous_slide' }])
+  }
+  if (/最后一页|末页|last slide|final slide/i.test(clean)) {
+    return officePlan([{ name: 'presentation_go_to_slide', slide_target: 'last' }])
+  }
+  const slideNumber = clean.match(/(?:第\s*(\d+)\s*页|(?:go|jump|move)\s+to\s+slide\s+(\d+))/i)
+  if (slideNumber) {
+    return officePlan([{
+      name: 'presentation_go_to_slide',
+      slide_number: Number(slideNumber[1] ?? slideNumber[2]),
+    }])
+  }
+  if (/结束演示|结束放映|停止演示|停止放映|退出演示|退出放映|end (?:the )?(?:show|slideshow)|exit (?:the )?slideshow/i.test(clean)) {
+    return officePlan([{ name: 'presentation_end_slideshow' }])
+  }
+  if (/演示状态|放映状态|ppt状态|powerpoint status|presentation status/i.test(clean)) {
+    return officePlan([{ name: 'presentation_get_status' }])
+  }
+  return null
+}
+
 async function fetchJsonWithTimeout(url: string): Promise<unknown> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), CONTEXT_TIMEOUT_MS)
@@ -297,6 +402,13 @@ class RealtimeOfficeInterpreter {
     if (!clean || clean === '__UNCLEAR__') {
       return { kind: 'none', reason: 'empty_or_unclear' }
     }
+
+    const deterministic = deterministicCommonOfficeDecision(clean)
+    if (deterministic) {
+      this.recentUtterances = [...this.recentUtterances, clean].slice(-MAX_HISTORY_ITEMS)
+      return deterministic
+    }
+
     await this.ensureConnected()
     if (this.pending) throw new Error('A GPT Realtime office decision is still active.')
 
@@ -361,6 +473,8 @@ Rules:
 - For every clear supported office request, call office_plan exactly once.
 - Put exactly one step in the plan for one requested action. Put two to eight ordered steps for a compound request.
 - Preserve the exact user-requested order. Do not silently add PowerPoint open/start prerequisites.
+- “演示PPT/开始演示/开始放映/播放幻灯片/start the slideshow/start presenting” means presentation_start_slideshow.
+- “打开并演示PPT/open and present the PowerPoint” means presentation_open_configured followed by presentation_start_slideshow.
 - Supported actions are only the enum values in the schema. Never invent a file path, sender, recipient, raw email address, application, shell command, COM method, approval, EntryID, or success result.
 - GPT Realtime performs semantic action planning only. Recipient-file lookup, name matching, allowlist validation, and final recipient_key selection belong to application code and the Backend.
 - When application code supplies a resolved recipient key above, never question it and never return CLARIFY because of that recipient. You may omit recipient_key; application code injects the resolved key after planning.
@@ -546,6 +660,11 @@ Rules:
       window.clearTimeout(pending.timer)
       this.pending = null
       if (pending.toolCall) {
+        console.info('[OfficePlan]', {
+          source: 'gpt_realtime',
+          steps: pending.toolCall.arguments.steps ?? [],
+          requestId: pending.requestId,
+        })
         pending.resolve({ kind: 'tool_call', toolCall: pending.toolCall })
         return
       }
