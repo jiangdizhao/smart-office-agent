@@ -1,0 +1,51 @@
+.continuous-voice-card {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(24px, 4vh, 54px);
+  transform: translateX(-50%);
+  z-index: 8;
+  min-width: min(520px, 72vw);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 13px 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(142, 190, 250, 0.24);
+  background: rgba(4, 16, 34, 0.68);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
+  color: #dceaff;
+  pointer-events: none;
+}
+
+.continuous-voice-card i {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #60d394;
+  box-shadow: 0 0 0 6px rgba(96, 211, 148, 0.1), 0 0 20px rgba(96, 211, 148, 0.45);
+}
+
+.continuous-voice-card.listening i {
+  background: #6eb6ff;
+  box-shadow: 0 0 0 7px rgba(110, 182, 255, 0.12), 0 0 24px rgba(110, 182, 255, 0.62);
+  animation: continuous-mic-pulse 0.9s ease-in-out infinite alternate;
+}
+
+.continuous-voice-card.processing i {
+  background: #f4c66e;
+  box-shadow: 0 0 0 6px rgba(244, 198, 110, 0.1), 0 0 22px rgba(244, 198, 110, 0.5);
+}
+
+.continuous-voice-card strong {
+  font-size: clamp(14px, 1.4vw, 18px);
+  font-weight: 620;
+  letter-spacing: 0.02em;
+}
+
+@keyframes continuous-mic-pulse {
+  from { transform: scale(0.88); opacity: 0.72; }
+  to { transform: scale(1.18); opacity: 1; }
+}
