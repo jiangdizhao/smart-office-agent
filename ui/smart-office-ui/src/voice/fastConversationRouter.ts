@@ -1,9 +1,16 @@
 import type { VisitLease } from '../vision/visitLeaseRegistry'
+import {
+  matchInteractionWindowIntent,
+  openInteractionWindow,
+  type InteractionWindowKind,
+  type InteractionWindowResult,
+} from '../display/multiScreenWindowManager'
 import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 const ROUTE_TIMEOUT_MS = 6_000
+const INTERACTION_CONTEXT_PREFIX = '__SMART_OFFICE_INTERACTION_WINDOW__:'
 
 export type FastConversationAnswerEngine =
   | 'realtime'
@@ -28,6 +35,11 @@ type RouteRequest = {
   language: VoiceLanguage
   actor: 'visitor' | 'employee' | 'operator'
   lease: VisitLease | null
+}
+
+type InteractionContext = {
+  kind: InteractionWindowKind
+  result: InteractionWindowResult
 }
 
 function abortError(message: string): Error {
@@ -57,9 +69,74 @@ async function fetchWithTimeout(
   }
 }
 
+function interactionContext(kind: InteractionWindowKind, result: InteractionWindowResult): string {
+  return `${INTERACTION_CONTEXT_PREFIX}${JSON.stringify({ kind, result } satisfies InteractionContext)}`
+}
+
+function parseInteractionContext(value: string): InteractionContext | null {
+  if (!value.startsWith(INTERACTION_CONTEXT_PREFIX)) return null
+  try {
+    const parsed = JSON.parse(value.slice(INTERACTION_CONTEXT_PREFIX.length)) as InteractionContext
+    if (!parsed?.kind || !parsed?.result) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function interactionReply(context: InteractionContext, language: VoiceLanguage): string {
+  const labels: Record<InteractionWindowKind, { zh: string; en: string }> = {
+    contact: { zh: '登记信息', en: 'contact registration' },
+    recording: { zh: '实时录音', en: 'live recording' },
+    transcript: { zh: '当前对话记录', en: 'the current conversation transcript' },
+  }
+  const label = labels[context.kind][language]
+  if (context.result.ok) {
+    return language === 'zh'
+      ? `好的，我已经在左侧触摸屏打开${label}窗口。完成操作后，窗口会自动关闭。`
+      : `Okay. I opened ${label} on the left touch display. The window will close automatically when the operation is complete.`
+  }
+  if (context.result.blocked) {
+    return language === 'zh'
+      ? `浏览器阻止了${label}弹窗。请先点击我右侧对应的按钮，并允许本站弹出窗口。`
+      : `The browser blocked the ${label} window. Please use the matching button beside me once and allow pop-ups for this site.`
+  }
+  return language === 'zh'
+    ? `${label}窗口没有成功打开。请检查三屏排列和浏览器窗口管理权限。`
+    : `The ${label} window did not open. Please check the three-display layout and the browser window-management permission.`
+}
+
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<FastConversationRoute> {
+  const interactionKind = matchInteractionWindowIntent(request.text)
+  if (interactionKind) {
+    const startedAt = performance.now()
+    const result = await openInteractionWindow({
+      kind: interactionKind,
+      conversationId: request.conversationId,
+      visitId: request.visitId,
+      language: request.language,
+    })
+    console.info('[ConversationLatency] interaction-window-command-complete', {
+      kind: interactionKind,
+      ok: result.ok,
+      blocked: result.blocked,
+      target: result.target,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      visitId: request.visitId,
+    })
+    return {
+      route: 'realtime_direct',
+      scene: 'reception',
+      route_reason: 'interaction_window_command',
+      conversation_complexity: 'simple',
+      answer_engine: 'realtime',
+      recent_context: interactionContext(interactionKind, result),
+      visit_id: request.visitId,
+    }
+  }
+
   const startedAt = performance.now()
   const response = await fetchWithTimeout(
     `${API_BASE_URL}/api/conversation-route`,
@@ -137,6 +214,9 @@ export async function generateSimpleRealtimeAnswer(
   recentContext: string,
   lease: VisitLease | null,
 ): Promise<string> {
+  const interaction = parseInteractionContext(recentContext)
+  if (interaction) return interactionReply(interaction, language)
+
   const startedAt = performance.now()
   const answer = (
     await realtimeAgent.generateText(
