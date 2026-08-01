@@ -169,7 +169,8 @@ def _merge_desktop_verification(
         )
 
     placement_ok = bool(placement and placement.get("placement_verified"))
-    target_device = (placement or {}).get("target_monitor", {}).get("device")
+    target_monitor = (placement or {}).get("target_monitor") or {}
+    target_device = target_monitor.get("device")
     observed_device = (placement or {}).get("observed_monitor_device")
     message = verification.message
     if verification.ok and placement_ok:
@@ -274,6 +275,7 @@ def execute_presentation_tool_call(
     status = get_presentation_status()
     placement = _ensure_content_display(name, tool_result, status)
     if placement is not None:
+        target_monitor = placement.get("target_monitor") or {}
         tool_result = tool_result.model_copy(
             update={
                 "data": {
@@ -282,9 +284,7 @@ def execute_presentation_tool_call(
                     "window_placement_verified": bool(
                         placement.get("placement_verified")
                     ),
-                    "content_monitor_device": (
-                        placement.get("target_monitor") or {}
-                    ).get("device"),
+                    "content_monitor_device": target_monitor.get("device"),
                 },
                 "raw": {
                     **tool_result.raw,
@@ -296,9 +296,7 @@ def execute_presentation_tool_call(
             update={
                 "data": {
                     **status.data,
-                    "content_monitor_device": (
-                        placement.get("target_monitor") or {}
-                    ).get("device"),
+                    "content_monitor_device": target_monitor.get("device"),
                     "powerpoint_window_monitor_device": placement.get(
                         "observed_monitor_device"
                     ),
