@@ -10,14 +10,16 @@ from app.tools.managed_desktop_actions import (
     stop_music_from_desktop,
 )
 from app.tools.presentation_controller import (
-    close_configured_presentation,
     end_configured_slideshow,
     get_presentation_status,
     go_to_presentation_slide,
     next_presentation_slide,
-    open_configured_presentation,
     previous_presentation_slide,
-    start_configured_slideshow,
+)
+from app.tools.presentation_desktop_actions import (
+    close_powerpoint_discarding_changes,
+    open_configured_presentation_on_content_display,
+    start_configured_slideshow_on_content_display,
 )
 from app.tools.windows_controller import (
     open_edge,
@@ -32,6 +34,7 @@ from app.tools.windows_controller import (
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
 MANAGED_APPLICATION_TIMEOUT_SECONDS = 32.0
+POWERPOINT_DESKTOP_TIMEOUT_SECONDS = 32.0
 
 
 def _normalize_tool_result(
@@ -75,15 +78,15 @@ def run_tool(
         "open_onenote": lambda: open_onenote(),
         "open_sample_document": lambda: open_sample_document(),
         "presentation_get_status": lambda: get_presentation_status(),
-        "presentation_open_configured": lambda: open_configured_presentation(),
-        "presentation_start_slideshow": lambda: start_configured_slideshow(),
+        "presentation_open_configured": lambda: open_configured_presentation_on_content_display(),
+        "presentation_start_slideshow": lambda: start_configured_slideshow_on_content_display(),
         "presentation_next_slide": lambda: next_presentation_slide(),
         "presentation_previous_slide": lambda: previous_presentation_slide(),
         "presentation_go_to_slide": lambda: go_to_presentation_slide(
             int(args["slide_number"])
         ),
         "presentation_end_slideshow": lambda: end_configured_slideshow(),
-        "presentation_close": lambda: close_configured_presentation(),
+        "presentation_close": lambda: close_powerpoint_discarding_changes(),
         "system_open_teams": lambda: open_managed_application_on_content_display("teams"),
         "system_close_teams": lambda: close_managed_application_from_desktop("teams"),
         "system_open_onenote": lambda: open_managed_application_on_content_display("onenote"),
@@ -106,6 +109,12 @@ def run_tool(
         or "music" in tool_name
     ):
         timeout_seconds = max(timeout_seconds, MANAGED_APPLICATION_TIMEOUT_SECONDS)
+    if tool_name in {
+        "presentation_open_configured",
+        "presentation_start_slideshow",
+        "presentation_close",
+    }:
+        timeout_seconds = max(timeout_seconds, POWERPOINT_DESKTOP_TIMEOUT_SECONDS)
 
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(registry[tool_name])
