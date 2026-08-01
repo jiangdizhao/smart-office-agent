@@ -6,6 +6,8 @@ import { publishSessionMessage } from '../interaction/sessionEventBus'
 import {
   commandClarification,
   recoverCommandTranscript,
+  type CommandAction,
+  type CommandTarget,
 } from '../voice/commandSpeechRecovery'
 import {
   OFFICE_API_BASE,
@@ -21,19 +23,15 @@ export type AutomaticVoiceTurnResult =
   | { kind: 'aborted' }
   | { kind: 'error'; message: string }
 
-type DesktopTaskResult = {
+type DesktopToolResult = {
+  tool_name?: string
   ok?: boolean
   message?: string
   data?: Record<string, unknown>
 }
 
-type DesktopTask = {
-  task_id?: string
-  status?: string
-  summary?: string | null
-  steps?: Array<{
-    result?: DesktopTaskResult | null
-  }>
+type AgentRunResponse = {
+  results?: DesktopToolResult[]
 }
 
 function errorText(error: unknown): string {
@@ -60,7 +58,10 @@ function waitWithSignal(milliseconds: number, signal: AbortSignal): Promise<void
   })
 }
 
-function interactionReply(kind: ReturnType<typeof matchInteractionWindowIntent>, language: 'zh' | 'en'): string {
+function interactionReply(
+  kind: ReturnType<typeof matchInteractionWindowIntent>,
+  language: 'zh' | 'en',
+): string {
   if (language === 'en') {
     if (kind === 'contact') return 'I have opened contact registration beside Sara on the main display.'
     if (kind === 'recording') return 'I have opened live recording beside Sara on the main display.'
@@ -101,9 +102,6 @@ async function recoverTurnState(
   controller: () => OfficeVoiceController,
   signal: AbortSignal,
 ): Promise<boolean> {
-  // submit() catches controller errors internally, while React publishes the new
-  // panel state asynchronously. Wait a short bounded interval so an error cannot
-  // be missed because the callback still holds the previous idle snapshot.
   let latest = controller()
   for (let attempt = 0; attempt < 4; attempt += 1) {
     if (signal.aborted) return false
@@ -144,79 +142,84 @@ async function recoverTurnState(
   return false
 }
 
-function latestDesktopResult(task: DesktopTask): DesktopTaskResult | null {
-  return [...(task.steps ?? [])].reverse().find((step) => step.result)?.result ?? null
-}
-
-async function executeDeterministicDesktopTask(
-  controller: OfficeVoiceController,
+async function executeDeterministicDesktopCommand(
   transcript: string,
   signal: AbortSignal,
-): Promise<DesktopTaskResult> {
-  const lease = visitLeaseRegistry.current()
-  const response = await fetch(`${OFFICE_API_BASE}/agent/tasks`, {
+): Promise<DesktopToolResult> {
+  const response = await fetch(`${OFFICE_API_BASE}/agent/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({
-      text: transcript,
-      execute: true,
-      conversation_id: controller.conversationId,
-      visit_id: lease?.visitId ?? null,
-      actor_type: controller.actor,
-    }),
+    body: JSON.stringify({ text: transcript, execute: true }),
     signal,
   })
   if (!response.ok) {
-    throw new Error(`Desktop task creation failed: ${response.status} ${await response.text()}`)
+    throw new Error(`Desktop command failed: ${response.status} ${await response.text()}`)
   }
-  let task = (await response.json()) as DesktopTask
-  const taskId = String(task.task_id ?? '').trim()
-  if (!taskId) throw new Error('The Backend returned no desktop task id.')
-
-  const deadline = performance.now() + 40_000
-  while (performance.now() < deadline) {
-    if (signal.aborted) throw new DOMException('Desktop task aborted.', 'AbortError')
-    if (['completed', 'failed', 'cancelled'].includes(String(task.status ?? ''))) {
-      return latestDesktopResult(task) ?? {
-        ok: false,
-        message: task.summary?.trim() || 'The desktop task returned no tool result.',
-        data: { verified: false },
-      }
-    }
-    await waitWithSignal(250, signal)
-    const poll = await fetch(
-      `${OFFICE_API_BASE}/agent/tasks/${encodeURIComponent(taskId)}`,
-      { headers: { Accept: 'application/json' }, signal },
-    )
-    if (!poll.ok) throw new Error(`Desktop task status failed: ${poll.status}`)
-    task = (await poll.json()) as DesktopTask
+  const payload = (await response.json()) as AgentRunResponse
+  const result = payload.results?.[0]
+  if (!result) {
+    throw new Error(`No deterministic desktop tool was selected for: ${transcript}`)
   }
-  throw new Error('The deterministic desktop task timed out.')
+  return result
 }
 
-async function handleDeterministicPowerPointCommand(
-  controller: OfficeVoiceController,
-  transcript: string,
-  action: 'open' | 'close',
-  signal: AbortSignal,
-): Promise<void> {
-  const result = await executeDeterministicDesktopTask(controller, transcript, signal)
-  // PowerPoint desktop wrappers encode the required visible-window/process
-  // postcondition into result.ok. The optional verified flag is authoritative only
-  // when present, because older presentation results did not include that field.
+function deterministicReply(
+  target: CommandTarget,
+  action: Exclude<CommandAction, null>,
+  result: DesktopToolResult,
+  language: 'zh' | 'en',
+): string {
   const verified = result.ok === true && result.data?.verified !== false
-  const reply = controller.language === 'zh'
-    ? verified
-      ? action === 'open'
-        ? 'PowerPoint 已在最右侧内容屏幕打开并最大化。'
-        : 'PowerPoint 已经关闭，未保存的修改已直接丢弃。'
-      : `PowerPoint 操作没有完成。${String(result.message ?? '')}`
-    : verified
-      ? action === 'open'
-        ? 'PowerPoint is open and maximized on the rightmost content display.'
-        : 'PowerPoint is closed and unsaved changes were discarded.'
-      : `The PowerPoint action did not complete. ${String(result.message ?? '')}`
-  await speakDirect(controller, reply, 'deterministic_powerpoint_command', signal)
+  if (!verified) {
+    const detail = String(result.message ?? '').trim()
+    return language === 'zh'
+      ? `操作没有完成。${detail}`
+      : `The action did not complete. ${detail}`
+  }
+
+  if (language === 'en') {
+    if (target === 'music') {
+      return action === 'play'
+        ? 'Music is playing in the media player on display 2.'
+        : 'Music playback and the managed media player are closed.'
+    }
+    const app = target === 'teams'
+      ? 'Teams'
+      : target === 'onenote'
+        ? 'OneNote'
+        : 'PowerPoint'
+    return action === 'open'
+      ? `${app} is open and maximized on display 2.`
+      : target === 'powerpoint'
+        ? 'PowerPoint is closed and unsaved changes were discarded.'
+        : `${app} is closed.`
+  }
+
+  if (target === 'music') {
+    return action === 'play'
+      ? '音乐已经在二号内容屏幕的媒体播放器中播放。'
+      : '音乐已经停止，受控媒体播放器也已关闭。'
+  }
+  const app = target === 'teams'
+    ? 'Teams'
+    : target === 'onenote'
+      ? 'OneNote'
+      : 'PowerPoint'
+  if (action === 'open') return `${app} 已在二号内容屏幕打开并最大化。`
+  if (target === 'powerpoint') return 'PowerPoint 已经关闭，未保存的修改已直接丢弃。'
+  return `${app} 已经关闭。`
+}
+
+function isDeterministicDesktopCommand(
+  target: CommandTarget | null,
+  action: CommandAction,
+): target is 'teams' | 'onenote' | 'powerpoint' | 'music' {
+  return action !== null && (
+    target === 'teams'
+    || target === 'onenote'
+    || target === 'powerpoint'
+    || target === 'music'
+  )
 }
 
 export async function captureAutomaticRealtimeTurn(
@@ -252,26 +255,22 @@ export async function captureAutomaticRealtimeTurn(
 
     const clarification = commandClarification(recovered)
     if (clarification) {
-      console.info('[RealtimeDiagnostics] bounded-command-clarification', {
-        rawTranscript: recovered.raw,
-        normalizedTranscript: transcript,
-        target: recovered.target,
-        language: current.language,
-      })
       await speakDirect(current, clarification, 'bounded_command_clarification', signal)
       return { kind: 'heard', transcript }
     }
 
-    if (
-      recovered.target === 'powerpoint' &&
-      (recovered.action === 'open' || recovered.action === 'close')
-    ) {
-      await handleDeterministicPowerPointCommand(
-        current,
-        transcript,
-        recovered.action,
-        signal,
+    // Exhibition-critical commands bypass GPT and the generic Office router.
+    // This prevents “打开 PowerPoint” from falling through to the old dashboard
+    // planner and makes “关闭音乐” execute even though music is not an Office tool.
+    if (isDeterministicDesktopCommand(recovered.target, recovered.action)) {
+      const result = await executeDeterministicDesktopCommand(transcript, signal)
+      const reply = deterministicReply(
+        recovered.target,
+        recovered.action as Exclude<CommandAction, null>,
+        result,
+        recovered.language,
       )
+      await speakDirect(current, reply, 'deterministic_desktop_command', signal)
       return { kind: 'heard', transcript }
     }
 
