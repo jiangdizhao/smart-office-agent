@@ -35,17 +35,31 @@ def main() -> int:
         "scene_state",
         "person_count",
         "updated_at",
+        "serverInstanceId",
+        "snapshot_revision",
+        "vision_stale",
     )
     require(
         "ui/smart-office-ui/src/vision/useProximityGreeting.ts",
         "VITE_VISION_SOURCE",
         "remote-with-fallback",
-        "greetedVisitRef",
-        "REMOTE_REARM_ABSENCE_MS",
+        "VisitOrchestrator",
+        "PRIMARY_ABSENCE_GRACE_MS = 2_000",
         "Welcome back",
-        "triggerProximityGreeting",
         "RemoteVisionClient",
-        "ProximityDetection | RemoteVisionDetection | null",
+        "RemoteVisionDetection",
+        "visit_id",
+        "proactive-reception-started",
+        "proactive-reception-farewell",
+    )
+    require(
+        "ui/smart-office-ui/src/vision/visitOrchestrator.ts",
+        "class VisitOrchestrator",
+        "onPreempt",
+        "onGreeting",
+        "onConversation",
+        "onFarewell",
+        "onArchive",
     )
     require(
         "ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx",
@@ -64,7 +78,10 @@ def main() -> int:
         "VITE_VISION_SOURCE=remote",
         "VITE_VISION_SERVER_WS=ws://",
     )
-    print("PASS: Phase 5.2 stable-session and returning-visitor greeting contracts are present.")
+    print(
+        "PASS: Phase 5 remote-vision, reliable snapshot, Visit-orchestration, "
+        "stable-session, and returning-visitor greeting contracts are present."
+    )
     return 0
 
 
