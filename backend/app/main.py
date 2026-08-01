@@ -5,6 +5,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
+from app.contact_record_api import router as contact_record_router
+from app.display_role_api import router as display_role_router, start_display_role_service
 from app.enhanced_turn_api import router as enhanced_turn_router
 from app.event_bus import event_bus
 from app.executor import run_task_plan_only, run_task_with_tools
@@ -32,6 +34,7 @@ from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
 
 install_lightweight_system_status_policy()
+start_display_role_service()
 
 app = FastAPI(title="Smart Office Agent Backend", version="1.0.0")
 
@@ -55,6 +58,8 @@ app.include_router(office_router)
 app.include_router(recipient_router)
 app.include_router(general_chat_router)
 app.include_router(human_recording_router)
+app.include_router(contact_record_router)
+app.include_router(display_role_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -100,6 +105,10 @@ def health_check():
             "human_conversation_diarized_transcription": True,
             "human_conversation_docx_summary": True,
             "human_conversation_docx_auto_open": True,
+            "contact_records": True,
+            "contact_consent_required": True,
+            "touch_interaction_windows": True,
+            "display_role_routing": True,
             "presentation_controller": True,
             "presentation_state_verifier": True,
             "presentation_control_api": True,
