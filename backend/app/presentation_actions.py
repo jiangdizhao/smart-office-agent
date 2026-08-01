@@ -132,7 +132,6 @@ def _ensure_content_display(
             "PowerPoint Slide Show",
             "PowerPoint 幻灯片放映",
             "幻灯片放映",
-            presentation_config.presentation_path.name,
         )
         if slideshow
         else (presentation_config.presentation_path.name, "PowerPoint")
