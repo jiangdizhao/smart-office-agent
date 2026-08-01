@@ -56,18 +56,6 @@ def plan_task(user_text: str) -> list[PlannedStep]:
     if music_mentioned and open_mentioned:
         return _single_step("随机选择并播放一首本地音乐", "system_music_play_random")
 
-    teams_mentioned = "teams" in text or "微软团队" in text
-    if teams_mentioned and close_mentioned:
-        return _single_step("关闭 Microsoft Teams", "system_close_teams")
-    if teams_mentioned and open_mentioned:
-        return _single_step("打开 Microsoft Teams", "system_open_teams")
-
-    onenote_mentioned = "onenote" in text or "one note" in text or "微软笔记" in text
-    if onenote_mentioned and close_mentioned:
-        return _single_step("关闭 OneNote", "system_close_onenote")
-    if onenote_mentioned and open_mentioned:
-        return _single_step("打开 OneNote", "system_open_onenote")
-
     if any(k in text for k in ["meeting", "会议", "zoom", "prepare", "准备"]):
         return [
             PlannedStep(
@@ -102,6 +90,18 @@ def plan_task(user_text: str) -> list[PlannedStep]:
                 requires_confirmation=True,
             ),
         ]
+
+    teams_mentioned = "teams" in text or "微软团队" in text
+    if teams_mentioned and close_mentioned:
+        return _single_step("关闭 Microsoft Teams", "system_close_teams")
+    if teams_mentioned and open_mentioned:
+        return _single_step("打开 Microsoft Teams", "system_open_teams")
+
+    onenote_mentioned = "onenote" in text or "one note" in text or "微软笔记" in text
+    if onenote_mentioned and close_mentioned:
+        return _single_step("关闭 OneNote", "system_close_onenote")
+    if onenote_mentioned and open_mentioned:
+        return _single_step("打开 OneNote", "system_open_onenote")
 
     if any(k in text for k in ["word", "文档", "proposal", "合同"]):
         return [
