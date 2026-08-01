@@ -3,20 +3,21 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from app.models import ToolResult, VerificationResult
-from app.presentation_monitor import (
-    inspect_slideshow_monitor,
-    place_slideshow_on_target_monitor,
-)
+from app.presentation_config import presentation_config
 from app.presentation_verifier import verify_presentation_tool_result
 from app.tools.presentation_controller import (
     end_configured_slideshow,
     get_presentation_status,
     go_to_presentation_slide,
     next_presentation_slide,
-    open_configured_presentation,
     previous_presentation_slide,
-    start_configured_slideshow,
 )
+from app.tools.presentation_desktop_actions import (
+    close_powerpoint_discarding_changes,
+    open_configured_presentation_on_content_display,
+    start_configured_slideshow_on_content_display,
+)
+from app.windows_window_placement import place_window_on_content_monitor
 
 PresentationToolName = Literal[
     "presentation_open_configured",
@@ -26,6 +27,7 @@ PresentationToolName = Literal[
     "presentation_go_to_slide",
     "presentation_get_status",
     "presentation_end_slideshow",
+    "presentation_close",
 ]
 
 PRESENTATION_TOOL_NAMES: set[str] = {
@@ -36,6 +38,7 @@ PRESENTATION_TOOL_NAMES: set[str] = {
     "presentation_go_to_slide",
     "presentation_get_status",
     "presentation_end_slideshow",
+    "presentation_close",
 }
 
 
@@ -71,13 +74,6 @@ def _validate_no_arguments(name: str, arguments: dict[str, Any]) -> ToolResult |
 
 
 def _go_to_last_slide(arguments: dict[str, Any]) -> ToolResult:
-    """Resolve the semantic `last` target from live PowerPoint state.
-
-    GPT Realtime should not guess the numeric page count. The Backend already owns
-    the authoritative presentation state, so it resolves the final page immediately
-    before execution and then delegates to the existing bounded go-to-slide action.
-    """
-
     status_before = get_presentation_status()
     total_slides = status_before.data.get("total_slides")
     if isinstance(total_slides, bool) or not isinstance(total_slides, int) or total_slides < 1:
@@ -113,48 +109,88 @@ def _go_to_last_slide(arguments: dict[str, Any]) -> ToolResult:
     )
 
 
-def _merge_monitor_verification(
+def _ensure_content_display(
     name: str,
-    verification: VerificationResult,
-    monitor_state: dict[str, Any],
-    *,
-    slideshow_active: bool,
-) -> VerificationResult:
-    # Monitor placement is a postcondition only for actions that create or mutate
-    # an active slide show. A read-only status query must still answer the user's
-    # question even when the window-monitor probe is temporarily unavailable.
-    monitor_required = slideshow_active and name in {
+    tool_result: ToolResult,
+    status: ToolResult,
+) -> dict[str, Any] | None:
+    if name in {"presentation_close", "presentation_end_slideshow", "presentation_get_status"}:
+        return None
+
+    existing = tool_result.data.get("window_placement")
+    if isinstance(existing, dict) and existing.get("placement_verified"):
+        return existing
+
+    slideshow = name in {
         "presentation_start_slideshow",
         "presentation_next_slide",
         "presentation_previous_slide",
         "presentation_go_to_slide",
     }
-    if not monitor_required:
+    title_keywords = (
+        (
+            "PowerPoint Slide Show",
+            "PowerPoint 幻灯片放映",
+            "幻灯片放映",
+            presentation_config.presentation_path.name,
+        )
+        if slideshow
+        else (presentation_config.presentation_path.name, "PowerPoint")
+    )
+    pid = status.data.get("powerpoint_process_id")
+    pids = [pid] if isinstance(pid, int) and pid > 0 else []
+    return place_window_on_content_monitor(
+        process_names=["POWERPNT.EXE"],
+        pids=pids,
+        title_keywords=title_keywords,
+        timeout_seconds=4.0,
+    )
+
+
+def _merge_desktop_verification(
+    name: str,
+    verification: VerificationResult,
+    placement: dict[str, Any] | None,
+) -> VerificationResult:
+    placement_required = name in {
+        "presentation_open_configured",
+        "presentation_start_slideshow",
+        "presentation_next_slide",
+        "presentation_previous_slide",
+        "presentation_go_to_slide",
+    }
+    if not placement_required:
         return verification.model_copy(
-            update={"raw": {**verification.raw, "monitor_state": monitor_state}}
+            update={
+                "raw": {
+                    **verification.raw,
+                    "content_display_placement_required": False,
+                }
+            }
         )
 
-    monitor_ok = bool(monitor_state.get("monitor_placement_enforced"))
+    placement_ok = bool(placement and placement.get("placement_verified"))
+    target_device = (placement or {}).get("target_monitor", {}).get("device")
+    observed_device = (placement or {}).get("observed_monitor_device")
     message = verification.message
-    if verification.ok and monitor_ok:
-        message = (
-            f"{message} Slide show verified on "
-            f"{monitor_state.get('slideshow_monitor_device')}."
-        )
+    if verification.ok and placement_ok:
+        message = f"{message} Window verified maximized on {observed_device}."
     elif verification.ok:
         message = (
-            f"{message} Slide show was not verified on the configured monitor "
-            f"{monitor_state.get('target_monitor_device')}."
+            f"{message} The visible maximized PowerPoint window was not verified "
+            f"on content display {target_device}."
         )
     return verification.model_copy(
         update={
-            "ok": verification.ok and monitor_ok,
+            "ok": bool(verification.ok and placement_ok),
             "message": message,
+            "window_ok": placement_ok,
+            "require_window_match": True,
             "raw": {
                 **verification.raw,
-                "monitor_required": True,
-                "monitor_ok": monitor_ok,
-                "monitor_state": monitor_state,
+                "content_display_placement_required": True,
+                "content_display_placement_ok": placement_ok,
+                "content_display_placement": placement,
             },
         }
     )
@@ -164,13 +200,6 @@ def execute_presentation_tool_call(
     name: str,
     arguments: dict[str, Any] | None = None,
 ) -> tuple[ToolResult, VerificationResult, ToolResult]:
-    """Execute one GPT Realtime-selected bounded presentation capability.
-
-    The controller itself owns COM creation and reconnection. Avoiding a separate
-    desktop bootstrap keeps compound open/start requests on the same fast Dispatch
-    path and prevents a second empty PowerPoint window from being launched.
-    """
-
     clean_arguments = dict(arguments or {})
     if name not in PRESENTATION_TOOL_NAMES:
         tool_result = _invalid_tool_result(
@@ -228,73 +257,58 @@ def execute_presentation_tool_call(
         if invalid is not None:
             tool_result = invalid
         elif name == "presentation_open_configured":
-            tool_result = open_configured_presentation()
+            tool_result = open_configured_presentation_on_content_display()
         elif name == "presentation_start_slideshow":
-            tool_result = start_configured_slideshow()
+            tool_result = start_configured_slideshow_on_content_display()
         elif name == "presentation_next_slide":
             tool_result = next_presentation_slide()
         elif name == "presentation_previous_slide":
             tool_result = previous_presentation_slide()
         elif name == "presentation_get_status":
             tool_result = get_presentation_status()
-        else:
+        elif name == "presentation_end_slideshow":
             tool_result = end_configured_slideshow()
+        else:
+            tool_result = close_powerpoint_discarding_changes()
 
-    placement: dict[str, Any] | None = None
-    if name == "presentation_start_slideshow" and tool_result.ok:
-        placement = place_slideshow_on_target_monitor()
+    verification = verify_presentation_tool_result(tool_result)
+    status = get_presentation_status()
+    placement = _ensure_content_display(name, tool_result, status)
+    if placement is not None:
         tool_result = tool_result.model_copy(
             update={
                 "data": {
                     **tool_result.data,
-                    "requested_state": {
-                        **dict(tool_result.data.get("requested_state") or {}),
-                        "target_monitor_device": placement.get("target_monitor_device"),
-                    },
+                    "window_placement": placement,
+                    "window_placement_verified": bool(
+                        placement.get("placement_verified")
+                    ),
+                    "content_monitor_device": (
+                        placement.get("target_monitor") or {}
+                    ).get("device"),
                 },
-                "raw": {**tool_result.raw, "monitor_placement": placement},
-            }
-        )
-
-    # Verify the PowerPoint COM state first. The slide-show window is created
-    # asynchronously, so the initial placement result must remain diagnostic only.
-    verification = verify_presentation_tool_result(tool_result)
-    status = get_presentation_status()
-
-    # Always inspect the final monitor state afresh. The previous implementation
-    # used `placement or inspect_slideshow_monitor()`, which reused a non-empty but
-    # stale failure dictionary even after the real slide-show window had appeared.
-    monitor_state = inspect_slideshow_monitor()
-
-    # A slow Office build may expose slideshow_active before its top-level HWND.
-    # Give placement one final bounded retry after COM verification has observed the
-    # active show, then inspect once more rather than trusting either attempt object.
-    if (
-        name == "presentation_start_slideshow"
-        and tool_result.ok
-        and bool(status.data.get("slideshow_active"))
-        and not bool(monitor_state.get("monitor_placement_enforced"))
-    ):
-        retry_placement = place_slideshow_on_target_monitor(
-            window_timeout_seconds=2.5,
-            verification_timeout_seconds=2.5,
-        )
-        tool_result = tool_result.model_copy(
-            update={
                 "raw": {
                     **tool_result.raw,
-                    "monitor_placement_retry": retry_placement,
+                    "content_display_placement": placement,
+                },
+            }
+        )
+        status = status.model_copy(
+            update={
+                "data": {
+                    **status.data,
+                    "content_monitor_device": (
+                        placement.get("target_monitor") or {}
+                    ).get("device"),
+                    "powerpoint_window_monitor_device": placement.get(
+                        "observed_monitor_device"
+                    ),
+                    "monitor_placement_enforced": bool(
+                        placement.get("placement_verified")
+                    ),
+                    "window_maximized": placement.get("window_maximized"),
                 }
             }
         )
-        monitor_state = inspect_slideshow_monitor()
-
-    merged_status = {**status.data, **monitor_state}
-    status = status.model_copy(update={"data": merged_status})
-    verification = _merge_monitor_verification(
-        name,
-        verification,
-        monitor_state,
-        slideshow_active=bool(merged_status.get("slideshow_active")),
-    )
+    verification = _merge_desktop_verification(name, verification, placement)
     return tool_result, verification, status
