@@ -42,4 +42,9 @@ def install_desktop_integration_wrappers() -> None:
             desktop_integrated_office_worker_loop,
         )
 
+        original_timeout = office_worker_process._timeout_seconds
+        office_worker_process._timeout_seconds = lambda: max(
+            35.0,
+            original_timeout(),
+        )
         office_worker_process._worker_loop = desktop_integrated_office_worker_loop
