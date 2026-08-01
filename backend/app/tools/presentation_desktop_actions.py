@@ -55,7 +55,6 @@ def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
             "PowerPoint Slide Show",
             "PowerPoint 幻灯片放映",
             "幻灯片放映",
-            presentation_config.presentation_path.name,
         )
         if slideshow
         else (
@@ -70,13 +69,14 @@ def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
         timeout_seconds=10.0 if slideshow else 8.0,
     )
     placement_ok = bool(placement.get("placement_verified"))
+    verified = bool(result.ok and placement_ok)
     requested_state = dict(result.data.get("requested_state") or {})
     requested_state["content_monitor_device"] = (
         placement.get("target_monitor") or {}
     ).get("device")
     return result.model_copy(
         update={
-            "ok": bool(result.ok and placement_ok),
+            "ok": verified,
             "message": (
                 "PowerPoint slide show opened, moved to the content display, maximized, and verified."
                 if slideshow and placement_ok
@@ -95,6 +95,7 @@ def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
                 "content_monitor_device": (
                     placement.get("target_monitor") or {}
                 ).get("device"),
+                "verified": verified,
             },
             "raw": {
                 **result.raw,
