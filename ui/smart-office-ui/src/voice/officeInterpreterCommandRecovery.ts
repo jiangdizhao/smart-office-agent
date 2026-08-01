@@ -28,20 +28,24 @@ export function installOfficeInterpreterCommandRecovery(): void {
     }
 
     if (
-      recovered.target === 'powerpoint' &&
-      recovered.action === 'close'
+      recovered.target === 'powerpoint'
+      && (recovered.action === 'open' || recovered.action === 'close')
     ) {
+      const actionName = recovered.action === 'open'
+        ? 'presentation_open_configured'
+        : 'presentation_close'
       console.info('[OfficePlan]', {
-        source: 'deterministic_recovered_powerpoint_close',
+        source: 'deterministic_recovered_powerpoint_command',
         rawTranscript: recovered.raw,
         normalizedTranscript: recovered.normalized,
+        actionName,
       })
       return {
         kind: 'tool_call',
         toolCall: {
           name: 'office_plan',
           arguments: {
-            steps: [{ name: 'presentation_close' }],
+            steps: [{ name: actionName }],
           },
           call_id: null,
           source: 'gpt_realtime',
