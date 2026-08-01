@@ -15,11 +15,11 @@ from app.windows_window_placement import place_window_on_content_monitor
 
 _APPLICATION_SPECS: dict[str, dict[str, tuple[str, ...]]] = {
     "teams": {
-        "process_names": ("ms-teams.exe", "teams.exe", "ApplicationFrameHost.exe"),
+        "process_names": ("ms-teams.exe", "teams.exe"),
         "title_keywords": ("Microsoft Teams", "Teams"),
     },
     "onenote": {
-        "process_names": ("onenote.exe", "ApplicationFrameHost.exe"),
+        "process_names": ("onenote.exe",),
         "title_keywords": ("OneNote",),
     },
 }
@@ -30,7 +30,6 @@ _MEDIA_PROCESS_NAMES = (
     "Music.UI.exe",
     "wmplayer.exe",
     "vlc.exe",
-    "ApplicationFrameHost.exe",
 )
 
 
@@ -142,11 +141,10 @@ def open_managed_application_on_content_display(application: str) -> ToolResult:
         title_keywords=spec["title_keywords"],
         timeout_seconds=6.0,
     )
-    reactivation: dict[str, Any] | None = None
     if not placement.get("placement_verified"):
-        # Teams and OneNote often keep a tray/background process while their main
-        # window is closed. Reissuing the registered URI requests a real foreground
-        # window, after which placement is retried.
+        # Teams and OneNote may retain a background process after their visible main
+        # window is closed. Reissue the registered URI, then locate by exact title
+        # rather than matching a generic UWP host process.
         reactivation = _reactivate_application(application)
         placement = place_window_on_content_monitor(
             process_names=spec["process_names"],
