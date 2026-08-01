@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 _installed = False
 
 
@@ -31,3 +33,13 @@ def install_desktop_integration_wrappers() -> None:
         "presentation_close",
         "Close PowerPoint without saving changes",
     )
+
+    # The parent broker must spawn a worker that installs the same wrappers. Do not
+    # replace the loop from inside the spawned child, where doing so would recurse.
+    if os.getenv("SMART_OFFICE_WORKER_CHILD") != "1":
+        from app import office_worker_process
+        from app.desktop_worker_bootstrap import (
+            desktop_integrated_office_worker_loop,
+        )
+
+        office_worker_process._worker_loop = desktop_integrated_office_worker_loop
