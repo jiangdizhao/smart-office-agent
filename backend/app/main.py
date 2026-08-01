@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 from app.contact_record_api import router as contact_record_router
+from app.desktop_command_api import router as desktop_command_router
 from app.display_role_api import router as display_role_router, start_display_role_service
 from app.enhanced_turn_api import router as enhanced_turn_router
 from app.event_bus import event_bus
@@ -58,6 +59,7 @@ app.include_router(enhanced_turn_router)
 app.include_router(turn_router)
 app.include_router(presentation_router)
 app.include_router(office_router)
+app.include_router(desktop_command_router)
 app.include_router(recipient_router)
 app.include_router(general_chat_router)
 app.include_router(human_recording_router)
@@ -95,6 +97,7 @@ def health_check():
             "unified_office_plan": True,
             "agent_turn_api": True,
             "unified_turn_router": True,
+            "exact_desktop_command_api": True,
             "reception_knowledge": True,
             "general_backend_chat": True,
             "general_chat_not_limited_to_company_topics": True,
