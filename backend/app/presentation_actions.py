@@ -153,12 +153,7 @@ def _merge_monitor_verification(
     *,
     slideshow_active: bool,
 ) -> VerificationResult:
-    """Compatibility helper retained for historical presentation contracts.
-
-    The current runtime uses the unified content-display placement verifier below.
-    Older Gate 2A tests import this helper directly to assert that a read-only status
-    query is not failed merely because monitor inspection is unavailable.
-    """
+    """Compatibility helper retained for historical presentation contracts."""
 
     monitor_required = slideshow_active and name in {
         "presentation_start_slideshow",
@@ -322,24 +317,42 @@ def execute_presentation_tool_call(
         else:
             tool_result = close_powerpoint_discarding_changes()
 
-    verification = verify_presentation_tool_result(tool_result)
     status = get_presentation_status()
     placement = _ensure_content_display(name, tool_result, status)
     if placement is not None:
         target_monitor = placement.get("target_monitor") or {}
+        placement_ok = bool(placement.get("placement_verified"))
+        launch_verified = bool(tool_result.data.get("launch_verified", tool_result.ok))
+        recovered_ok = bool(launch_verified and placement_ok)
         tool_result = tool_result.model_copy(
             update={
+                "ok": recovered_ok,
+                "message": (
+                    tool_result.message
+                    if not recovered_ok
+                    else (
+                        "PowerPoint window was verified maximized on the content display."
+                    )
+                ),
                 "data": {
                     **tool_result.data,
+                    "launch_verified": launch_verified,
                     "window_placement": placement,
-                    "window_placement_verified": bool(
-                        placement.get("placement_verified")
-                    ),
+                    "window_placement_verified": placement_ok,
                     "content_monitor_device": target_monitor.get("device"),
+                    "verified": recovered_ok,
                 },
                 "raw": {
                     **tool_result.raw,
                     "content_display_placement": placement,
+                    "placement_retry_recovered": bool(
+                        recovered_ok
+                        and not bool(
+                            (tool_result.data.get("window_placement") or {}).get(
+                                "placement_verified"
+                            )
+                        )
+                    ),
                 },
             }
         )
@@ -347,16 +360,25 @@ def execute_presentation_tool_call(
             update={
                 "data": {
                     **status.data,
+                    "target_monitor_device": target_monitor.get("device"),
                     "content_monitor_device": target_monitor.get("device"),
                     "powerpoint_window_monitor_device": placement.get(
                         "observed_monitor_device"
                     ),
-                    "monitor_placement_enforced": bool(
-                        placement.get("placement_verified")
+                    "slideshow_monitor_device": (
+                        placement.get("observed_monitor_device")
+                        if bool(status.data.get("slideshow_active"))
+                        else status.data.get("slideshow_monitor_device")
                     ),
+                    "monitor_placement_enforced": placement_ok,
                     "window_maximized": placement.get("window_maximized"),
                 }
             }
         )
+
+    # Verify only after the bounded placement retry has had an opportunity to recover
+    # a transient HWND race. This prevents an early placement miss from permanently
+    # converting a successful PowerPoint launch into a failed tool result.
+    verification = verify_presentation_tool_result(tool_result)
     verification = _merge_desktop_verification(name, verification, placement)
     return tool_result, verification, status
