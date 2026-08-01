@@ -30,8 +30,20 @@ type DesktopToolResult = {
   data?: Record<string, unknown>
 }
 
-type AgentRunResponse = {
-  results?: DesktopToolResult[]
+type DesktopAction =
+  | 'open_powerpoint'
+  | 'close_powerpoint'
+  | 'open_teams'
+  | 'close_teams'
+  | 'open_onenote'
+  | 'close_onenote'
+  | 'play_music'
+  | 'stop_music'
+
+type DesktopCommandResponse = {
+  action?: DesktopAction
+  tool_name?: string
+  result?: DesktopToolResult
 }
 
 function errorText(error: unknown): string {
@@ -142,25 +154,45 @@ async function recoverTurnState(
   return false
 }
 
+function desktopActionFor(
+  target: 'teams' | 'onenote' | 'powerpoint' | 'music',
+  action: Exclude<CommandAction, null>,
+): DesktopAction {
+  if (target === 'teams') return action === 'open' ? 'open_teams' : 'close_teams'
+  if (target === 'onenote') return action === 'open' ? 'open_onenote' : 'close_onenote'
+  if (target === 'powerpoint') {
+    return action === 'open' ? 'open_powerpoint' : 'close_powerpoint'
+  }
+  return action === 'play' ? 'play_music' : 'stop_music'
+}
+
 async function executeDeterministicDesktopCommand(
-  transcript: string,
+  target: 'teams' | 'onenote' | 'powerpoint' | 'music',
+  action: Exclude<CommandAction, null>,
   signal: AbortSignal,
 ): Promise<DesktopToolResult> {
-  const response = await fetch(`${OFFICE_API_BASE}/agent/run`, {
+  const exactAction = desktopActionFor(target, action)
+  const response = await fetch(`${OFFICE_API_BASE}/api/desktop-command`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ text: transcript, execute: true }),
+    body: JSON.stringify({ action: exactAction }),
     signal,
   })
   if (!response.ok) {
     throw new Error(`Desktop command failed: ${response.status} ${await response.text()}`)
   }
-  const payload = (await response.json()) as AgentRunResponse
-  const result = payload.results?.[0]
-  if (!result) {
-    throw new Error(`No deterministic desktop tool was selected for: ${transcript}`)
+  const payload = (await response.json()) as DesktopCommandResponse
+  if (!payload.result) {
+    throw new Error(`The Backend returned no result for exact action: ${exactAction}`)
   }
-  return result
+  console.info('[RealtimeDiagnostics] exact-desktop-command-result', {
+    target,
+    action,
+    exactAction,
+    toolName: payload.tool_name,
+    ok: payload.result.ok,
+  })
+  return payload.result
 }
 
 function deterministicReply(
@@ -259,14 +291,19 @@ export async function captureAutomaticRealtimeTurn(
       return { kind: 'heard', transcript }
     }
 
-    // Exhibition-critical commands bypass GPT and the generic Office router.
-    // This prevents “打开 PowerPoint” from falling through to the old dashboard
-    // planner and makes “关闭音乐” execute even though music is not an Office tool.
+    // These commands use an exact action enum and never touch the natural-language
+    // planner. Therefore "关闭 PPT" cannot fall through to the legacy dashboard
+    // action, even when the rest of the conversation router is unhealthy.
     if (isDeterministicDesktopCommand(recovered.target, recovered.action)) {
-      const result = await executeDeterministicDesktopCommand(transcript, signal)
+      const action = recovered.action as Exclude<CommandAction, null>
+      const result = await executeDeterministicDesktopCommand(
+        recovered.target,
+        action,
+        signal,
+      )
       const reply = deterministicReply(
         recovered.target,
-        recovered.action as Exclude<CommandAction, null>,
+        action,
         result,
         recovered.language,
       )
