@@ -8,6 +8,16 @@ from pathlib import Path
 from app.models import ToolResult, VerificationResult
 
 
+_MANAGED_SCOPED_TOOLS = {
+    "system_open_teams",
+    "system_close_teams",
+    "system_open_onenote",
+    "system_close_onenote",
+    "system_music_play_random",
+    "system_music_stop",
+}
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -113,6 +123,72 @@ def _find_matching_windows(expected_window_keywords: list[str]) -> list[str]:
     return matches
 
 
+def _verify_managed_scoped_result(tool_result: ToolResult) -> VerificationResult:
+    verified = tool_result.data.get("verified") is True
+    action = str(tool_result.data.get("action") or "")
+    application = str(tool_result.data.get("application") or "")
+    selected_track = str(
+        tool_result.data.get("selected_track_name")
+        or tool_result.data.get("selected_track")
+        or ""
+    )
+    subject = application or selected_track or tool_result.tool_name
+    message = (
+        f"Verified managed {action or 'system'} state for {subject}."
+        if verified
+        else f"Managed {action or 'system'} state for {subject} was not verified."
+    )
+    found_processes = [
+        str(name)
+        for name in dict(tool_result.data.get("processes") or {}).values()
+    ]
+    found_windows = [
+        str(item.get("title") or "")
+        for item in list(tool_result.data.get("windows") or [])
+        if isinstance(item, dict) and item.get("title")
+    ]
+    if not found_processes:
+        found_processes = [
+            str(name)
+            for name in dict(tool_result.data.get("detected_processes") or {}).values()
+        ]
+    if not found_windows:
+        found_windows = [
+            str(item.get("title") or "")
+            for item in list(tool_result.data.get("detected_windows") or [])
+            if isinstance(item, dict) and item.get("title")
+        ]
+    return VerificationResult(
+        ok=verified,
+        message=message,
+        process_ok=verified if action == "open" else None,
+        window_ok=None,
+        expected_process_names=tool_result.expected_process_names,
+        found_process_names=found_processes,
+        expected_window_keywords=tool_result.expected_window_keywords,
+        found_window_titles=found_windows,
+        require_window_match=False,
+        checked_at=_utc_now(),
+        raw={
+            "verification_type": "managed_scoped_state",
+            "tool_name": tool_result.tool_name,
+            "status_scope": tool_result.data.get("status_scope"),
+            "action": action,
+            "application": application or None,
+            "selected_track": selected_track or None,
+            "already_running": tool_result.data.get("already_running"),
+            "already_stopped": tool_result.data.get("already_stopped"),
+            "force_close_used": tool_result.data.get("force_close_used"),
+            "remaining_processes": tool_result.data.get("remaining_processes"),
+            "remaining_windows": tool_result.data.get("remaining_windows"),
+            "unrelated_status_queries_skipped": tool_result.data.get(
+                "unrelated_status_queries_skipped",
+                ["powerpoint", "brightness", "outlook", "artifacts"],
+            ),
+        },
+    )
+
+
 def verify_tool_result(
     tool_result: ToolResult,
     *,
@@ -141,6 +217,9 @@ def verify_tool_result(
             checked_at=_utc_now(),
             raw={"tool_ok": tool_result.ok},
         )
+
+    if tool_result.tool_name in _MANAGED_SCOPED_TOOLS:
+        return _verify_managed_scoped_result(tool_result)
 
     expected_process_names = tool_result.expected_process_names
     if not expected_process_names:
