@@ -3,11 +3,11 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any
 
 from app.models import ToolResult
-from app.tools.managed_application_controller import (
-    close_managed_application,
-    open_managed_application,
-    play_random_music,
-    stop_music,
+from app.tools.managed_desktop_actions import (
+    close_managed_application_from_desktop,
+    open_managed_application_on_content_display,
+    play_random_music_on_content_display,
+    stop_music_from_desktop,
 )
 from app.tools.presentation_controller import (
     close_configured_presentation,
@@ -31,7 +31,7 @@ from app.tools.windows_controller import (
 
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
-MANAGED_APPLICATION_TIMEOUT_SECONDS = 16.0
+MANAGED_APPLICATION_TIMEOUT_SECONDS = 32.0
 
 
 def _normalize_tool_result(
@@ -84,12 +84,12 @@ def run_tool(
         ),
         "presentation_end_slideshow": lambda: end_configured_slideshow(),
         "presentation_close": lambda: close_configured_presentation(),
-        "system_open_teams": lambda: open_managed_application("teams"),
-        "system_close_teams": lambda: close_managed_application("teams"),
-        "system_open_onenote": lambda: open_managed_application("onenote"),
-        "system_close_onenote": lambda: close_managed_application("onenote"),
-        "system_music_play_random": lambda: play_random_music(),
-        "system_music_stop": lambda: stop_music(),
+        "system_open_teams": lambda: open_managed_application_on_content_display("teams"),
+        "system_close_teams": lambda: close_managed_application_from_desktop("teams"),
+        "system_open_onenote": lambda: open_managed_application_on_content_display("onenote"),
+        "system_close_onenote": lambda: close_managed_application_from_desktop("onenote"),
+        "system_music_play_random": lambda: play_random_music_on_content_display(),
+        "system_music_stop": lambda: stop_music_from_desktop(),
     }
 
     if tool_name not in registry:
