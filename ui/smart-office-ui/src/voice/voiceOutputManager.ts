@@ -16,6 +16,8 @@ export type VoiceSpeakOptions = {
 
 const STORAGE_KEY = 'smartoffice_voice_output_provider'
 const LOCAL_SPEECH_TIMEOUT_MS = 30_000
+const MAX_CHINESE_CHUNK_CHARS = 82
+const MAX_ENGLISH_CHUNK_CHARS = 250
 
 function storedProvider(): VoiceOutputProvider {
   return localStorage.getItem(STORAGE_KEY) === 'none' ? 'none' : 'realtime'
@@ -33,6 +35,57 @@ function abortError(message: string): Error {
   const error = new Error(message)
   error.name = 'AbortError'
   return error
+}
+
+function hardSplit(text: string, maxChars: number): string[] {
+  const result: string[] = []
+  let remaining = text.trim()
+  while (remaining.length > maxChars) {
+    const search = remaining.slice(0, maxChars + 1)
+    const candidates = [
+      search.lastIndexOf('，'), search.lastIndexOf(','), search.lastIndexOf('；'),
+      search.lastIndexOf(';'), search.lastIndexOf('：'), search.lastIndexOf(':'),
+      search.lastIndexOf(' '),
+    ]
+    const splitAt = Math.max(...candidates)
+    const index = splitAt >= Math.floor(maxChars * 0.45) ? splitAt + 1 : maxChars
+    result.push(remaining.slice(0, index).trim())
+    remaining = remaining.slice(index).trim()
+  }
+  if (remaining) result.push(remaining)
+  return result
+}
+
+function speechChunks(text: string, language: VoiceLanguage): string[] {
+  const clean = text.replace(/\s+/g, ' ').trim()
+  if (!clean) return []
+  const maxChars = language === 'zh' ? MAX_CHINESE_CHUNK_CHARS : MAX_ENGLISH_CHUNK_CHARS
+  if (clean.length <= maxChars) return [clean]
+
+  const sentenceParts = clean.match(/[^。！？!?\n]+[。！？!?]?/g) ?? [clean]
+  const chunks: string[] = []
+  let current = ''
+  const flush = () => {
+    if (!current.trim()) return
+    chunks.push(...hardSplit(current.trim(), maxChars))
+    current = ''
+  }
+  for (const part of sentenceParts) {
+    const sentence = part.trim()
+    if (!sentence) continue
+    if (!current) {
+      current = sentence
+      continue
+    }
+    if (`${current} ${sentence}`.length <= maxChars) {
+      current = `${current} ${sentence}`
+    } else {
+      flush()
+      current = sentence
+    }
+  }
+  flush()
+  return chunks.length ? chunks : hardSplit(clean, maxChars)
 }
 
 export class VoiceOutputManager {
@@ -68,29 +121,36 @@ export class VoiceOutputManager {
     }
 
     const generation = ++this.speechGeneration
-    // New speech owns the speaker immediately. Cancel both browser and Realtime
-    // output from any earlier Visit before starting this generation.
     await this.stopInternal(true)
-    if (options.fixedLocal) {
-      await this.speakLocal(clean, language, generation, signal)
-      return
-    }
+    const chunks = speechChunks(clean, detectedSpeechLanguage(clean, language))
+    console.info('[RealtimeDiagnostics] speech-chunk-plan', {
+      generation,
+      totalCharacters: clean.length,
+      chunkCount: chunks.length,
+      chunkLengths: chunks.map((chunk) => chunk.length),
+    })
 
-    try {
-      await realtimeAgent.speakExact(
-        clean,
-        detectedSpeechLanguage(clean, language),
-        signal,
-      )
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index]
       this.assertSpeechCurrent(generation, lease, signal)
-    } catch (error) {
-      const audioStarted = error instanceof RealtimeSpeechError && error.audioStarted
-      const aborted = error instanceof Error && error.name === 'AbortError'
-      if (aborted || signal?.aborted || generation !== this.speechGeneration) throw error
-      // Once Realtime audio has started, a second TTS is forbidden even when
-      // the final response event reports an error.
-      if (audioStarted || options.allowLocalFallback === false) throw error
-      await this.speakLocal(clean, language, generation, signal)
+      const chunkLanguage = detectedSpeechLanguage(chunk, language)
+      window.dispatchEvent(new CustomEvent('smartoffice:voice-chunk-start', {
+        detail: { index, count: chunks.length, text: chunk },
+      }))
+      if (options.fixedLocal) {
+        await this.speakLocal(chunk, chunkLanguage, generation, signal)
+        continue
+      }
+      try {
+        await realtimeAgent.speakExact(chunk, chunkLanguage, signal)
+        this.assertSpeechCurrent(generation, lease, signal)
+      } catch (error) {
+        const audioStarted = error instanceof RealtimeSpeechError && error.audioStarted
+        const aborted = error instanceof Error && error.name === 'AbortError'
+        if (aborted || signal?.aborted || generation !== this.speechGeneration) throw error
+        if (audioStarted || options.allowLocalFallback === false) throw error
+        await this.speakLocal(chunk, chunkLanguage, generation, signal)
+      }
     }
   }
 
@@ -170,9 +230,7 @@ export class VoiceOutputManager {
         }
       }
       utterance.onend = () => finish()
-      utterance.onerror = (event) => {
-        finish(new Error(`Local speech failed: ${event.error}`))
-      }
+      utterance.onerror = (event) => finish(new Error(`Local speech failed: ${event.error}`))
       signal?.addEventListener('abort', onAbort, { once: true })
       window.speechSynthesis.cancel()
       window.speechSynthesis.speak(utterance)
