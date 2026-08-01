@@ -127,6 +127,11 @@ def health_check():
             "compound_task_cancellation": True,
             "system_volume_control": True,
             "system_brightness_control": True,
+            "managed_teams_control": True,
+            "managed_onenote_control": True,
+            "random_local_music_playback": True,
+            "managed_media_player_close": True,
+            "scoped_managed_application_verification": True,
             "brightness_control_mode": "deferred_explicit_only",
             "incidental_brightness_probe": False,
             "presentation_summary_artifacts": True,
@@ -258,30 +263,3 @@ def cancel_agent_task(task_id: str):
         "cancelled",
         message="Task cancellation requested.",
     )
-    state_store.set_status(
-        task_id,
-        "cancelled",
-        summary="Task cancellation requested.",
-    )
-    event_bus.publish(
-        task_id=task_id,
-        event_type="cancelled",
-        message="Task cancellation requested.",
-        data={"owner_visit_id": task.owner_visit_id},
-    )
-    return state_store.get_task(task_id) or task
-
-
-@app.get("/agent/tasks/{task_id}/events")
-async def stream_agent_task_events(
-    task_id: str,
-    after: str | None = Query(default=None),
-):
-    if state_store.get_task(task_id) is None:
-        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-
-    async def event_generator():
-        async for event in event_bus.subscribe(task_id, after_event_id=after):
-            yield _sse_payload(event)
-
-    return EventSourceResponse(event_generator())
