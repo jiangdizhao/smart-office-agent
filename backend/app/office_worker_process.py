@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import atexit
+import json
+import logging
 import multiprocessing
 import os
 import queue
@@ -11,6 +13,8 @@ from typing import Any
 from uuid import uuid4
 
 from app.models import ToolResult, VerificationResult
+
+logger = logging.getLogger(__name__)
 
 _SPAWN_ENV_LOCK = threading.Lock()
 _WORKER_CHILD_ENV = "SMART_OFFICE_WORKER_CHILD"
@@ -110,6 +114,49 @@ def _failure(
         data={"worker_process": True, "timed_out": timed_out},
     )
     return result, verification, status
+
+
+def _log_execution(
+    tool_name: str,
+    args: dict[str, Any],
+    outcome: tuple[ToolResult, VerificationResult, ToolResult],
+    *,
+    execution_path: str,
+    elapsed_ms: int,
+) -> None:
+    result, verification, status = outcome
+    logger.info(
+        "OFFICE EXECUTION\n%s",
+        json.dumps(
+            {
+                "event": "office_execution",
+                "tool": tool_name,
+                "arguments": args,
+                "execution_path": execution_path,
+                "elapsed_ms": elapsed_ms,
+                "tool_result": {
+                    "ok": result.ok,
+                    "message": result.message,
+                    "requested_state": result.data.get("requested_state"),
+                },
+                "verification": {
+                    "ok": verification.ok,
+                    "message": verification.message,
+                },
+                "status_scope": status.data.get("status_scope", "full_office"),
+                "observed": {
+                    "volume_percent": status.data.get("volume_percent"),
+                    "brightness_percent": status.data.get("brightness_percent"),
+                    "presentation_open": status.data.get("presentation_open"),
+                    "slideshow_active": status.data.get("slideshow_active"),
+                    "current_slide": status.data.get("current_slide"),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+    )
 
 
 def _start_marked_worker(process: multiprocessing.Process) -> None:
@@ -301,7 +348,26 @@ def execute_office_tool_isolated(
     args: dict[str, Any],
     timeout_seconds: float | None = None,
 ) -> tuple[ToolResult, VerificationResult, ToolResult]:
-    return _office_worker_broker.execute(tool_name, args, timeout_seconds)
+    started = time.monotonic()
+    from app.scoped_system_actions import (
+        execute_scoped_volume_action,
+        is_scoped_volume_tool,
+    )
+
+    if is_scoped_volume_tool(tool_name):
+        outcome = execute_scoped_volume_action(tool_name, dict(args))
+        execution_path = "scoped_windows_core_audio"
+    else:
+        outcome = _office_worker_broker.execute(tool_name, args, timeout_seconds)
+        execution_path = "isolated_office_worker"
+    _log_execution(
+        tool_name,
+        dict(args),
+        outcome,
+        execution_path=execution_path,
+        elapsed_ms=round((time.monotonic() - started) * 1000),
+    )
+    return outcome
 
 
 def inspect_office_status_isolated(timeout_seconds: float | None = None) -> ToolResult:
