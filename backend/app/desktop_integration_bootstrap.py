@@ -11,6 +11,11 @@ def install_desktop_integration_wrappers() -> None:
         return
     _installed = True
 
+    # The exhibition machine uses Windows display order 3 / 1 / 2 from left to
+    # right. DISPLAY2 is therefore the required rightmost content display. Keep an
+    # explicit operator override, but use DISPLAY2 when no value was supplied.
+    os.environ.setdefault("SMART_OFFICE_CONTENT_MONITOR_DEVICE", r"\\.\DISPLAY2")
+
     # office_actions imports the draft function directly, so patch both the source
     # module and the already imported consumer. The wrapper retains a private alias
     # to the original implementation and therefore does not recurse.
@@ -26,16 +31,11 @@ def install_desktop_integration_wrappers() -> None:
         create_outlook_summary_draft_on_content_display
     )
 
-    # presentation_close is a bounded action in presentation_actions. Register its
-    # human-readable title in the existing Office task builder so deterministic
-    # and recovered voice commands can use the same Visit-owned task pipeline.
     office_sequence._ACTION_TITLES.setdefault(
         "presentation_close",
         "Close PowerPoint without saving changes",
     )
 
-    # The parent broker must spawn a worker that installs the same wrappers. Do not
-    # replace the loop from inside the spawned child, where doing so would recurse.
     if os.getenv("SMART_OFFICE_WORKER_CHILD") != "1":
         from app import office_worker_process
         from app.desktop_worker_bootstrap import (
