@@ -2,6 +2,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Any
 
+from app.desktop_integration_bootstrap import install_desktop_integration_wrappers
 from app.models import ToolResult
 from app.tools.managed_desktop_actions import (
     close_managed_application_from_desktop,
@@ -31,6 +32,7 @@ from app.tools.windows_controller import (
     open_sample_document,
 )
 
+install_desktop_integration_wrappers()
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
 MANAGED_APPLICATION_TIMEOUT_SECONDS = 32.0
