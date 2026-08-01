@@ -71,6 +71,11 @@ function installProximityTerminalForwarding(): void {
 
 installProximityTerminalForwarding()
 
+// Exhibition mode is function-first: every visitor is treated as an operator for
+// PowerPoint, volume and other demonstration capabilities. Destructive actions
+// such as real email sending retain their separate confirmation workflow.
+localStorage.setItem('smartoffice_actor_type', 'operator')
+
 const appRoot = document.getElementById('root')
 if (!appRoot) throw new Error('Application root element was not found.')
 
