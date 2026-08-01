@@ -56,15 +56,8 @@ def plan_task(user_text: str) -> list[PlannedStep]:
     if music_mentioned and open_mentioned:
         return _single_step("随机选择并播放一首本地音乐", "system_music_play_random")
 
-    powerpoint_mentioned = any(
-        token in text
-        for token in ["powerpoint", "power point", "ppt", "演示文稿", "幻灯片"]
-    )
-    if powerpoint_mentioned and close_mentioned:
-        return _single_step("不保存修改并关闭 PowerPoint", "presentation_close")
-    if powerpoint_mentioned and open_mentioned:
-        return _single_step("打开配置的 PowerPoint 演示文稿", "presentation_open_configured")
-
+    # Preserve the established compound meeting workflow. A phrase such as
+    # "准备 Teams 会议并打开 PowerPoint" must not collapse into a one-step app open.
     if any(k in text for k in ["meeting", "会议", "zoom", "prepare", "准备"]):
         return [
             PlannedStep(
@@ -99,6 +92,15 @@ def plan_task(user_text: str) -> list[PlannedStep]:
                 requires_confirmation=True,
             ),
         ]
+
+    powerpoint_mentioned = any(
+        token in text
+        for token in ["powerpoint", "power point", "ppt", "演示文稿", "幻灯片"]
+    )
+    if powerpoint_mentioned and close_mentioned:
+        return _single_step("不保存修改并关闭 PowerPoint", "presentation_close")
+    if powerpoint_mentioned and open_mentioned:
+        return _single_step("打开配置的 PowerPoint 演示文稿", "presentation_open_configured")
 
     teams_mentioned = "teams" in text or "微软团队" in text
     if teams_mentioned and close_mentioned:
