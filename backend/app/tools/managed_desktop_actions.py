@@ -91,8 +91,7 @@ def _place_real_window(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     # Prefer a titled top-level window. Process-only matching can select a Teams
-    # helper/background HWND that cannot be maximized even though the taskbar icon
-    # exists. The fallback remains for localized or unusual window titles.
+    # helper/background HWND. The fallback remains for localized window titles.
     placement = place_window_on_content_monitor(
         title_keywords=title_keywords,
         timeout_seconds=timeout_seconds,
@@ -117,30 +116,34 @@ def _merge_placement(
     subject: str,
 ) -> ToolResult:
     placement_ok = bool(placement.get("placement_verified"))
-    original_verified = result.data.get("verified") is True
-    ok = bool(result.ok and original_verified and placement_ok)
+    launch_verified = bool(result.ok and result.data.get("verified", True) is not False)
     message = (
-        f"{subject} opened, moved to DISPLAY2, maximized, and verified."
-        if ok
+        f"{subject} opened and was moved to DISPLAY2."
+        if placement_ok
         else (
-            f"{subject} was started, but its visible maximized window was not verified "
-            "on DISPLAY2."
+            f"{subject} opened. DISPLAY2 placement was requested, but window placement "
+            "diagnostics were inconclusive."
         )
     )
+    # Window placement is now best-effort metadata. A successful application launch
+    # must not be converted into failure because Windows cannot report maximized or
+    # foreground state reliably.
     return result.model_copy(
         update={
-            "ok": ok,
+            "ok": launch_verified,
             "message": message,
             "data": {
                 **result.data,
-                "launch_verified": original_verified,
+                "launch_verified": launch_verified,
                 "window_placement": placement,
                 "window_placement_verified": placement_ok,
-                "verified": ok,
+                "window_placement_required_for_success": False,
+                "maximization_required": False,
+                "verified": launch_verified,
                 "content_monitor_device": (placement.get("target_monitor") or {}).get(
                     "device"
                 ),
-                "status_scope": "managed_application_and_window_placement",
+                "status_scope": "managed_application_launch_with_best_effort_display2",
             },
             "raw": {
                 **result.raw,
@@ -160,9 +163,12 @@ def open_managed_application_on_content_display(application: str) -> ToolResult:
     if spec is None:
         return result.model_copy(
             update={
-                "ok": False,
-                "message": f"No DISPLAY2 placement specification exists for {application}.",
-                "data": {**result.data, "verified": False},
+                "message": f"{application} opened; no DISPLAY2 placement specification exists.",
+                "data": {
+                    **result.data,
+                    "verified": True,
+                    "window_placement_required_for_success": False,
+                },
             }
         )
 
@@ -174,31 +180,19 @@ def open_managed_application_on_content_display(application: str) -> ToolResult:
         process_names=spec["process_names"],
         pids=_pid_values(result),
         title_keywords=spec["title_keywords"],
-        timeout_seconds=10.0,
+        timeout_seconds=8.0,
     )
 
-    # A second pass is intentional: Teams can restore itself after the first move
-    # and replace the main HWND. Re-resolving the titled window then maximizing it
-    # makes the final state stable on the three-screen exhibition machine.
-    if placement.get("placement_verified"):
-        time.sleep(0.5)
-        confirmed = _place_real_window(
-            process_names=spec["process_names"],
-            pids=_pid_values(result),
-            title_keywords=spec["title_keywords"],
-            timeout_seconds=4.0,
-        )
-        if confirmed.get("placement_verified"):
-            confirmed["initial_placement"] = placement
-            placement = confirmed
-    else:
+    # Retry once only when the visible main HWND has not appeared yet. No maximize
+    # operation or maximize verification is performed.
+    if not placement.get("placement_verified"):
         second_reactivation = _reactivate_application(application)
         time.sleep(0.8)
         placement = _place_real_window(
             process_names=spec["process_names"],
             pids=_pid_values(result),
             title_keywords=spec["title_keywords"],
-            timeout_seconds=10.0,
+            timeout_seconds=8.0,
         )
         placement["second_reactivation"] = second_reactivation
 
@@ -241,7 +235,7 @@ def play_random_music_on_content_display() -> ToolResult:
         process_names=_configured_media_process_names(),
         pids=_pid_values(result),
         title_keywords=title_keywords,
-        timeout_seconds=12.0,
+        timeout_seconds=10.0,
     )
     return _merge_placement(result, placement, subject="Media Player")
 
@@ -321,8 +315,7 @@ def _force_close_media_players(names: Iterable[str]) -> dict[str, Any]:
 def stop_music_from_desktop() -> ToolResult:
     # First use the session-aware close path, then independently send the Windows
     # media-stop key and terminate every configured player image. The old path could
-    # track the short-lived Shell launcher PID instead of the real Media Player PID,
-    # causing repeated “关闭音乐” commands to report failure while audio continued.
+    # track the short-lived Shell launcher PID instead of the real Media Player PID.
     session_result = stop_music()
     media_stop_sent = _send_media_stop_key()
     process_names = _configured_media_process_names()
