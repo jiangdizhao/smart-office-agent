@@ -41,13 +41,7 @@ export default function InteractionActionRail() {
       visitId: visitLeaseRegistry.current()?.visitId ?? null,
       language: 'zh',
     })
-    setNotice(
-      result.ok
-        ? '已在左侧触摸屏打开'
-        : result.blocked
-          ? '请允许本站弹出窗口'
-          : '窗口打开失败，请检查显示器设置',
-    )
+    setNotice(result.ok ? '已在 Sara 左侧打开' : '面板打开失败，请刷新主界面')
     window.setTimeout(() => setNotice(''), 4_000)
   }
 
