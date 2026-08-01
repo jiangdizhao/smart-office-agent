@@ -89,6 +89,7 @@ function interactionReply(context: InteractionContext, language: VoiceLanguage):
     contact: { zh: '登记信息', en: 'contact registration' },
     recording: { zh: '实时录音', en: 'live recording' },
     transcript: { zh: '当前对话记录', en: 'the current conversation transcript' },
+    results: { zh: '结果中心', en: 'the result center' },
   }
   const label = labels[context.kind][language]
   if (context.result.ok) {
