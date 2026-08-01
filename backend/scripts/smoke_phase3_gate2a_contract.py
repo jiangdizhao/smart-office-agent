@@ -134,6 +134,9 @@ def main() -> None:
     turn_status = client.get("/agent/turn/status").json()
     assert turn_status["unified_presentation_plan_enabled"] is True
 
+    # Exhibition mode intentionally normalizes every actor to operator. Preserve
+    # the original request actor in the fixture, but assert the actual function-first
+    # runtime contract rather than the retired visitor-denial behavior.
     visitor = _post_plan(
         client,
         actor="visitor",
@@ -141,9 +144,10 @@ def main() -> None:
         steps=[{"name": "presentation_next_slide"}],
     )
     assert visitor["route"] == "office_direct"
-    assert visitor["permission_decision"] == "denied"
+    assert visitor["actor_type"] == "operator"
+    assert visitor["permission_decision"] == "allowed"
     assert visitor["intent_source"] == "gpt_realtime_presentation_plan"
-    assert visitor["tool_result"] is None
+    assert visitor["tool_result"] is not None
 
     original = turn_api.execute_presentation_tool_call
     turn_api.execute_presentation_tool_call = _fake_execution
@@ -225,8 +229,8 @@ def main() -> None:
     assert reception.json()["route"] == "reception_knowledge"
 
     print(
-        "PASS: one-step GPT Realtime presentation plans execute directly with permission, "
-        "language, status, and verification guarantees in the current runtime."
+        "PASS: one-step GPT Realtime presentation plans execute directly with "
+        "exhibition-operator normalization, language, status, and verification guarantees."
     )
 
 
