@@ -10,6 +10,9 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.main import app  # noqa: E402
+from app.models import ToolResult  # noqa: E402
+from app.turn_router import classify_turn  # noqa: E402
+import app.scoped_system_actions as scoped_system_actions  # noqa: E402
 
 
 def post_turn(client: TestClient, *, conversation_id: str, text: str, actor: str) -> dict:
@@ -26,6 +29,60 @@ def post_turn(client: TestClient, *, conversation_id: str, text: str, actor: str
     response.raise_for_status()
     assert response.headers.get("x-smart-office-exhibition-actor") == "operator"
     return response.json()
+
+
+def preview_route(client: TestClient, *, text: str, conversation_id: str) -> dict:
+    response = client.post(
+        "/api/conversation-route",
+        json={
+            "conversation_id": conversation_id,
+            "text": text,
+            "language": "zh",
+            "actor_type": "visitor",
+            "visit_id": None,
+        },
+    )
+    response.raise_for_status()
+    assert response.headers.get("x-smart-office-exhibition-actor") == "operator"
+    return response.json()
+
+
+def verify_scoped_volume_contract() -> None:
+    original = scoped_system_actions.set_system_volume
+    try:
+        scoped_system_actions.set_system_volume = lambda target: ToolResult(
+            tool_name="system_set_volume",
+            ok=True,
+            message=f"System volume set to {target}%.",
+            data={
+                "execution_mode": "real",
+                "requested_state": {"volume_percent": target},
+                "volume_percent": target,
+                "volume": {
+                    "available": True,
+                    "volume_percent": target,
+                    "muted": False,
+                },
+            },
+        )
+        result, verification, status = scoped_system_actions.execute_scoped_volume_action(
+            "system_set_volume",
+            {"value_percent": 60},
+        )
+    finally:
+        scoped_system_actions.set_system_volume = original
+
+    assert result.ok is True
+    assert verification.ok is True
+    assert status.ok is True
+    assert status.data["status_scope"] == "volume_only"
+    assert status.data["volume_percent"] == 60
+    assert status.data["unrelated_status_queries_skipped"] == [
+        "powerpoint",
+        "brightness",
+        "outlook",
+        "artifacts",
+    ]
 
 
 def main() -> None:
@@ -83,6 +140,54 @@ def main() -> None:
     content_page = client.get(visitor_reception["content_url"])
     content_page.raise_for_status()
     assert "Smart Office Reception Content" in content_page.text
+
+    # Common exhibition commands must never fall through to general Realtime chat.
+    volume_absolute = preview_route(
+        client,
+        text="把音量调到 60%",
+        conversation_id="phase2-volume-absolute",
+    )
+    assert volume_absolute["answer_engine"] == "office_interpreter"
+    assert volume_absolute["route_reason"].startswith("office_intent:volume_intent")
+
+    volume_relative = preview_route(
+        client,
+        text="把声音调大一点",
+        conversation_id="phase2-volume-relative",
+    )
+    assert volume_relative["answer_engine"] == "office_interpreter"
+
+    slideshow_start = preview_route(
+        client,
+        text="现在开始演示",
+        conversation_id="phase2-slideshow-start",
+    )
+    assert slideshow_start["answer_engine"] == "office_interpreter"
+    assert slideshow_start["route_reason"].startswith("office_intent:presentation_action")
+
+    spaced_ppt = preview_route(
+        client,
+        text="演示 P P T",
+        conversation_id="phase2-spaced-ppt",
+    )
+    assert spaced_ppt["answer_engine"] == "office_interpreter"
+
+    ordinary_voice_question = preview_route(
+        client,
+        text="你的声音听起来很自然吗？",
+        conversation_id="phase2-ordinary-voice",
+    )
+    assert ordinary_voice_question["answer_engine"] == "realtime"
+
+    contextual = classify_turn(
+        "播放这个",
+        "operator",
+        office_context_active=True,
+    )
+    assert contextual.route == "office_direct"
+    assert contextual.reason.startswith("office_intent:presentation_action")
+
+    verify_scoped_volume_contract()
 
     # Exhibition mode must normalize a client-supplied visitor role before the
     # legacy permission gate. The request is accepted as Operator, although this
@@ -155,7 +260,10 @@ def main() -> None:
     conversation.raise_for_status()
     assert conversation.json()["conversation"]["actor_type"] == "operator"
 
-    print("PASS: Phase 2 routing and exhibition-wide Operator normalization remain healthy.")
+    print(
+        "PASS: Phase 2 routing, exhibition Operator normalization, common Office "
+        "commands, and scoped volume verification remain healthy."
+    )
 
 
 if __name__ == "__main__":
