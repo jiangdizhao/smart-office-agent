@@ -263,3 +263,30 @@ def cancel_agent_task(task_id: str):
         "cancelled",
         message="Task cancellation requested.",
     )
+    state_store.set_status(
+        task_id,
+        "cancelled",
+        summary="Task cancellation requested.",
+    )
+    event_bus.publish(
+        task_id=task_id,
+        event_type="cancelled",
+        message="Task cancellation requested.",
+        data={"owner_visit_id": task.owner_visit_id},
+    )
+    return state_store.get_task(task_id) or task
+
+
+@app.get("/agent/tasks/{task_id}/events")
+async def stream_agent_task_events(
+    task_id: str,
+    after: str | None = Query(default=None),
+):
+    if state_store.get_task(task_id) is None:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
+    async def event_generator():
+        async for event in event_bus.subscribe(task_id, after_event_id=after):
+            yield _sse_payload(event)
+
+    return EventSourceResponse(event_generator())
