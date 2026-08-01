@@ -14,6 +14,14 @@ const APP_PATTERNS = {
   music: /music|song|歌曲|音乐|放歌|听歌/i,
 } as const
 
+const APP_REMOVE_PATTERNS: Record<keyof typeof APP_PATTERNS, RegExp> = {
+  teams: /(?:microsoft\s*)?teams|微软团队/gi,
+  onenote: /one\s*note|onenote|微软笔记/gi,
+  powerpoint: /power\s*point|powerpoint|ppt|幻灯片/gi,
+  outlook: /out\s*look|outlook|邮箱|邮件/gi,
+  music: /music|song|歌曲|音乐|放歌|听歌/gi,
+}
+
 export type CommandTarget = keyof typeof APP_PATTERNS
 export type CommandAction = 'open' | 'close' | 'play' | 'stop' | null
 
@@ -27,6 +35,8 @@ const STOP_PATTERN = /(?:停止|别放了|不要播放|stop|close|turn\s*off)/i
 // also present, so ordinary English conversation is not rewritten.
 const PHONETIC_CLOSE_PATTERN = /(?:\bone\s*b(?:ee)?\b|\b1\s*b\b|\bwan\s*bi\b|\bguan\s*bi\b|\bkwan\s*bee\b|\b关\s*闭\b)/i
 const PHONETIC_OPEN_PATTERN = /(?:\bda\s*kai\b|\bdakai\b|\bta\s*kai\b|\bthe\s*guy\b|\b打\s*开\b)/i
+const NON_COMMAND_CONTEXT = /(?:是什么|什么是|怎么|如何|为什么|介绍|功能|用途|能做什么|有什么用|what\s+is|what\s+does|why|how\s+do|how\s+does|tell\s+me|explain|describe)/i
+const BOUNDED_FILLER = /(?:请|帮我|麻烦|给我|现在|一下|好吗|可以吗|能否|能不能|命令|操作|please|could\s+you|would\s+you|can\s+you|for\s+me|now|uh|um|erm|hmm|xx+|x|嗯|呃|啊|那个)/gi
 
 function cleanTranscript(value: string): string {
   return value
@@ -56,6 +66,20 @@ function actionFromTranscript(text: string, target: CommandTarget): CommandActio
   return null
 }
 
+function isBoundedCommandFragment(text: string, target: CommandTarget): boolean {
+  if (NON_COMMAND_CONTEXT.test(text)) return false
+  const remainder = text
+    .replace(APP_REMOVE_PATTERNS[target], ' ')
+    .replace(BOUNDED_FILLER, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  // A bare product name or a product name surrounded only by short filler/ASR
+  // debris is a bounded command fragment. Longer semantic content remains normal
+  // conversation and must not be rewritten into an open/close prompt.
+  return remainder.length === 0 || remainder.replace(/\s+/g, '').length <= 3
+}
+
 function canonicalTarget(target: CommandTarget): string {
   if (target === 'teams') return 'Teams'
   if (target === 'onenote') return 'OneNote'
@@ -81,7 +105,9 @@ function canonicalCommand(
   if (target === 'music' && action === 'stop') return '关闭音乐'
   if (action === 'open') return `打开 ${app}`
   if (action === 'close') return `关闭 ${app}`
-  return app
+  // Keep a Chinese marker so a Chinese Visit cannot be switched to English merely
+  // because the ASR returned only an English product name.
+  return target === 'music' ? '音乐命令' : `${app} 命令`
 }
 
 export type RecoveredCommandTranscript = {
@@ -114,6 +140,18 @@ export function recoverCommandTranscript(
   }
 
   const action = actionFromTranscript(clean, target)
+  if (action === null && !isBoundedCommandFragment(clean, target)) {
+    return {
+      raw,
+      normalized: raw,
+      target: null,
+      action: null,
+      ambiguous: false,
+      language,
+      recovered: false,
+    }
+  }
+
   const normalized = canonicalCommand(target, action, language)
   const recovered = normalized.toLocaleLowerCase() !== raw.toLocaleLowerCase()
   if (recovered) {
