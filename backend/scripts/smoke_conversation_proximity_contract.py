@@ -325,10 +325,13 @@ def main() -> None:
     assert "VISIT_ARCHIVE_TIMEOUT_MS = 3_000" in proximity_hook
     assert "proactive-reception-farewell" in proximity_hook
 
+    # The current proactive loop delegates microphone ownership to the persistent
+    # Realtime agent. It never acquires a second browser stream.
     for needle in (
-        "currentMicrophoneStream",
-        "controller().beginListening()",
-        "waitForUtterance(stream",
+        "realtimeAgent.startContinuousCapture",
+        "realtimeAgent.nextContinuousUtterance",
+        "current.submit(transcript, 'voice')",
+        "recoverTurnState",
     ):
         assert needle in proactive_loop, f"Missing single-microphone contract: {needle}"
     assert "navigator.mediaDevices.getUserMedia" not in proactive_loop
@@ -339,6 +342,7 @@ def main() -> None:
         "RealtimeSpeechError",
         "output_audio_buffer.stopped",
         "Microphone acquisition timed out",
+        "currentMicrophoneStream",
     ):
         assert needle in realtime_runtime, f"Missing cancellable Realtime contract: {needle}"
     assert "operationQueue" not in realtime_runtime
@@ -396,7 +400,7 @@ def main() -> None:
 
     print(
         "PASS: new Visits preempt old Visits; stale results are fenced; Visit-end is nonblocking; "
-        "registered memory is queued; owned tasks are cancelled; Realtime uses one microphone stream."
+        "registered memory is queued; owned tasks are cancelled; Realtime owns one microphone stream."
     )
     print(
         "NOTE: Real LAN ordering, browser audio permission, Windows COM worker termination, camera "
