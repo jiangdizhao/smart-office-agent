@@ -5,9 +5,11 @@ import './voice/proximityTimelineDiagnostics'
 import './voice/continuousVoiceBootstrap'
 import './voice/VoiceDebugPanelPhase2.css'
 import './virtual-host/ProactiveReceptionStage1.css'
+import './interaction/embeddedInteractionBridge'
 import DebugApp from './debug/DebugApp.tsx'
 import InteractionActionRail from './interaction/InteractionActionRail.tsx'
 import InteractionApp from './interaction/InteractionApp.tsx'
+import InteractionPanelHost from './interaction/InteractionPanelHost.tsx'
 import VirtualHostApp from './virtual-host/VirtualHostApp.tsx'
 
 function serialiseDiagnostic(value: unknown): unknown {
@@ -84,11 +86,14 @@ const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
 const debugRoute = normalizedPath === '/debug' || normalizedPath.startsWith('/debug/')
 const interactionRoute =
   normalizedPath === '/interaction' || normalizedPath.startsWith('/interaction/')
+const embeddedInteraction =
+  interactionRoute && new URLSearchParams(window.location.search).get('embedded') === '1'
 document.documentElement.dataset.smartOfficeRoute = debugRoute
   ? 'debug'
   : interactionRoute
     ? 'interaction'
     : 'virtual-host'
+document.documentElement.dataset.smartOfficeEmbedded = embeddedInteraction ? 'true' : 'false'
 
 createRoot(appRoot).render(
   debugRoute ? (
@@ -98,6 +103,7 @@ createRoot(appRoot).render(
   ) : (
     <>
       <VirtualHostApp />
+      <InteractionPanelHost />
       <InteractionActionRail />
     </>
   ),
