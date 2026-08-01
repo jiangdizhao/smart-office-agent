@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 CONTENT_MONITOR_ENV = "SMART_OFFICE_CONTENT_MONITOR_DEVICE"
 WINDOW_PLACEMENT_TIMEOUT_ENV = "SMART_OFFICE_WINDOW_PLACEMENT_TIMEOUT_SECONDS"
+DEFAULT_CONTENT_MONITOR_DEVICE = r"\\.\DISPLAY2"
 
 
 def _normalise_process_name(value: str) -> str:
@@ -85,14 +86,14 @@ def content_monitor() -> dict[str, Any] | None:
     if not monitors:
         return None
 
-    configured = os.getenv(CONTENT_MONITOR_ENV, "").strip().casefold()
-    if configured:
-        for monitor in monitors:
-            if str(monitor["device"]).casefold() == configured:
-                return monitor
+    configured = os.getenv(CONTENT_MONITOR_ENV, "").strip()
+    requested = configured or DEFAULT_CONTENT_MONITOR_DEVICE
+    for monitor in monitors:
+        if str(monitor["device"]).casefold() == requested.casefold():
+            return monitor
 
-    # Windows DISPLAY numbers do not describe physical order. The content display
-    # defaults to the monitor whose desktop rectangle is physically farthest right.
+    # Fallback only when DISPLAY2 is genuinely unavailable. The exhibition machine
+    # is arranged 3 / 1 / 2 from left to right, so DISPLAY2 is the normal target.
     return max(
         monitors,
         key=lambda item: (
@@ -228,6 +229,8 @@ def inspect_window_placement(hwnd: int, target: dict[str, Any] | None = None) ->
         "window_rect": None,
         "observed_monitor_device": None,
         "on_target_monitor": False,
+        "maximization_required": False,
+        "placement_policy": "move_only",
         "placement_verified": False,
     }
     if os.name != "nt":
@@ -261,10 +264,12 @@ def inspect_window_placement(hwnd: int, target: dict[str, Any] | None = None) ->
         result["on_target_monitor"] = bool(
             target_device and observed_device.casefold() == target_device.casefold()
         )
+        # Maximized state is intentionally informational only. Some Office/UWP
+        # windows report it unreliably, which previously converted a successful
+        # launch into a false failure.
         result["placement_verified"] = bool(
             result["window_visible"]
             and not result["window_minimized"]
-            and result["window_maximized"]
             and result["on_target_monitor"]
         )
     except Exception as exc:
@@ -275,7 +280,6 @@ def inspect_window_placement(hwnd: int, target: dict[str, Any] | None = None) ->
 def _bring_to_foreground(hwnd: int) -> None:
     try:
         import win32api
-        import win32con
         import win32gui
         import win32process
 
@@ -312,10 +316,31 @@ def _bring_to_foreground(hwnd: int) -> None:
                 0,
                 0,
                 0,
-                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW,
+                0x0002 | 0x0001 | win32con.SWP_SHOWWINDOW,
             )
         except Exception:
             pass
+
+
+def _normal_window_geometry(hwnd: int, target: dict[str, Any]) -> tuple[int, int, int, int]:
+    try:
+        import win32gui
+
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        width = max(320, int(right - left))
+        height = max(240, int(bottom - top))
+    except Exception:
+        width = 1200
+        height = 800
+
+    work_width = max(320, int(target["work_width"]))
+    work_height = max(240, int(target["work_height"]))
+    margin = 16 if work_width >= 640 and work_height >= 480 else 0
+    width = min(width, max(320, work_width - margin * 2))
+    height = min(height, max(240, work_height - margin * 2))
+    x = int(target["work_left"]) + max(margin, (work_width - width) // 2)
+    y = int(target["work_top"]) + max(margin, (work_height - height) // 2)
+    return x, y, width, height
 
 
 def place_window_on_content_monitor(
@@ -328,9 +353,12 @@ def place_window_on_content_monitor(
     target = content_monitor()
     result: dict[str, Any] = {
         "target_monitor": target,
+        "requested_monitor_device": DEFAULT_CONTENT_MONITOR_DEVICE,
         "window_found": False,
         "placement_attempted": False,
         "placement_verified": False,
+        "maximization_required": False,
+        "placement_policy": "move_only",
         "candidate_windows": [],
         "selected_window": None,
         "attempts": 0,
@@ -374,17 +402,20 @@ def place_window_on_content_monitor(
         result["selected_window"] = selected
         result["placement_attempted"] = True
         try:
+            # Restore and move only. Window size/maximization is left to the user or
+            # the application itself; it is no longer a success criterion.
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            time.sleep(0.05)
+            x, y, width, height = _normal_window_geometry(hwnd, target)
             win32gui.SetWindowPos(
                 hwnd,
                 win32con.HWND_TOP,
-                int(target["work_left"]),
-                int(target["work_top"]),
-                int(target["work_width"]),
-                int(target["work_height"]),
+                x,
+                y,
+                width,
+                height,
                 win32con.SWP_SHOWWINDOW | win32con.SWP_FRAMECHANGED,
             )
-            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
             _bring_to_foreground(hwnd)
         except Exception as exc:
             result["error"] = f"{type(exc).__name__}: {exc}"
@@ -399,7 +430,7 @@ def place_window_on_content_monitor(
 
     if "error" not in result:
         result["error"] = (
-            "A matching application process may exist, but no visible maximized window "
-            "was verified on the content display before timeout."
+            "A matching application window was not confirmed on DISPLAY2 before timeout. "
+            "This diagnostic does not invalidate a successful application launch."
         )
     return result
