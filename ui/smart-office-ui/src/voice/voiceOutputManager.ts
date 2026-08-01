@@ -147,6 +147,22 @@ export class VoiceOutputManager {
       } catch (error) {
         const audioStarted = error instanceof RealtimeSpeechError && error.audioStarted
         const aborted = error instanceof Error && error.name === 'AbortError'
+        const runtime = realtimeAgent.status()
+        const visitorBargeIn = Boolean(
+          aborted &&
+          !signal?.aborted &&
+          generation === this.speechGeneration &&
+          runtime.continuousListening &&
+          runtime.speechDetected
+        )
+        if (visitorBargeIn) {
+          console.info('[RealtimeDiagnostics] speech-chunks-cancelled-by-visitor', {
+            generation,
+            interruptedChunkIndex: index,
+            chunkCount: chunks.length,
+          })
+          return
+        }
         if (aborted || signal?.aborted || generation !== this.speechGeneration) throw error
         if (audioStarted || options.allowLocalFallback === false) throw error
         await this.speakLocal(chunk, chunkLanguage, generation, signal)
