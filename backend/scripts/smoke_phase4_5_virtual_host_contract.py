@@ -80,7 +80,9 @@ def main() -> None:
     phase4_css = read("ui/smart-office-ui/src/virtual-host/VirtualHostPhase4.css")
     controller_source = read("ui/smart-office-ui/src/voice/useOfficeVoiceController.ts")
     realtime_source = read("ui/smart-office-ui/src/voice/realtimeAgentRuntime.ts")
-    safe_runtime_source = read("ui/smart-office-ui/src/voice/safeRealtimeAgentRuntime.ts")
+    visit_bridge_source = read("ui/smart-office-ui/src/voice/visitRealtimeLeaseBridge.ts")
+    command_recovery_source = read("ui/smart-office-ui/src/voice/commandSpeechRecovery.ts")
+    proactive_loop_source = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
     acceptance = read("PHASE4_5_EXHIBITION_ACCEPTANCE.md")
 
     assert_contains(
@@ -132,13 +134,36 @@ def main() -> None:
     assert_contains(caption_source, "splitLyrics", "lyric-current", "user-live-caption")
     assert_contains(phase4_css, "exhibition-approval-card", "exhibition-operator-drawer")
 
-    # Donor-repo voice lessons retained in the current implementation:
-    # persistent Realtime session, output interruption before capture, long audio
-    # completion windows, and guaranteed capture cleanup after exceptional paths.
-    assert_contains(realtime_source, "class PersistentRealtimeAgent", "await this.stopOutput()")
-    assert_contains(realtime_source, "AUDIO_COMPLETION_MAX_MS = 360_000")
-    assert_contains(safe_runtime_source, "installRealtimeCaptureCleanup")
-    assert_contains(safe_runtime_source, "await realtimeAgent.abortCapture()")
+    # Current voice-runtime protections: persistent WebRTC, output interruption,
+    # capture cleanup, Visit fencing, command-language recovery, and automatic
+    # recovery from a failed turn without requiring the visitor to leave the frame.
+    assert_contains(
+        realtime_source,
+        "class PersistentRealtimeAgent",
+        "await this.stopOutput()",
+        "AUDIO_COMPLETION_MAX_MS = 45_000",
+        "async abortCapture",
+        "async stopContinuousCapture",
+    )
+    assert_contains(
+        visit_bridge_source,
+        "realtimeAgent.shutdown()",
+        "smartoffice:visit-revoked",
+    )
+    assert_contains(
+        command_recovery_source,
+        "one\\s*b",
+        "active visitor language is Chinese",
+        "command-transcript-recovered",
+        "commandLanguage",
+    )
+    assert_contains(
+        proactive_loop_source,
+        "recoverTurnState",
+        "latest.clearError()",
+        "await latest.connect()",
+        "controller-turn-recovery-complete",
+    )
     assert_contains(controller_source, "await voiceOutputManager.stop()")
     assert_contains(controller_source, "smartoffice_voice_conversation_id")
 
@@ -156,8 +181,14 @@ def main() -> None:
     ):
         assert scenario in acceptance
 
-    print("PASS: Phase 4 approval/settings, guide-style reception, and Phase 5 exhibition contracts are present.")
-    print("NOTE: Windows Office, Outlook, dual-display, microphone, and five-round audio remain local acceptance tests.")
+    print(
+        "PASS: Phase 4 approval/settings, guide-style reception, persistent voice, "
+        "Chinese command recovery, and post-error listening recovery contracts are present."
+    )
+    print(
+        "NOTE: Windows Office, Outlook, rightmost-display placement, microphone, and "
+        "five-round audio remain local acceptance tests."
+    )
 
 
 if __name__ == "__main__":
