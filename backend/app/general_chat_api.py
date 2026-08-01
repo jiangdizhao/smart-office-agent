@@ -30,6 +30,11 @@ _COMPLEX_EN_PATTERN = re.compile(
     r"legal advice|medical advice|financial advice|investment advice|risk analysis)\b",
     re.IGNORECASE,
 )
+_OFFICE_CONTEXT_PATTERN = re.compile(
+    r"power\s*point|\bp\s*p\s*t\b|\bppt\b|幻\s*灯\s*片|演示文稿|"
+    r"开始演示|开始放映|演示已经开始|放映已经开始|slide\s*show|slideshow|presentation",
+    re.IGNORECASE,
+)
 
 
 class ConversationRouteRequest(BaseModel):
@@ -92,6 +97,23 @@ def _history_text(context: dict[str, Any], current_text: str, language: Language
     if lines and lines[-1].endswith(current_text.strip()):
         lines = lines[:-1]
     return "\n".join(lines) if lines else "(none)"
+
+
+def _office_context_active(context: dict[str, Any]) -> bool:
+    values: list[str] = []
+    messages = context.get("recent_messages")
+    if isinstance(messages, list):
+        for item in messages[-8:]:
+            if isinstance(item, dict):
+                values.append(str(item.get("text") or ""))
+    values.extend(
+        [
+            str(context.get("last_command") or ""),
+            str(context.get("last_visible_answer") or ""),
+            str(context.get("current_scene") or ""),
+        ]
+    )
+    return bool(_OFFICE_CONTEXT_PATTERN.search("\n".join(values)))
 
 
 def _conversation_complexity(text: str, language: Language) -> ConversationComplexity:
@@ -185,7 +207,11 @@ async def conversation_route(req: ConversationRouteRequest) -> ConversationRoute
     if req.visit_id and not conversation_store.is_current_visit(req.conversation_id, req.visit_id):
         raise HTTPException(status_code=409, detail="stale_visit_before_route_preview")
 
-    decision = classify_turn(clean, req.actor_type)
+    decision = classify_turn(
+        clean,
+        req.actor_type,
+        office_context_active=_office_context_active(context),
+    )
     complexity: ConversationComplexity = (
         _conversation_complexity(clean, req.language)
         if decision.reason == "general_direct_conversation"
@@ -214,7 +240,11 @@ async def general_chat(req: GeneralChatRequest) -> GeneralChatResponse:
     if req.visit_id and not conversation_store.is_current_visit(req.conversation_id, req.visit_id):
         raise HTTPException(status_code=409, detail="stale_visit_before_general_chat")
 
-    decision = classify_turn(clean, req.actor_type)
+    decision = classify_turn(
+        clean,
+        req.actor_type,
+        office_context_active=_office_context_active(context),
+    )
     if decision.reason != "general_direct_conversation":
         delegated = await handle_turn(
             TurnRequest(
