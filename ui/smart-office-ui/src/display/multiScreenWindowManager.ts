@@ -1,6 +1,6 @@
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 
-export type InteractionWindowKind = 'contact' | 'recording' | 'transcript'
+export type InteractionWindowKind = 'contact' | 'recording' | 'transcript' | 'results'
 
 type DetailedScreen = {
   availLeft: number
@@ -190,27 +190,23 @@ export function matchInteractionWindowIntent(text: string): InteractionWindowKin
 
   if (
     ['登记信息', '填写信息', '留下联系方式', 'contact form', 'registration form'].includes(clean) ||
-    /(打开|显示|调出|进入|填写|登记|留下).{0,8}(登记信息|联系信息|联系方式|个人信息)|(?:登记信息|联系信息|联系方式|个人信息).{0,8}(窗口|表单|页面)|\b(?:open|show|display|fill|register|leave)\b.{0,30}\b(?:contact form|contact details|my details|registration form)\b/.test(
-      clean,
-    )
-  ) {
-    return 'contact'
-  }
+    /(打开|显示|调出|进入|填写|登记|留下).{0,8}(登记信息|联系信息|联系方式|个人信息)|(?:登记信息|联系信息|联系方式|个人信息).{0,8}(窗口|表单|页面)|\b(?:open|show|display|fill|register|leave)\b.{0,30}\b(?:contact form|contact details|my details|registration form)\b/.test(clean)
+  ) return 'contact'
+
   if (
     ['实时录音', '开始录音', '现场录音', 'live recording'].includes(clean) ||
-    /(打开|显示|调出|进入|开始).{0,8}(实时录音|现场录音|对话录音|录音窗口)|(?:实时录音|现场录音|对话录音).{0,8}(窗口|页面)|\b(?:open|show|start)\b.{0,24}\b(?:live recording|recording window|conversation recording)\b/.test(
-      clean,
-    )
-  ) {
-    return 'recording'
-  }
+    /(打开|显示|调出|进入|开始).{0,8}(实时录音|现场录音|对话录音|录音窗口)|(?:实时录音|现场录音|对话录音).{0,8}(窗口|页面)|\b(?:open|show|start)\b.{0,24}\b(?:live recording|recording window|conversation recording)\b/.test(clean)
+  ) return 'recording'
+
   if (
     ['对话记录', '聊天记录', '会话记录', 'conversation history', 'chat history'].includes(clean) ||
-    /(打开|显示|调出|查看|看看).{0,8}(对话记录|聊天记录|会话记录|当前对话)|(?:对话记录|聊天记录|会话记录).{0,8}(窗口|页面)|\b(?:open|show|display|view)\b.{0,24}\b(?:conversation history|chat history|conversation transcript|current transcript)\b/.test(
-      clean,
-    )
-  ) {
-    return 'transcript'
-  }
+    /(打开|显示|调出|查看|看看).{0,8}(对话记录|聊天记录|会话记录|当前对话)|(?:对话记录|聊天记录|会话记录).{0,8}(窗口|页面)|\b(?:open|show|display|view)\b.{0,24}\b(?:conversation history|chat history|conversation transcript|current transcript)\b/.test(clean)
+  ) return 'transcript'
+
+  if (
+    ['结果中心', '查看结果', '已登记信息', '录音列表', 'result center'].includes(clean) ||
+    /(打开|显示|调出|进入|查看).{0,8}(结果中心|登记结果|已登记信息|联系人列表|录音列表|保存结果)|\b(?:open|show|view)\b.{0,24}\b(?:result center|saved results|contact list|recording list)\b/.test(clean)
+  ) return 'results'
+
   return null
 }
