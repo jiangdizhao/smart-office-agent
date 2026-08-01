@@ -30,6 +30,10 @@ export type RemoteVisionDetection = ProximityDetection & {
   primary: boolean
   engaged: boolean
   greeting_eligible: boolean
+  client_entry_area_eligible: boolean
+  client_hold_area_eligible: boolean
+  client_entry_min_body_area_ratio: number
+  client_hold_min_body_area_ratio: number
   identity_id?: string | null
   display_name?: string | null
   identity_similarity?: number | null
@@ -146,12 +150,32 @@ const REMOTE_MESSAGE_STALE_MS = 2_500
 const FRAME_STALE_MS = 2_500
 const MAX_RECONNECT_MS = 10_000
 const EVENT_CACHE_LIMIT = 512
+const DEFAULT_ENTRY_MIN_BODY_AREA_RATIO = 0.1
+const DEFAULT_HOLD_MIN_BODY_AREA_RATIO = 0.045
 
 function clamp(value: unknown): number {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return 0
   return Math.max(0, Math.min(1, numeric))
 }
+
+function configuredRatio(name: string, fallback: number): number {
+  const configured = Number(import.meta.env[name])
+  if (!Number.isFinite(configured)) return fallback
+  return Math.max(0, Math.min(1, configured))
+}
+
+const REMOTE_ENTRY_MIN_BODY_AREA_RATIO = configuredRatio(
+  'VITE_REMOTE_VISION_ENTRY_MIN_BODY_AREA_RATIO',
+  DEFAULT_ENTRY_MIN_BODY_AREA_RATIO,
+)
+const REMOTE_HOLD_MIN_BODY_AREA_RATIO = Math.min(
+  configuredRatio(
+    'VITE_REMOTE_VISION_HOLD_MIN_BODY_AREA_RATIO',
+    DEFAULT_HOLD_MIN_BODY_AREA_RATIO,
+  ),
+  REMOTE_ENTRY_MIN_BODY_AREA_RATIO,
+)
 
 function optionalNumber(value: unknown): number | null {
   const numeric = Number(value)
@@ -185,9 +209,10 @@ function toDetection(
   const face = visitor.face ?? {}
   const bodyConfidence = clamp(visitor.score)
   const faceConfidence = clamp(face.confidence)
+  const bodyAreaRatio = clamp(visitor.body_area_ratio)
   const visitors = Array.isArray(state.visitors) ? state.visitors : []
   return {
-    body_area_ratio: clamp(visitor.body_area_ratio),
+    body_area_ratio: bodyAreaRatio,
     body_confidence: bodyConfidence,
     face_area_ratio: clamp(face.area_ratio),
     face_confidence: faceConfidence,
@@ -217,6 +242,10 @@ function toDetection(
     primary: Boolean(visitor.primary),
     engaged: Boolean(visitor.engaged),
     greeting_eligible: Boolean(visitor.greeting_eligible),
+    client_entry_area_eligible: bodyAreaRatio >= REMOTE_ENTRY_MIN_BODY_AREA_RATIO,
+    client_hold_area_eligible: bodyAreaRatio >= REMOTE_HOLD_MIN_BODY_AREA_RATIO,
+    client_entry_min_body_area_ratio: REMOTE_ENTRY_MIN_BODY_AREA_RATIO,
+    client_hold_min_body_area_ratio: REMOTE_HOLD_MIN_BODY_AREA_RATIO,
     identity_id: visitor.identity?.identity_id ?? null,
     display_name: visitor.identity?.display_name ?? null,
     identity_similarity: optionalNumber(visitor.identity?.similarity),
@@ -483,6 +512,16 @@ export class RemoteVisionClient {
       this.options.onDetection(null)
       return
     }
+    if (!detection.client_hold_area_eligible) {
+      console.info('[ProximityDebug] remote-primary-below-hold-area', {
+        visitId: detection.visit_id ?? detection.visitor_session_id,
+        bodyAreaRatio: detection.body_area_ratio,
+        holdMinimum: detection.client_hold_min_body_area_ratio,
+        entryMinimum: detection.client_entry_min_body_area_ratio,
+      })
+      this.options.onDetection(null)
+      return
+    }
     const replacedVisit = this.replacementTracker.observe(detection)
     if (replacedVisit) {
       replacedVisit.server_instance_id = this.serverInstanceId
@@ -492,6 +531,7 @@ export class RemoteVisionClient {
     this.options.onDetection(detection)
     if (
       primary.greeting_eligible &&
+      detection.client_entry_area_eligible &&
       detection.session_stable &&
       Boolean(detection.visitor_session_id)
     ) {
