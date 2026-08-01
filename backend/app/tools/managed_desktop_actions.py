@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import csv
+import ctypes
 import os
 import subprocess
-from typing import Any
+import time
+from io import StringIO
+from typing import Any, Iterable
 
 from app.models import ToolResult
 from app.tools.managed_application_controller import (
@@ -79,6 +83,33 @@ def _reactivate_application(application: str) -> dict[str, Any]:
         }
 
 
+def _place_real_window(
+    *,
+    process_names: Iterable[str],
+    pids: Iterable[int],
+    title_keywords: Iterable[str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    # Prefer a titled top-level window. Process-only matching can select a Teams
+    # helper/background HWND that cannot be maximized even though the taskbar icon
+    # exists. The fallback remains for localized or unusual window titles.
+    placement = place_window_on_content_monitor(
+        title_keywords=title_keywords,
+        timeout_seconds=timeout_seconds,
+    )
+    if placement.get("placement_verified"):
+        return placement
+
+    fallback = place_window_on_content_monitor(
+        process_names=process_names,
+        pids=pids,
+        title_keywords=title_keywords,
+        timeout_seconds=timeout_seconds,
+    )
+    fallback["title_only_attempt"] = placement
+    return fallback
+
+
 def _merge_placement(
     result: ToolResult,
     placement: dict[str, Any],
@@ -89,11 +120,11 @@ def _merge_placement(
     original_verified = result.data.get("verified") is True
     ok = bool(result.ok and original_verified and placement_ok)
     message = (
-        f"{subject} opened, moved to the content display, maximized, and verified."
+        f"{subject} opened, moved to DISPLAY2, maximized, and verified."
         if ok
         else (
             f"{subject} was started, but its visible maximized window was not verified "
-            "on the content display."
+            "on DISPLAY2."
         )
     )
     return result.model_copy(
@@ -130,36 +161,63 @@ def open_managed_application_on_content_display(application: str) -> ToolResult:
         return result.model_copy(
             update={
                 "ok": False,
-                "message": f"No content-display placement specification exists for {application}.",
+                "message": f"No DISPLAY2 placement specification exists for {application}.",
                 "data": {**result.data, "verified": False},
             }
         )
 
-    placement = place_window_on_content_monitor(
+    # Always reactivate. Teams commonly leaves only a background/tray process, and
+    # open_managed_application() historically treated that as already open.
+    reactivation = _reactivate_application(application)
+    time.sleep(0.6)
+    placement = _place_real_window(
         process_names=spec["process_names"],
         pids=_pid_values(result),
         title_keywords=spec["title_keywords"],
-        timeout_seconds=6.0,
+        timeout_seconds=10.0,
     )
-    if not placement.get("placement_verified"):
-        # Teams and OneNote may retain a background process after their visible main
-        # window is closed. Reissue the registered URI, then locate by exact title
-        # rather than matching a generic UWP host process.
-        reactivation = _reactivate_application(application)
-        placement = place_window_on_content_monitor(
+
+    # A second pass is intentional: Teams can restore itself after the first move
+    # and replace the main HWND. Re-resolving the titled window then maximizing it
+    # makes the final state stable on the three-screen exhibition machine.
+    if placement.get("placement_verified"):
+        time.sleep(0.5)
+        confirmed = _place_real_window(
             process_names=spec["process_names"],
             pids=_pid_values(result),
             title_keywords=spec["title_keywords"],
-            timeout_seconds=8.0,
+            timeout_seconds=4.0,
         )
-        placement["reactivation"] = reactivation
+        if confirmed.get("placement_verified"):
+            confirmed["initial_placement"] = placement
+            placement = confirmed
+    else:
+        second_reactivation = _reactivate_application(application)
+        time.sleep(0.8)
+        placement = _place_real_window(
+            process_names=spec["process_names"],
+            pids=_pid_values(result),
+            title_keywords=spec["title_keywords"],
+            timeout_seconds=10.0,
+        )
+        placement["second_reactivation"] = second_reactivation
 
+    placement["reactivation"] = reactivation
     label = "Microsoft Teams" if application == "teams" else "OneNote"
     return _merge_placement(result, placement, subject=label)
 
 
 def close_managed_application_from_desktop(application: str) -> ToolResult:
     return close_managed_application(application)
+
+
+def _configured_media_process_names() -> tuple[str, ...]:
+    configured = tuple(
+        item.strip()
+        for item in os.getenv("SMART_OFFICE_MEDIA_PLAYER_PROCESS_NAMES", "").split(",")
+        if item.strip()
+    )
+    return configured or _MEDIA_PROCESS_NAMES
 
 
 def play_random_music_on_content_display() -> ToolResult:
@@ -179,20 +237,119 @@ def play_random_music_on_content_display() -> ToolResult:
         )
         if item
     )
-    configured_names = tuple(
-        item.strip()
-        for item in os.getenv("SMART_OFFICE_MEDIA_PLAYER_PROCESS_NAMES", "").split(",")
-        if item.strip()
-    )
-    process_names = configured_names or _MEDIA_PROCESS_NAMES
-    placement = place_window_on_content_monitor(
-        process_names=process_names,
+    placement = _place_real_window(
+        process_names=_configured_media_process_names(),
         pids=_pid_values(result),
         title_keywords=title_keywords,
-        timeout_seconds=10.0,
+        timeout_seconds=12.0,
     )
     return _merge_placement(result, placement, subject="Media Player")
 
 
+def _send_media_stop_key() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        vk_media_stop = 0xB2
+        keyeventf_keyup = 0x0002
+        user32.keybd_event(vk_media_stop, 0, 0, 0)
+        user32.keybd_event(vk_media_stop, 0, keyeventf_keyup, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _running_named_processes(names: Iterable[str]) -> dict[int, str]:
+    expected = {str(name).strip().casefold() for name in names if str(name).strip()}
+    if os.name != "nt" or not expected:
+        return {}
+    try:
+        output = subprocess.check_output(
+            ["tasklist", "/fo", "csv", "/nh"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return {}
+    running: dict[int, str] = {}
+    for row in csv.reader(StringIO(output)):
+        if len(row) < 2 or str(row[0]).strip().casefold() not in expected:
+            continue
+        try:
+            running[int(str(row[1]).replace(",", "").strip())] = str(row[0]).strip()
+        except ValueError:
+            continue
+    return running
+
+
+def _force_close_media_players(names: Iterable[str]) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    for name in names:
+        try:
+            completed = subprocess.run(
+                ["taskkill", "/IM", str(name), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            attempts.append(
+                {
+                    "image": str(name),
+                    "return_code": completed.returncode,
+                    "stdout": completed.stdout[-400:],
+                    "stderr": completed.stderr[-400:],
+                }
+            )
+        except Exception as exc:
+            attempts.append(
+                {"image": str(name), "error": f"{type(exc).__name__}: {exc}"}
+            )
+
+    deadline = time.monotonic() + 5.0
+    remaining = _running_named_processes(names)
+    while remaining and time.monotonic() < deadline:
+        time.sleep(0.2)
+        remaining = _running_named_processes(names)
+    return {"attempts": attempts, "remaining_processes": remaining}
+
+
 def stop_music_from_desktop() -> ToolResult:
-    return stop_music()
+    # First use the session-aware close path, then independently send the Windows
+    # media-stop key and terminate every configured player image. The old path could
+    # track the short-lived Shell launcher PID instead of the real Media Player PID,
+    # causing repeated “关闭音乐” commands to report failure while audio continued.
+    session_result = stop_music()
+    media_stop_sent = _send_media_stop_key()
+    process_names = _configured_media_process_names()
+    force = _force_close_media_players(process_names)
+    remaining = force["remaining_processes"]
+    verified = not remaining
+
+    return ToolResult(
+        tool_name="system_music_stop",
+        ok=verified,
+        message=(
+            "Music playback stopped and all configured media-player processes were closed."
+            if verified
+            else "Music stop was requested, but a media-player process is still running."
+        ),
+        expected_process_names=list(process_names),
+        data={
+            "action": "stop",
+            "verified": verified,
+            "media_stop_key_sent": media_stop_sent,
+            "session_close_result": session_result.model_dump(mode="json"),
+            "force_close": force,
+            "remaining_processes": remaining,
+            "status_scope": "managed_music_only",
+        },
+        raw={
+            "session_close_result": session_result.model_dump(mode="json"),
+            "force_close": force,
+        },
+    )
