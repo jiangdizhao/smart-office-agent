@@ -67,37 +67,40 @@ def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
         process_names=POWERPOINT_PROCESS_NAMES,
         pids=pids,
         title_keywords=title_keywords,
-        timeout_seconds=10.0 if slideshow else 8.0,
+        timeout_seconds=8.0 if slideshow else 6.0,
     )
     placement_ok = bool(placement.get("placement_verified"))
-    verified = bool(launch_verified and placement_ok)
     requested_state = dict(result.data.get("requested_state") or {})
     requested_state["content_monitor_device"] = (
         placement.get("target_monitor") or {}
     ).get("device")
+
+    message = (
+        "PowerPoint slide show started and its window was moved to DISPLAY2."
+        if slideshow and placement_ok
+        else "PowerPoint opened and its window was moved to DISPLAY2."
+        if placement_ok
+        else (
+            "PowerPoint started successfully. DISPLAY2 placement was requested, but "
+            "window diagnostics were inconclusive."
+        )
+    )
     return result.model_copy(
         update={
-            "ok": verified,
-            "message": (
-                "PowerPoint slide show opened, moved to the content display, maximized, and verified."
-                if slideshow and placement_ok
-                else "PowerPoint opened, moved to the content display, maximized, and verified."
-                if placement_ok
-                else (
-                    "PowerPoint started, but its visible maximized window was not verified "
-                    "on the content display."
-                )
-            ),
+            "ok": launch_verified,
+            "message": message,
             "data": {
                 **result.data,
                 "requested_state": requested_state,
                 "launch_verified": launch_verified,
                 "window_placement": placement,
                 "window_placement_verified": placement_ok,
+                "window_placement_required_for_success": False,
+                "maximization_required": False,
                 "content_monitor_device": (
                     placement.get("target_monitor") or {}
                 ).get("device"),
-                "verified": verified,
+                "verified": launch_verified,
             },
             "raw": {
                 **result.raw,
@@ -155,11 +158,7 @@ def _force_kill_powerpoint() -> dict[str, Any]:
 
 
 def close_powerpoint_discarding_changes() -> ToolResult:
-    """Close every PowerPoint window without saving and verify process exit.
-
-    This is an explicit exhibition command. Marking Presentation.Saved=True tells
-    PowerPoint to discard pending edits rather than displaying a Save prompt.
-    """
+    """Close every PowerPoint window without saving and verify process exit."""
 
     tool_name = "presentation_close"
     started_at = time.monotonic()
