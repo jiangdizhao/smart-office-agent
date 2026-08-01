@@ -94,17 +94,12 @@ function interactionReply(context: InteractionContext, language: VoiceLanguage):
   const label = labels[context.kind][language]
   if (context.result.ok) {
     return language === 'zh'
-      ? `好的，我已经在左侧触摸屏打开${label}窗口。完成操作后，窗口会自动关闭。`
-      : `Okay. I opened ${label} on the left touch display. The window will close automatically when the operation is complete.`
-  }
-  if (context.result.blocked) {
-    return language === 'zh'
-      ? `浏览器阻止了${label}弹窗。请先点击我右侧对应的按钮，并允许本站弹出窗口。`
-      : `The browser blocked the ${label} window. Please use the matching button beside me once and allow pop-ups for this site.`
+      ? `好的，我已经在主屏幕 Sara 左侧打开${label}。您可以保持在摄像头前完成操作。`
+      : `Okay. I opened ${label} beside Sara on the main display, so you can complete it while remaining in view of the camera.`
   }
   return language === 'zh'
-    ? `${label}窗口没有成功打开。请检查三屏排列和浏览器窗口管理权限。`
-    : `The ${label} window did not open. Please check the three-display layout and the browser window-management permission.`
+    ? `${label}面板没有成功打开。请刷新主屏幕后再试一次。`
+    : `The ${label} panel did not open. Please refresh the main display and try again.`
 }
 
 export async function previewConversationRoute(
@@ -119,10 +114,9 @@ export async function previewConversationRoute(
       visitId: request.visitId,
       language: request.language,
     })
-    console.info('[ConversationLatency] interaction-window-command-complete', {
+    console.info('[ConversationLatency] interaction-panel-command-complete', {
       kind: interactionKind,
       ok: result.ok,
-      blocked: result.blocked,
       target: result.target,
       elapsedMs: Math.round(performance.now() - startedAt),
       visitId: request.visitId,
@@ -130,7 +124,7 @@ export async function previewConversationRoute(
     return {
       route: 'realtime_direct',
       scene: 'reception',
-      route_reason: 'interaction_window_command',
+      route_reason: 'interaction_panel_command',
       conversation_complexity: 'simple',
       answer_engine: 'realtime',
       recent_context: interactionContext(interactionKind, result),
