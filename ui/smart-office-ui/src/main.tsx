@@ -5,6 +5,8 @@ import './voice/proximityTimelineDiagnostics'
 import './voice/VoiceDebugPanelPhase2.css'
 import './virtual-host/ProactiveReceptionStage1.css'
 import DebugApp from './debug/DebugApp.tsx'
+import InteractionActionRail from './interaction/InteractionActionRail.tsx'
+import InteractionApp from './interaction/InteractionApp.tsx'
 import VirtualHostApp from './virtual-host/VirtualHostApp.tsx'
 
 function serialiseDiagnostic(value: unknown): unknown {
@@ -74,6 +76,23 @@ if (!appRoot) throw new Error('Application root element was not found.')
 
 const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
 const debugRoute = normalizedPath === '/debug' || normalizedPath.startsWith('/debug/')
-document.documentElement.dataset.smartOfficeRoute = debugRoute ? 'debug' : 'virtual-host'
+const interactionRoute =
+  normalizedPath === '/interaction' || normalizedPath.startsWith('/interaction/')
+document.documentElement.dataset.smartOfficeRoute = debugRoute
+  ? 'debug'
+  : interactionRoute
+    ? 'interaction'
+    : 'virtual-host'
 
-createRoot(appRoot).render(debugRoute ? <DebugApp /> : <VirtualHostApp />)
+createRoot(appRoot).render(
+  debugRoute ? (
+    <DebugApp />
+  ) : interactionRoute ? (
+    <InteractionApp />
+  ) : (
+    <>
+      <VirtualHostApp />
+      <InteractionActionRail />
+    </>
+  ),
+)
