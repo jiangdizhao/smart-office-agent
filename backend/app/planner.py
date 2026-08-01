@@ -15,8 +15,6 @@ def _single_step(title: str, tool_name: str) -> list[PlannedStep]:
 def plan_task(user_text: str) -> list[PlannedStep]:
     text = " ".join(user_text.casefold().split())
 
-    # Exhibition-critical deterministic application and media commands must be
-    # resolved before the older broad meeting/document planner branches.
     music_mentioned = any(
         token in text
         for token in ["音乐", "歌曲", "歌", "music", "song"]
@@ -56,8 +54,6 @@ def plan_task(user_text: str) -> list[PlannedStep]:
     if music_mentioned and open_mentioned:
         return _single_step("随机选择并播放一首本地音乐", "system_music_play_random")
 
-    # Preserve the established compound meeting workflow. A phrase such as
-    # "准备 Teams 会议并打开 PowerPoint" must not collapse into a one-step app open.
     if any(k in text for k in ["meeting", "会议", "zoom", "prepare", "准备"]):
         return [
             PlannedStep(
@@ -154,17 +150,14 @@ def plan_task(user_text: str) -> list[PlannedStep]:
             ),
         ]
 
+    # Unknown text must never launch a browser or any desktop application. The old
+    # fallback opened http://localhost:5173, which turned a slightly mis-transcribed
+    # “关闭 PPT” into a visible wrong action. Return a non-executable plan instead.
     return [
         PlannedStep(
             index=1,
-            title="打开 Smart Office Agent Dashboard",
-            tool_name="open_edge",
-            args={"url": "http://localhost:5173"},
-        ),
-        PlannedStep(
-            index=2,
-            title="当前请求还没有专用工具，返回通用计划",
+            title="当前请求没有匹配到确定性桌面工具",
             tool_name=None,
             args={},
-        ),
+        )
     ]
