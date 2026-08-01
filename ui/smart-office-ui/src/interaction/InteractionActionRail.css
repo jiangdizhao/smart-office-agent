@@ -1,0 +1,97 @@
+.interaction-action-rail {
+  position: fixed;
+  z-index: 14;
+  top: 50%;
+  right: clamp(24px, 3.2vw, 66px);
+  display: grid;
+  width: min(220px, 17vw);
+  min-width: 178px;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(137, 190, 238, 0.2);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(11, 26, 48, 0.82), rgba(5, 15, 31, 0.76));
+  box-shadow: 0 28px 75px rgba(0, 6, 20, 0.34);
+  transform: translateY(-50%);
+  backdrop-filter: blur(22px);
+}
+
+.interaction-action-heading,
+.interaction-action-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.interaction-action-heading { padding: 0 3px 3px; }
+.interaction-action-heading span {
+  color: #6e9bc5;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.interaction-action-heading strong { color: #f0f7ff; font-size: 18px; }
+.interaction-action-list { display: grid; gap: 10px; }
+
+.interaction-action-button {
+  display: grid;
+  min-height: 70px;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  border: 1px solid rgba(123, 181, 235, 0.18);
+  border-radius: 16px;
+  background: rgba(20, 45, 75, 0.62);
+  color: #edf7ff;
+  font: inherit;
+  text-align: left;
+  transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+.interaction-action-button:hover:not(:disabled) {
+  border-color: rgba(101, 191, 255, 0.52);
+  background: rgba(31, 76, 119, 0.78);
+  transform: translateX(-3px);
+}
+.interaction-action-button:disabled { cursor: default; opacity: 0.42; }
+.interaction-action-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 13px;
+  background: linear-gradient(135deg, rgba(47, 139, 213, 0.82), rgba(79, 89, 203, 0.76));
+  color: #fff;
+  font-size: 17px;
+  font-weight: 800;
+}
+.interaction-action-copy { min-width: 0; }
+.interaction-action-copy strong,
+.interaction-action-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.interaction-action-copy strong { font-size: 15px; }
+.interaction-action-copy small { color: #92acc4; font-size: 11px; }
+.interaction-action-notice { color: #9fc8e9; font-size: 11px; text-align: center; }
+
+/* Recording is now entered from this service rail. */
+.virtual-host-shell .voice-primary-row > .conversation-record-button { display: none; }
+
+@media (max-width: 1050px) {
+  .interaction-action-rail { right: 14px; width: 176px; min-width: 0; padding: 12px; }
+  .interaction-action-heading span,
+  .interaction-action-copy small { display: none; }
+  .interaction-action-button { min-height: 58px; }
+}
+
+@media (max-width: 760px) {
+  .interaction-action-rail {
+    position: static;
+    width: calc(100% - 28px);
+    margin: 0 auto 18px;
+    transform: none;
+  }
+  .interaction-action-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
