@@ -45,6 +45,12 @@
   letter-spacing: 0.02em;
 }
 
+/* Exhibition mode always runs as Operator. Keeping a role selector visible would
+   imply that visitors can accidentally disable Office demonstrations. */
+.exhibition-operator-drawer section[aria-labelledby="actor-setting-title"] {
+  display: none;
+}
+
 @keyframes continuous-mic-pulse {
   from { transform: scale(0.88); opacity: 0.72; }
   to { transform: scale(1.18); opacity: 1; }
