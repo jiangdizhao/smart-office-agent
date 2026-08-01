@@ -26,6 +26,7 @@ from app.presentation_api import router as presentation_router
 from app.realtime_api import router as realtime_router
 from app.reception_api import router as reception_router
 from app.recipient_api import router as recipient_router
+from app.result_center_api import router as result_center_router
 from app.state_store import state_store
 from app.system_status_policy import install_lightweight_system_status_policy
 from app.task_graph import build_task_graph, task_graph_event_data
@@ -59,6 +60,7 @@ app.include_router(recipient_router)
 app.include_router(general_chat_router)
 app.include_router(human_recording_router)
 app.include_router(contact_record_router)
+app.include_router(result_center_router)
 app.include_router(display_role_router)
 
 
@@ -94,7 +96,8 @@ def health_check():
             "reception_knowledge": True,
             "general_backend_chat": True,
             "general_chat_not_limited_to_company_topics": True,
-            "permission_gate": True,
+            "permission_gate": False,
+            "exhibition_admin_mode": True,
             "conversation_memory": True,
             "conversation_recent_message_limit": 16,
             "conversation_lifecycle_state": True,
@@ -107,6 +110,9 @@ def health_check():
             "human_conversation_docx_auto_open": True,
             "contact_records": True,
             "contact_consent_required": True,
+            "exhibition_result_center": True,
+            "contact_csv_export": True,
+            "recording_list_and_playback": True,
             "touch_interaction_windows": True,
             "display_role_routing": True,
             "presentation_controller": True,
