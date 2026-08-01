@@ -201,43 +201,57 @@ function deterministicReply(
   result: DesktopToolResult,
   language: 'zh' | 'en',
 ): string {
-  const verified = result.ok === true && result.data?.verified !== false
-  if (!verified) {
+  const completed = result.ok === true && result.data?.verified !== false
+  if (!completed) {
     const detail = String(result.message ?? '').trim()
     return language === 'zh'
       ? `操作没有完成。${detail}`
       : `The action did not complete. ${detail}`
   }
 
+  const placementConfirmed = result.data?.window_placement_verified === true
   if (language === 'en') {
     if (target === 'music') {
-      return action === 'play'
-        ? 'Music is playing in the media player on display 2.'
-        : 'Music playback and the managed media player are closed.'
+      if (action === 'play') {
+        return placementConfirmed
+          ? 'Music is playing and the media-player window is on display 2.'
+          : 'Music is playing. The media-player window has been sent to display 2; you can adjust its size manually.'
+      }
+      return 'Music playback and the managed media player are closed.'
     }
     const app = target === 'teams'
       ? 'Teams'
       : target === 'onenote'
         ? 'OneNote'
         : 'PowerPoint'
-    return action === 'open'
-      ? `${app} is open and maximized on display 2.`
-      : target === 'powerpoint'
-        ? 'PowerPoint is closed and unsaved changes were discarded.'
-        : `${app} is closed.`
+    if (action === 'open') {
+      return placementConfirmed
+        ? `${app} is open on display 2.`
+        : `${app} is open and its window has been sent to display 2; you can adjust its size manually.`
+    }
+    return target === 'powerpoint'
+      ? 'PowerPoint is closed and unsaved changes were discarded.'
+      : `${app} is closed.`
   }
 
   if (target === 'music') {
-    return action === 'play'
-      ? '音乐已经在二号内容屏幕的媒体播放器中播放。'
-      : '音乐已经停止，受控媒体播放器也已关闭。'
+    if (action === 'play') {
+      return placementConfirmed
+        ? '音乐已经播放，媒体播放器窗口位于二号屏幕。'
+        : '音乐已经播放，播放器窗口已发送到二号屏幕；窗口大小可以手动调整。'
+    }
+    return '音乐已经停止，受控媒体播放器也已关闭。'
   }
   const app = target === 'teams'
     ? 'Teams'
     : target === 'onenote'
       ? 'OneNote'
       : 'PowerPoint'
-  if (action === 'open') return `${app} 已在二号内容屏幕打开并最大化。`
+  if (action === 'open') {
+    return placementConfirmed
+      ? `${app} 已在二号屏幕打开。`
+      : `${app} 已打开，窗口已发送到二号屏幕；窗口大小可以手动调整。`
+  }
   if (target === 'powerpoint') return 'PowerPoint 已经关闭，未保存的修改已直接丢弃。'
   return `${app} 已经关闭。`
 }
@@ -292,8 +306,7 @@ export async function captureAutomaticRealtimeTurn(
     }
 
     // These commands use an exact action enum and never touch the natural-language
-    // planner. Therefore "关闭 PPT" cannot fall through to the legacy dashboard
-    // action, even when the rest of the conversation router is unhealthy.
+    // planner. Window placement is best effort and never invalidates a launch.
     if (isDeterministicDesktopCommand(recovered.target, recovered.action)) {
       const action = recovered.action as Exclude<CommandAction, null>
       const result = await executeDeterministicDesktopCommand(
