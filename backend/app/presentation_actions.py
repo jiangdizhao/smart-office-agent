@@ -146,6 +146,57 @@ def _ensure_content_display(
     )
 
 
+def _merge_monitor_verification(
+    name: str,
+    verification: VerificationResult,
+    monitor_state: dict[str, Any],
+    *,
+    slideshow_active: bool,
+) -> VerificationResult:
+    """Compatibility helper retained for historical presentation contracts.
+
+    The current runtime uses the unified content-display placement verifier below.
+    Older Gate 2A tests import this helper directly to assert that a read-only status
+    query is not failed merely because monitor inspection is unavailable.
+    """
+
+    monitor_required = slideshow_active and name in {
+        "presentation_start_slideshow",
+        "presentation_next_slide",
+        "presentation_previous_slide",
+        "presentation_go_to_slide",
+    }
+    if not monitor_required:
+        return verification.model_copy(
+            update={"raw": {**verification.raw, "monitor_state": monitor_state}}
+        )
+
+    monitor_ok = bool(monitor_state.get("monitor_placement_enforced"))
+    message = verification.message
+    if verification.ok and monitor_ok:
+        message = (
+            f"{message} Slide show verified on "
+            f"{monitor_state.get('slideshow_monitor_device')}."
+        )
+    elif verification.ok:
+        message = (
+            f"{message} Slide show was not verified on the configured monitor "
+            f"{monitor_state.get('target_monitor_device')}."
+        )
+    return verification.model_copy(
+        update={
+            "ok": verification.ok and monitor_ok,
+            "message": message,
+            "raw": {
+                **verification.raw,
+                "monitor_required": True,
+                "monitor_ok": monitor_ok,
+                "monitor_state": monitor_state,
+            },
+        }
+    )
+
+
 def _merge_desktop_verification(
     name: str,
     verification: VerificationResult,
