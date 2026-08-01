@@ -1,8 +1,72 @@
 from app.models import PlannedStep
 
 
+def _single_step(title: str, tool_name: str) -> list[PlannedStep]:
+    return [
+        PlannedStep(
+            index=1,
+            title=title,
+            tool_name=tool_name,
+            args={},
+        )
+    ]
+
+
 def plan_task(user_text: str) -> list[PlannedStep]:
-    text = user_text.lower()
+    text = " ".join(user_text.casefold().split())
+
+    # Exhibition-critical deterministic application and media commands must be
+    # resolved before the older broad meeting/document planner branches.
+    music_mentioned = any(
+        token in text
+        for token in ["音乐", "歌曲", "歌", "music", "song"]
+    )
+    close_mentioned = any(
+        token in text
+        for token in [
+            "关闭",
+            "关掉",
+            "停止",
+            "退出",
+            "结束",
+            "close",
+            "stop",
+            "quit",
+            "exit",
+        ]
+    )
+    open_mentioned = any(
+        token in text
+        for token in [
+            "打开",
+            "启动",
+            "开启",
+            "播放",
+            "放一首",
+            "放点",
+            "open",
+            "launch",
+            "start",
+            "play",
+        ]
+    )
+
+    if music_mentioned and close_mentioned:
+        return _single_step("停止音乐并关闭受控媒体播放器", "system_music_stop")
+    if music_mentioned and open_mentioned:
+        return _single_step("随机选择并播放一首本地音乐", "system_music_play_random")
+
+    teams_mentioned = "teams" in text or "微软团队" in text
+    if teams_mentioned and close_mentioned:
+        return _single_step("关闭 Microsoft Teams", "system_close_teams")
+    if teams_mentioned and open_mentioned:
+        return _single_step("打开 Microsoft Teams", "system_open_teams")
+
+    onenote_mentioned = "onenote" in text or "one note" in text or "微软笔记" in text
+    if onenote_mentioned and close_mentioned:
+        return _single_step("关闭 OneNote", "system_close_onenote")
+    if onenote_mentioned and open_mentioned:
+        return _single_step("打开 OneNote", "system_open_onenote")
 
     if any(k in text for k in ["meeting", "会议", "zoom", "prepare", "准备"]):
         return [
