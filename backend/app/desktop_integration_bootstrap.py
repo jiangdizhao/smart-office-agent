@@ -11,14 +11,11 @@ def install_desktop_integration_wrappers() -> None:
         return
     _installed = True
 
-    # The exhibition machine uses Windows display order 3 / 1 / 2 from left to
-    # right. DISPLAY2 is therefore the required rightmost content display. Keep an
-    # explicit operator override, but use DISPLAY2 when no value was supplied.
-    os.environ.setdefault("SMART_OFFICE_CONTENT_MONITOR_DEVICE", r"\\.\DISPLAY2")
+    # This exhibition PC has Windows display order 3 / 1 / 2 from left to right.
+    # Force DISPLAY2 even when an older PowerShell session still contains a stale
+    # monitor override; otherwise applications can be moved to the wrong screen.
+    os.environ["SMART_OFFICE_CONTENT_MONITOR_DEVICE"] = r"\\.\DISPLAY2"
 
-    # office_actions imports the draft function directly, so patch both the source
-    # module and the already imported consumer. The wrapper retains a private alias
-    # to the original implementation and therefore does not recurse.
     from app import office_actions, office_sequence, outlook_drafts
     from app.tools.outlook_desktop_actions import (
         create_outlook_summary_draft_on_content_display,
