@@ -161,12 +161,22 @@ export async function previewConversationRoute(
     )
   }
   const payload = (await response.json()) as FastConversationRoute
+  const elapsedMs = Math.round(performance.now() - startedAt)
+  console.info('[OfficeRoute]', {
+    transcript: request.text,
+    route: payload.route,
+    routeReason: payload.route_reason,
+    answerEngine: payload.answer_engine,
+    complexity: payload.conversation_complexity,
+    elapsedMs,
+    visitId: request.visitId,
+  })
   console.info('[ConversationLatency] route-preview-complete', {
     route: payload.route,
     routeReason: payload.route_reason,
     complexity: payload.conversation_complexity,
     answerEngine: payload.answer_engine,
-    elapsedMs: Math.round(performance.now() - startedAt),
+    elapsedMs,
     visitId: request.visitId,
   })
   return payload
