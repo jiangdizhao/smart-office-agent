@@ -44,6 +44,7 @@ def _powerpoint_pids() -> set[int]:
 
 
 def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
+    launch_verified = bool(result.ok)
     status = get_presentation_status()
     pids = {
         int(pid)
@@ -69,7 +70,7 @@ def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
         timeout_seconds=10.0 if slideshow else 8.0,
     )
     placement_ok = bool(placement.get("placement_verified"))
-    verified = bool(result.ok and placement_ok)
+    verified = bool(launch_verified and placement_ok)
     requested_state = dict(result.data.get("requested_state") or {})
     requested_state["content_monitor_device"] = (
         placement.get("target_monitor") or {}
@@ -90,6 +91,7 @@ def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
             "data": {
                 **result.data,
                 "requested_state": requested_state,
+                "launch_verified": launch_verified,
                 "window_placement": placement,
                 "window_placement_verified": placement_ok,
                 "content_monitor_device": (
@@ -99,6 +101,7 @@ def _placement_result(result: ToolResult, *, slideshow: bool) -> ToolResult:
             },
             "raw": {
                 **result.raw,
+                "launch_verified": launch_verified,
                 "window_placement": placement,
             },
         }
