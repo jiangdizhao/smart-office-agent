@@ -24,11 +24,19 @@ def post_turn(client: TestClient, *, conversation_id: str, text: str, actor: str
         },
     )
     response.raise_for_status()
+    assert response.headers.get("x-smart-office-exhibition-actor") == "operator"
     return response.json()
 
 
 def main() -> None:
     client = TestClient(app)
+
+    health = client.get("/")
+    health.raise_for_status()
+    capabilities = health.json()["capabilities"]
+    assert capabilities["exhibition_admin_mode"] is True
+    assert capabilities["exhibition_actor"] == "operator"
+    assert capabilities["permission_gate"] is False
 
     status = client.get("/agent/turn/status")
     status.raise_for_status()
@@ -53,6 +61,7 @@ def main() -> None:
         actor="visitor",
     )
     assert self_intro["route"] == "reception_knowledge"
+    assert self_intro["actor_type"] == "operator"
     assert self_intro["source_ids"] == ["company_profile:assistant_identity"]
     assert "Smart Office Virtual Host" in self_intro["spoken_text"]
     assert "您想先" in self_intro["spoken_text"]
@@ -66,6 +75,7 @@ def main() -> None:
         actor="visitor",
     )
     assert visitor_reception["route"] == "reception_knowledge"
+    assert visitor_reception["actor_type"] == "operator"
     assert visitor_reception["permission_decision"] == "allowed"
     assert visitor_reception["source_ids"]
     assert visitor_reception["content_url"]
@@ -74,6 +84,9 @@ def main() -> None:
     content_page.raise_for_status()
     assert "Smart Office Reception Content" in content_page.text
 
+    # Exhibition mode must normalize a client-supplied visitor role before the
+    # legacy permission gate. The request is accepted as Operator, although this
+    # compatibility path still refuses to execute without a controlled Realtime plan.
     visitor_office = post_turn(
         client,
         conversation_id="phase2-visitor",
@@ -81,8 +94,10 @@ def main() -> None:
         actor="visitor",
     )
     assert visitor_office["route"] == "office_direct"
-    assert visitor_office["permission_decision"] == "denied"
+    assert visitor_office["actor_type"] == "operator"
+    assert visitor_office["permission_decision"] == "allowed"
     assert visitor_office["task_id"] is None
+    assert "没有执行" in visitor_office["spoken_text"]
 
     employee_direct = post_turn(
         client,
@@ -91,6 +106,7 @@ def main() -> None:
         actor="employee",
     )
     assert employee_direct["route"] == "office_direct"
+    assert employee_direct["actor_type"] == "operator"
     assert employee_direct["permission_decision"] == "allowed"
     assert employee_direct["task_id"] is None
     assert "没有执行" in employee_direct["spoken_text"]
@@ -102,6 +118,7 @@ def main() -> None:
         actor="employee",
     )
     assert employee_planned["route"] == "office_planned_task"
+    assert employee_planned["actor_type"] == "operator"
     assert employee_planned["permission_decision"] == "allowed"
     assert employee_planned["task_id"]
     assert employee_planned["approval_required"] is True
@@ -136,9 +153,9 @@ def main() -> None:
 
     conversation = client.get("/agent/conversations/phase2-visitor")
     conversation.raise_for_status()
-    assert conversation.json()["conversation"]["actor_type"] == "visitor"
+    assert conversation.json()["conversation"]["actor_type"] == "operator"
 
-    print("PASS: Phase 2 routing, guide-style reception, and permission gates remain healthy under Gate 2B.")
+    print("PASS: Phase 2 routing and exhibition-wide Operator normalization remain healthy.")
 
 
 if __name__ == "__main__":
