@@ -7,7 +7,10 @@ import {
   commandClarification,
   recoverCommandTranscript,
 } from '../voice/commandSpeechRecovery'
-import type { OfficeVoiceController } from '../voice/useOfficeVoiceController'
+import {
+  OFFICE_API_BASE,
+  type OfficeVoiceController,
+} from '../voice/useOfficeVoiceController'
 import { realtimeAgent } from '../voice/realtimeAgentRuntime'
 import { voiceOutputManager } from '../voice/voiceOutputManager'
 import { visitLeaseRegistry } from './visitLeaseRegistry'
@@ -17,6 +20,21 @@ export type AutomaticVoiceTurnResult =
   | { kind: 'silence' }
   | { kind: 'aborted' }
   | { kind: 'error'; message: string }
+
+type DesktopTaskResult = {
+  ok?: boolean
+  message?: string
+  data?: Record<string, unknown>
+}
+
+type DesktopTask = {
+  task_id?: string
+  status?: string
+  summary?: string | null
+  steps?: Array<{
+    result?: DesktopTaskResult | null
+  }>
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -86,6 +104,85 @@ async function recoverTurnState(
   return recovered
 }
 
+function latestDesktopResult(task: DesktopTask): DesktopTaskResult | null {
+  return [...(task.steps ?? [])].reverse().find((step) => step.result)?.result ?? null
+}
+
+async function executeDeterministicDesktopTask(
+  controller: OfficeVoiceController,
+  transcript: string,
+  signal: AbortSignal,
+): Promise<DesktopTaskResult> {
+  const lease = visitLeaseRegistry.current()
+  const response = await fetch(`${OFFICE_API_BASE}/agent/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      text: transcript,
+      execute: true,
+      conversation_id: controller.conversationId,
+      visit_id: lease?.visitId ?? null,
+      actor_type: controller.actor,
+    }),
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Desktop task creation failed: ${response.status} ${await response.text()}`)
+  }
+  let task = (await response.json()) as DesktopTask
+  const taskId = String(task.task_id ?? '').trim()
+  if (!taskId) throw new Error('The Backend returned no desktop task id.')
+
+  const deadline = performance.now() + 40_000
+  while (performance.now() < deadline) {
+    if (signal.aborted) throw new DOMException('Desktop task aborted.', 'AbortError')
+    if (['completed', 'failed', 'cancelled'].includes(String(task.status ?? ''))) {
+      return latestDesktopResult(task) ?? {
+        ok: false,
+        message: task.summary?.trim() || 'The desktop task returned no tool result.',
+        data: { verified: false },
+      }
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(resolve, 250)
+      const onAbort = () => {
+        window.clearTimeout(timer)
+        reject(new DOMException('Desktop task aborted.', 'AbortError'))
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+    const poll = await fetch(
+      `${OFFICE_API_BASE}/agent/tasks/${encodeURIComponent(taskId)}`,
+      { headers: { Accept: 'application/json' }, signal },
+    )
+    if (!poll.ok) throw new Error(`Desktop task status failed: ${poll.status}`)
+    task = (await poll.json()) as DesktopTask
+  }
+  throw new Error('The deterministic desktop task timed out.')
+}
+
+async function handleDeterministicPowerPointCommand(
+  controller: OfficeVoiceController,
+  transcript: string,
+  action: 'open' | 'close',
+  signal: AbortSignal,
+): Promise<void> {
+  const result = await executeDeterministicDesktopTask(controller, transcript, signal)
+  const verified = result.ok === true && result.data?.verified === true
+  const reply = controller.language === 'zh'
+    ? verified
+      ? action === 'open'
+        ? 'PowerPoint 已在最右侧内容屏幕打开并最大化。'
+        : 'PowerPoint 已经关闭，未保存的修改已直接丢弃。'
+      : `PowerPoint 操作没有完成。${String(result.message ?? '')}`
+    : verified
+      ? action === 'open'
+        ? 'PowerPoint is open and maximized on the rightmost content display.'
+        : 'PowerPoint is closed and unsaved changes were discarded.'
+      : `The PowerPoint action did not complete. ${String(result.message ?? '')}`
+  await speakDirect(controller, reply, 'deterministic_powerpoint_command', signal)
+}
+
 export async function captureAutomaticRealtimeTurn(
   controller: () => OfficeVoiceController,
   signal: AbortSignal,
@@ -126,6 +223,19 @@ export async function captureAutomaticRealtimeTurn(
         language: current.language,
       })
       await speakDirect(current, clarification, 'bounded_command_clarification', signal)
+      return { kind: 'heard', transcript }
+    }
+
+    if (
+      recovered.target === 'powerpoint' &&
+      (recovered.action === 'open' || recovered.action === 'close')
+    ) {
+      await handleDeterministicPowerPointCommand(
+        current,
+        transcript,
+        recovered.action,
+        signal,
+      )
       return { kind: 'heard', transcript }
     }
 
