@@ -60,10 +60,17 @@ type LegacyToolResult = {
   data?: Record<string, unknown>
 }
 
-type LegacyAgentResponse = {
-  mode?: string
-  user_request?: string
-  results?: LegacyToolResult[]
+type LegacyTaskStep = {
+  status?: string
+  message?: string | null
+  result?: LegacyToolResult | null
+}
+
+type LegacyTaskSession = {
+  task_id?: string
+  status?: string
+  summary?: string | null
+  steps?: LegacyTaskStep[]
 }
 
 type SystemActionContext = {
@@ -181,39 +188,104 @@ function parseSystemActionContext(value: string): SystemActionContext | null {
   }
 }
 
+function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError('System action was aborted.'))
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup()
+      resolve()
+    }, milliseconds)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      cleanup()
+      reject(abortError('System action was aborted.'))
+    }
+    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function cancelSystemActionTask(taskId: string): Promise<void> {
+  if (!taskId) return
+  await fetch(`${API_BASE_URL}/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: 'POST',
+    keepalive: true,
+  }).catch(() => undefined)
+}
+
+function latestTaskResult(task: LegacyTaskSession): LegacyToolResult | null {
+  const steps = [...(task.steps ?? [])].reverse()
+  return steps.find((step) => step.result)?.result ?? null
+}
+
 async function executeSystemAction(
   kind: SystemActionKind,
   request: RouteRequest,
 ): Promise<LegacyToolResult> {
-  const response = await fetchWithTimeout(
-    `${API_BASE_URL}/agent/run`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({
-        text: request.text,
-        execute: true,
-      }),
-    },
-    SYSTEM_ACTION_TIMEOUT_MS,
-    request.lease?.signal,
-  )
-  if (!response.ok) {
-    throw new Error(
-      `System action failed: ${response.status} ${await response.text()}`,
+  let taskId = ''
+  try {
+    const createResponse = await fetchWithTimeout(
+      `${API_BASE_URL}/agent/tasks`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          text: request.text,
+          execute: true,
+          conversation_id: request.conversationId,
+          visit_id: request.visitId,
+          actor_type: request.actor,
+        }),
+      },
+      6_000,
+      request.lease?.signal,
     )
-  }
-  const payload = (await response.json()) as LegacyAgentResponse
-  const result = payload.results?.[0]
-  if (!result) {
-    return {
-      tool_name: kind,
-      ok: false,
-      message: 'The Backend returned no tool result.',
-      data: { verified: false },
+    if (!createResponse.ok) {
+      throw new Error(
+        `System action task creation failed: ${createResponse.status} ${await createResponse.text()}`,
+      )
     }
+
+    let task = (await createResponse.json()) as LegacyTaskSession
+    taskId = String(task.task_id ?? '').trim()
+    if (!taskId) throw new Error('The Backend returned no system action task id.')
+
+    const deadline = performance.now() + SYSTEM_ACTION_TIMEOUT_MS
+    while (performance.now() < deadline) {
+      const status = String(task.status ?? '')
+      if (['completed', 'failed', 'cancelled'].includes(status)) {
+        const result = latestTaskResult(task)
+        if (result) return result
+        return {
+          tool_name: kind,
+          ok: false,
+          message:
+            task.summary?.trim() ||
+            `System action task ended with status ${status || 'unknown'} without a tool result.`,
+          data: { verified: false, task_id: taskId, task_status: status },
+        }
+      }
+
+      await wait(250, request.lease?.signal)
+      const pollResponse = await fetchWithTimeout(
+        `${API_BASE_URL}/agent/tasks/${encodeURIComponent(taskId)}`,
+        { headers: { Accept: 'application/json' } },
+        4_000,
+        request.lease?.signal,
+      )
+      if (!pollResponse.ok) {
+        throw new Error(
+          `System action task status failed: ${pollResponse.status} ${await pollResponse.text()}`,
+        )
+      }
+      task = (await pollResponse.json()) as LegacyTaskSession
+    }
+
+    throw new Error('The system action did not finish within the configured timeout.')
+  } catch (error) {
+    if (taskId) void cancelSystemActionTask(taskId)
+    throw error
   }
-  return result
 }
 
 function booleanValue(value: unknown): boolean {
@@ -300,6 +372,7 @@ export async function previewConversationRoute(
     console.info('[ConversationLatency] interaction-panel-command-complete', {
       kind: interactionKind,
       ok: result.ok,
+      blocked: result.blocked,
       target: result.target,
       elapsedMs: Math.round(performance.now() - startedAt),
       visitId: request.visitId,
