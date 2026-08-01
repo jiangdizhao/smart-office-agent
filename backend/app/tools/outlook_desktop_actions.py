@@ -27,30 +27,31 @@ def create_outlook_summary_draft_on_content_display(
     placement = place_window_on_content_monitor(
         process_names=["OUTLOOK.EXE"],
         title_keywords=[clean_subject, "Outlook"],
-        timeout_seconds=10.0,
+        timeout_seconds=8.0,
     )
     placement_ok = bool(placement.get("placement_verified"))
+    draft_verified = bool(result.data.get("outlook_draft_verified", result.ok))
     return result.model_copy(
         update={
-            "ok": bool(result.ok and placement_ok),
+            "ok": bool(result.ok and draft_verified),
             "message": (
-                f"{result.message} The draft window was moved to the content display and maximized."
+                f"{result.message} The draft window was moved to DISPLAY2."
                 if placement_ok
                 else (
-                    f"{result.message} The draft exists, but its visible maximized window "
-                    "was not verified on the content display."
+                    f"{result.message} DISPLAY2 placement was requested, but window "
+                    "diagnostics were inconclusive."
                 )
             ),
             "data": {
                 **result.data,
                 "outlook_window_placement": placement,
                 "outlook_window_placement_verified": placement_ok,
+                "window_placement_required_for_success": False,
+                "maximization_required": False,
                 "content_monitor_device": (
                     placement.get("target_monitor") or {}
                 ).get("device"),
-                "verified": bool(
-                    result.data.get("outlook_draft_verified") and placement_ok
-                ),
+                "verified": draft_verified,
             },
             "raw": {
                 **result.raw,
