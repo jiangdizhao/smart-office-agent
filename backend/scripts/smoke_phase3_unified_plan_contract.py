@@ -161,20 +161,17 @@ def main() -> None:
     assert 'slide_target="last"' in interpreter_source
     assert "never ask the user for the numeric last page" in interpreter_source
 
-    visitor = post_plan(
-        client,
-        actor="visitor",
-        text="下一页",
-        steps=[{"name": "presentation_next_slide"}],
-        language="zh",
-    )
-    assert visitor["permission_decision"] == "denied"
-    assert visitor["task_id"] is None
-
     fake = fake_executor()
     original_direct = turn_api.execute_presentation_tool_call
     turn_api.execute_presentation_tool_call = fake
     try:
+        visitor = post_plan(
+            client,
+            actor="visitor",
+            text="下一页",
+            steps=[{"name": "presentation_next_slide"}],
+            language="zh",
+        )
         single = post_plan(
             client,
             actor="employee",
@@ -191,6 +188,13 @@ def main() -> None:
         )
     finally:
         turn_api.execute_presentation_tool_call = original_direct
+
+    # Exhibition mode is function-first and normalizes all actors to Operator.
+    assert visitor["actor_type"] == "operator"
+    assert visitor["permission_decision"] == "allowed"
+    assert visitor["task_id"] is None
+    assert visitor["tool_result"]["tool_name"] == "presentation_next_slide"
+    assert visitor["verification_result"]["ok"] is True
 
     assert single["route"] == "office_direct"
     assert single["realtime_tool_call"]["name"] == "presentation_plan"
@@ -259,7 +263,8 @@ def main() -> None:
     print(
         "PASS: GPT Realtime exposes one presentation_plan function; Backend dispatches "
         "one step directly and multiple steps through the verified Task Runtime; "
-        "direction policy and semantic final-slide resolution are protected."
+        "exhibition Operator normalization, direction policy and semantic final-slide "
+        "resolution are protected."
     )
 
 
