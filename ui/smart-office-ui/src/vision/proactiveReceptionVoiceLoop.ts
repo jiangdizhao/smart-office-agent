@@ -40,6 +40,26 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function waitWithSignal(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('Operation aborted.', 'AbortError'))
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onAbort = () => finish(new DOMException('Operation aborted.', 'AbortError'))
+    const timer = window.setTimeout(() => finish(), milliseconds)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 function interactionReply(kind: ReturnType<typeof matchInteractionWindowIntent>, language: 'zh' | 'en'): string {
   if (language === 'en') {
     if (kind === 'contact') return 'I have opened contact registration beside Sara on the main display.'
@@ -81,11 +101,16 @@ async function recoverTurnState(
   controller: () => OfficeVoiceController,
   signal: AbortSignal,
 ): Promise<boolean> {
-  // React state propagation is asynchronous. Yield once, then inspect the latest
-  // controller snapshot rather than the snapshot captured before submit().
-  await new Promise((resolve) => window.setTimeout(resolve, 0))
-  if (signal.aborted) return false
-  const latest = controller()
+  // submit() catches controller errors internally, while React publishes the new
+  // panel state asynchronously. Wait a short bounded interval so an error cannot
+  // be missed because the callback still holds the previous idle snapshot.
+  let latest = controller()
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (signal.aborted) return false
+    if (latest.panel === 'error') break
+    await waitWithSignal(50, signal)
+    latest = controller()
+  }
   if (latest.panel !== 'error') return true
 
   console.warn('[RealtimeDiagnostics] recovering-controller-after-turn-error', {
@@ -94,14 +119,29 @@ async function recoverTurnState(
   })
   latest.clearError()
   await latest.connect()
-  await new Promise((resolve) => window.setTimeout(resolve, 0))
-  const recovered = !signal.aborted && controller().panel !== 'error'
-  console.info('[RealtimeDiagnostics] controller-turn-recovery-complete', {
-    recovered,
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (signal.aborted) return false
+    const state = controller()
+    if (state.panel === 'idle' && realtimeAgent.status().connected) {
+      console.info('[RealtimeDiagnostics] controller-turn-recovery-complete', {
+        recovered: true,
+        panel: state.panel,
+        connectionState: realtimeAgent.status().connectionState,
+      })
+      return true
+    }
+    if (state.panel === 'error' && attempt >= 2) break
+    await waitWithSignal(50, signal)
+  }
+
+  console.error('[RealtimeDiagnostics] controller-turn-recovery-complete', {
+    recovered: false,
     panel: controller().panel,
     connectionState: realtimeAgent.status().connectionState,
+    error: controller().error,
   })
-  return recovered
+  return false
 }
 
 function latestDesktopResult(task: DesktopTask): DesktopTaskResult | null {
@@ -143,14 +183,7 @@ async function executeDeterministicDesktopTask(
         data: { verified: false },
       }
     }
-    await new Promise<void>((resolve, reject) => {
-      const timer = window.setTimeout(resolve, 250)
-      const onAbort = () => {
-        window.clearTimeout(timer)
-        reject(new DOMException('Desktop task aborted.', 'AbortError'))
-      }
-      signal.addEventListener('abort', onAbort, { once: true })
-    })
+    await waitWithSignal(250, signal)
     const poll = await fetch(
       `${OFFICE_API_BASE}/agent/tasks/${encodeURIComponent(taskId)}`,
       { headers: { Accept: 'application/json' }, signal },
@@ -168,7 +201,10 @@ async function handleDeterministicPowerPointCommand(
   signal: AbortSignal,
 ): Promise<void> {
   const result = await executeDeterministicDesktopTask(controller, transcript, signal)
-  const verified = result.ok === true && result.data?.verified === true
+  // PowerPoint desktop wrappers encode the required visible-window/process
+  // postcondition into result.ok. The optional verified flag is authoritative only
+  // when present, because older presentation results did not include that field.
+  const verified = result.ok === true && result.data?.verified !== false
   const reply = controller.language === 'zh'
     ? verified
       ? action === 'open'
