@@ -29,6 +29,8 @@ const OPEN_PATTERN = /(?:打开|开启|启动|运行|open|launch|start|turn\s*on
 const CLOSE_PATTERN = /(?:关闭|关掉|退出|结束|close|quit|exit|turn\s*off)/i
 const PLAY_PATTERN = /(?:播放|放一首|放点|来一首|play|start)/i
 const STOP_PATTERN = /(?:停止|别放了|不要播放|stop|close|turn\s*off)/i
+const EXPLICIT_ZH_ACTION = /(?:打开|开启|启动|运行|关闭|关掉|退出|结束|播放|放一首|放点|来一首|停止|别放了|不要播放)/i
+const EXPLICIT_EN_ACTION = /(?:\bopen\b|\blaunch\b|\bstart\b|\bclose\b|\bquit\b|\bexit\b|\bplay\b|\bstop\b|turn\s+on|turn\s+off)/i
 
 // Known phonetic failures observed on the exhibition microphone. These mappings
 // are deliberately narrow: they only apply when a supported application name is
@@ -64,6 +66,17 @@ function actionFromTranscript(text: string, target: CommandTarget): CommandActio
   if (CLOSE_PATTERN.test(text) || PHONETIC_CLOSE_PATTERN.test(text)) return 'close'
   if (OPEN_PATTERN.test(text) || PHONETIC_OPEN_PATTERN.test(text)) return 'open'
   return null
+}
+
+function commandLanguage(text: string, fallback: VoiceLanguage): VoiceLanguage {
+  const hasChineseAction = EXPLICIT_ZH_ACTION.test(text)
+  const hasEnglishAction = EXPLICIT_EN_ACTION.test(text)
+  if (hasChineseAction && !hasEnglishAction) return 'zh'
+  if (hasEnglishAction && !hasChineseAction) return 'en'
+  // Phonetic recovery such as "one B Teams" is not a genuine English action.
+  // Keep the active Visit language rather than allowing the product name or ASR
+  // debris to switch the conversation to English.
+  return fallback
 }
 
 function isBoundedCommandFragment(text: string, target: CommandTarget): boolean {
@@ -152,7 +165,8 @@ export function recoverCommandTranscript(
     }
   }
 
-  const normalized = canonicalCommand(target, action, language)
+  const resolvedLanguage = commandLanguage(clean, language)
+  const normalized = canonicalCommand(target, action, resolvedLanguage)
   const recovered = normalized.toLocaleLowerCase() !== raw.toLocaleLowerCase()
   if (recovered) {
     console.info('[RealtimeDiagnostics] command-transcript-recovered', {
@@ -161,6 +175,7 @@ export function recoverCommandTranscript(
       target,
       action,
       visitLanguage: language,
+      commandLanguage: resolvedLanguage,
     })
   }
   return {
@@ -169,7 +184,7 @@ export function recoverCommandTranscript(
     target,
     action,
     ambiguous: action === null,
-    language,
+    language: resolvedLanguage,
     recovered,
   }
 }
@@ -189,8 +204,8 @@ export function commandClarification(
 
 function transcriptionPrompt(language: VoiceLanguage): string {
   const languageRule = language === 'zh'
-    ? `The active visitor language is Chinese. Treat Chinese as a strong prior. Application names such as Teams, OneNote, PowerPoint, Outlook and PPT may be spoken in English, but nearby action words are normally Chinese. Do not switch the whole utterance to English merely because an application name is English. In particular, Chinese “关闭” (guan bi) must not be rendered as “one B”, “one bee”, “1B”, “wan bi” or similar English-looking text; normalize it to 关闭. Chinese “打开” (da kai) must not be rendered as unrelated English words; normalize it to 打开.`
-    : `The active visitor language is English. Preserve genuine Chinese words only when they are clearly spoken; otherwise transcribe the command in English.`
+    ? `The active visitor language is Chinese. Treat Chinese as a strong prior. Application names such as Teams, OneNote, PowerPoint, Outlook and PPT may be spoken in English, but nearby action words are normally Chinese. Do not switch the whole utterance to English merely because an application name is English. In particular, Chinese “关闭” (guan bi) must not be rendered as “one B”, “one bee”, “1B”, “wan bi” or similar English-looking text; normalize it to 关闭. Chinese “打开” (da kai) must not be rendered as unrelated English words; normalize it to 打开. A clear full English command such as “close Teams” may remain English.`
+    : `The active visitor language is English. Preserve genuine Chinese words when they are clearly spoken. A clear Chinese command such as “关闭 Teams” may remain Chinese.`
   return `
 You are a multilingual speech transcription and command-correction layer, not a conversational assistant.
 Return only the user's final intended utterance as normalized plain text. Do not answer the user.
