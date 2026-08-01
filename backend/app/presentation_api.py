@@ -4,18 +4,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.models import ToolResult, VerificationResult
+from app.presentation_actions import execute_presentation_tool_call
 from app.presentation_config import presentation_config
-from app.presentation_verifier import verify_presentation_tool_result
-from app.tools.presentation_controller import (
-    close_configured_presentation,
-    end_configured_slideshow,
-    get_presentation_status,
-    go_to_presentation_slide,
-    next_presentation_slide,
-    open_configured_presentation,
-    previous_presentation_slide,
-    start_configured_slideshow,
-)
+from app.tools.presentation_controller import get_presentation_status
 
 
 router = APIRouter(prefix="/api/presentation", tags=["presentation-gate1"])
@@ -43,8 +34,11 @@ class PresentationActionResponse(BaseModel):
     verification_result: VerificationResult
 
 
-def _run_and_verify(tool_result: ToolResult) -> PresentationActionResponse:
-    verification = verify_presentation_tool_result(tool_result)
+def _execute(name: str, arguments: dict | None = None) -> PresentationActionResponse:
+    tool_result, verification, _status = execute_presentation_tool_call(
+        name,
+        arguments or {},
+    )
     return PresentationActionResponse(
         ok=tool_result.ok and verification.ok,
         tool_result=tool_result,
@@ -64,32 +58,32 @@ def presentation_status() -> PresentationStatusResponse:
 
 @router.post("/open", response_model=PresentationActionResponse)
 def presentation_open() -> PresentationActionResponse:
-    return _run_and_verify(open_configured_presentation())
+    return _execute("presentation_open_configured")
 
 
 @router.post("/slideshow/start", response_model=PresentationActionResponse)
 def presentation_start_slideshow() -> PresentationActionResponse:
-    return _run_and_verify(start_configured_slideshow())
+    return _execute("presentation_start_slideshow")
 
 
 @router.post("/slideshow/next", response_model=PresentationActionResponse)
 def presentation_next_slide() -> PresentationActionResponse:
-    return _run_and_verify(next_presentation_slide())
+    return _execute("presentation_next_slide")
 
 
 @router.post("/slideshow/previous", response_model=PresentationActionResponse)
 def presentation_previous_slide() -> PresentationActionResponse:
-    return _run_and_verify(previous_presentation_slide())
+    return _execute("presentation_previous_slide")
 
 
 @router.post("/slideshow/goto", response_model=PresentationActionResponse)
 def presentation_go_to_slide(req: GoToSlideRequest) -> PresentationActionResponse:
-    return _run_and_verify(go_to_presentation_slide(req.slide_number))
+    return _execute("presentation_go_to_slide", {"slide_number": req.slide_number})
 
 
 @router.post("/slideshow/end", response_model=PresentationActionResponse)
 def presentation_end_slideshow() -> PresentationActionResponse:
-    return _run_and_verify(end_configured_slideshow())
+    return _execute("presentation_end_slideshow")
 
 
 @router.post("/close", response_model=PresentationActionResponse)
@@ -97,6 +91,6 @@ def presentation_close(req: ClosePresentationRequest) -> PresentationActionRespo
     if not req.confirmed:
         raise HTTPException(
             status_code=409,
-            detail="Closing the configured presentation requires confirmed=true.",
+            detail="Closing PowerPoint without saving changes requires confirmed=true.",
         )
-    return _run_and_verify(close_configured_presentation())
+    return _execute("presentation_close")
