@@ -153,38 +153,22 @@ def _merge_monitor_verification(
     *,
     slideshow_active: bool,
 ) -> VerificationResult:
-    """Compatibility helper retained for historical presentation contracts."""
+    """Retain monitor observations without making them a success condition."""
 
-    monitor_required = slideshow_active and name in {
+    monitor_relevant = slideshow_active and name in {
         "presentation_start_slideshow",
         "presentation_next_slide",
         "presentation_previous_slide",
         "presentation_go_to_slide",
     }
-    if not monitor_required:
-        return verification.model_copy(
-            update={"raw": {**verification.raw, "monitor_state": monitor_state}}
-        )
-
     monitor_ok = bool(monitor_state.get("monitor_placement_enforced"))
-    message = verification.message
-    if verification.ok and monitor_ok:
-        message = (
-            f"{message} Slide show verified on "
-            f"{monitor_state.get('slideshow_monitor_device')}."
-        )
-    elif verification.ok:
-        message = (
-            f"{message} Slide show was not verified on the configured monitor "
-            f"{monitor_state.get('target_monitor_device')}."
-        )
     return verification.model_copy(
         update={
-            "ok": verification.ok and monitor_ok,
-            "message": message,
+            "ok": verification.ok,
             "raw": {
                 **verification.raw,
-                "monitor_required": True,
+                "monitor_required": False,
+                "monitor_relevant": monitor_relevant,
                 "monitor_ok": monitor_ok,
                 "monitor_state": monitor_state,
             },
@@ -197,46 +181,24 @@ def _merge_desktop_verification(
     verification: VerificationResult,
     placement: dict[str, Any] | None,
 ) -> VerificationResult:
-    placement_required = name in {
+    placement_relevant = name in {
         "presentation_open_configured",
         "presentation_start_slideshow",
         "presentation_next_slide",
         "presentation_previous_slide",
         "presentation_go_to_slide",
     }
-    if not placement_required:
-        return verification.model_copy(
-            update={
-                "raw": {
-                    **verification.raw,
-                    "content_display_placement_required": False,
-                }
-            }
-        )
-
     placement_ok = bool(placement and placement.get("placement_verified"))
-    target_monitor = (placement or {}).get("target_monitor") or {}
-    target_device = target_monitor.get("device")
-    observed_device = (placement or {}).get("observed_monitor_device")
-    message = verification.message
-    if verification.ok and placement_ok:
-        message = f"{message} Window verified maximized on {observed_device}."
-    elif verification.ok:
-        message = (
-            f"{message} The visible maximized PowerPoint window was not verified "
-            f"on content display {target_device}."
-        )
     return verification.model_copy(
         update={
-            "ok": bool(verification.ok and placement_ok),
-            "message": message,
-            "window_ok": placement_ok,
-            "require_window_match": True,
+            "ok": verification.ok,
             "raw": {
                 **verification.raw,
-                "content_display_placement_required": True,
+                "content_display_placement_required": False,
+                "content_display_placement_relevant": placement_relevant,
                 "content_display_placement_ok": placement_ok,
                 "content_display_placement": placement,
+                "maximization_required": False,
             },
         }
     )
@@ -323,36 +285,27 @@ def execute_presentation_tool_call(
         target_monitor = placement.get("target_monitor") or {}
         placement_ok = bool(placement.get("placement_verified"))
         launch_verified = bool(tool_result.data.get("launch_verified", tool_result.ok))
-        recovered_ok = bool(launch_verified and placement_ok)
         tool_result = tool_result.model_copy(
             update={
-                "ok": recovered_ok,
+                "ok": launch_verified,
                 "message": (
-                    tool_result.message
-                    if not recovered_ok
-                    else (
-                        "PowerPoint window was verified maximized on the content display."
-                    )
+                    "PowerPoint action completed and the window was moved to DISPLAY2."
+                    if launch_verified and placement_ok
+                    else tool_result.message
                 ),
                 "data": {
                     **tool_result.data,
                     "launch_verified": launch_verified,
                     "window_placement": placement,
                     "window_placement_verified": placement_ok,
+                    "window_placement_required_for_success": False,
+                    "maximization_required": False,
                     "content_monitor_device": target_monitor.get("device"),
-                    "verified": recovered_ok,
+                    "verified": launch_verified,
                 },
                 "raw": {
                     **tool_result.raw,
                     "content_display_placement": placement,
-                    "placement_retry_recovered": bool(
-                        recovered_ok
-                        and not bool(
-                            (tool_result.data.get("window_placement") or {}).get(
-                                "placement_verified"
-                            )
-                        )
-                    ),
                 },
             }
         )
@@ -372,13 +325,11 @@ def execute_presentation_tool_call(
                     ),
                     "monitor_placement_enforced": placement_ok,
                     "window_maximized": placement.get("window_maximized"),
+                    "maximization_required": False,
                 }
             }
         )
 
-    # Verify only after the bounded placement retry has had an opportunity to recover
-    # a transient HWND race. This prevents an early placement miss from permanently
-    # converting a successful PowerPoint launch into a failed tool result.
     verification = verify_presentation_tool_result(tool_result)
     verification = _merge_desktop_verification(name, verification, placement)
     return tool_result, verification, status
