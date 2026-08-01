@@ -14,9 +14,8 @@ const APP_PATTERNS = {
   music: /music|song|歌曲|音乐|放歌|听歌/i,
 } as const
 
-type CommandTarget = keyof typeof APP_PATTERNS
-
-type CommandAction = 'open' | 'close' | 'play' | 'stop' | null
+export type CommandTarget = keyof typeof APP_PATTERNS
+export type CommandAction = 'open' | 'close' | 'play' | 'stop' | null
 
 const OPEN_PATTERN = /(?:打开|开启|启动|运行|open|launch|start|turn\s*on)/i
 const CLOSE_PATTERN = /(?:关闭|关掉|退出|结束|close|quit|exit|turn\s*off)/i
@@ -62,7 +61,27 @@ function canonicalTarget(target: CommandTarget): string {
   if (target === 'onenote') return 'OneNote'
   if (target === 'powerpoint') return 'PowerPoint'
   if (target === 'outlook') return 'Outlook'
-  return '音乐'
+  return 'music'
+}
+
+function canonicalCommand(
+  target: CommandTarget,
+  action: CommandAction,
+  language: VoiceLanguage,
+): string {
+  const app = canonicalTarget(target)
+  if (language === 'en') {
+    if (target === 'music' && action === 'play') return 'play music'
+    if (target === 'music' && action === 'stop') return 'stop music'
+    if (action === 'open') return `open ${app}`
+    if (action === 'close') return `close ${app}`
+    return app
+  }
+  if (target === 'music' && action === 'play') return '播放音乐'
+  if (target === 'music' && action === 'stop') return '关闭音乐'
+  if (action === 'open') return `打开 ${app}`
+  if (action === 'close') return `关闭 ${app}`
+  return app
 }
 
 export type RecoveredCommandTranscript = {
@@ -95,15 +114,8 @@ export function recoverCommandTranscript(
   }
 
   const action = actionFromTranscript(clean, target)
-  const app = canonicalTarget(target)
-  let normalized = raw
-  if (target === 'music' && action === 'play') normalized = '播放音乐'
-  else if (target === 'music' && action === 'stop') normalized = '关闭音乐'
-  else if (action === 'open') normalized = `打开 ${app}`
-  else if (action === 'close') normalized = `关闭 ${app}`
-  else normalized = app
-
-  const recovered = normalized !== raw
+  const normalized = canonicalCommand(target, action, language)
+  const recovered = normalized.toLocaleLowerCase() !== raw.toLocaleLowerCase()
   if (recovered) {
     console.info('[RealtimeDiagnostics] command-transcript-recovered', {
       raw,
