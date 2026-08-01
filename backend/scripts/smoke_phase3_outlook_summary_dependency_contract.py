@@ -22,7 +22,7 @@ def main() -> None:
             "latest_summary_path",
             "generate_presentation_summary",
             "create_outlook_summary_draft",
-            "get_office_status",
+            "get_office_status_direct",
         )
     }
 
@@ -57,7 +57,10 @@ def main() -> None:
             "allowed_recipient_keys": ["rico"],
         }
 
-        ordered_status = office_actions.get_office_status()
+        # This contract validates the direct dependency ordering used inside the
+        # isolated Office worker. Calling the public broker here would spawn a fresh
+        # process that cannot see these deliberate in-process test doubles.
+        ordered_status = office_actions.get_office_status_direct()
         ordered_keys = list(ordered_status.data)
         assert ordered_keys.index("recipient_catalog") < ordered_keys.index("presentation")
         assert ordered_keys.index("allowed_recipient_keys") < ordered_keys.index("system")
@@ -114,7 +117,7 @@ def main() -> None:
 
         office_actions.generate_presentation_summary = fake_summary
         office_actions.create_outlook_summary_draft = fake_draft
-        office_actions.get_office_status = lambda: ToolResult(
+        office_actions.get_office_status_direct = lambda: ToolResult(
             tool_name="office_get_status",
             ok=True,
             message="status",
@@ -127,7 +130,7 @@ def main() -> None:
             },
         )
 
-        result, verification, status = office_actions.execute_office_tool_call(
+        result, verification, status = office_actions.execute_office_tool_call_direct(
             "outlook_create_summary_draft",
             {"language": "zh", "recipient_key": "rico"},
         )
@@ -159,7 +162,7 @@ def main() -> None:
     print(
         "PASS: recipient resolution is deterministic outside GPT Realtime, the resolved "
         "key is injected into Outlook steps, and a missing summary is generated before "
-        "the Outlook draft is created."
+        "the Outlook draft is created inside the isolated-worker direct path."
     )
 
 
