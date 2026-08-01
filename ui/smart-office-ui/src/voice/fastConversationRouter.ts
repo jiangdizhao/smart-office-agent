@@ -10,7 +10,9 @@ import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 const ROUTE_TIMEOUT_MS = 6_000
+const SYSTEM_ACTION_TIMEOUT_MS = 22_000
 const INTERACTION_CONTEXT_PREFIX = '__SMART_OFFICE_INTERACTION_WINDOW__:'
+const SYSTEM_ACTION_CONTEXT_PREFIX = '__SMART_OFFICE_SYSTEM_ACTION__:'
 
 export type FastConversationAnswerEngine =
   | 'realtime'
@@ -40,6 +42,33 @@ type RouteRequest = {
 type InteractionContext = {
   kind: InteractionWindowKind
   result: InteractionWindowResult
+}
+
+type SystemActionKind =
+  | 'music_play_random'
+  | 'music_stop'
+  | 'teams_open'
+  | 'teams_close'
+  | 'onenote_open'
+  | 'onenote_close'
+
+type LegacyToolResult = {
+  tool_name?: string
+  ok?: boolean
+  message?: string
+  artifacts?: string[]
+  data?: Record<string, unknown>
+}
+
+type LegacyAgentResponse = {
+  mode?: string
+  user_request?: string
+  results?: LegacyToolResult[]
+}
+
+type SystemActionContext = {
+  kind: SystemActionKind
+  result: LegacyToolResult
 }
 
 function abortError(message: string): Error {
@@ -102,6 +131,160 @@ function interactionReply(context: InteractionContext, language: VoiceLanguage):
     : `The ${label} panel did not open. Please refresh the main display and try again.`
 }
 
+function normaliseSystemCommand(text: string): string {
+  return text
+    .toLocaleLowerCase()
+    .replace(/\b(one\s*note)\b/gi, 'onenote')
+    .replace(/\b(microsoft\s+teams)\b/gi, 'teams')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function matchSystemAction(text: string): SystemActionKind | null {
+  const clean = normaliseSystemCommand(text)
+  if (!clean) return null
+
+  const close =
+    /(关闭|关掉|停止|退出|结束|别放了|不要播放|close|stop|quit|exit|turn off)/i.test(clean)
+  const open =
+    /(打开|启动|开启|播放|放一首|放点|来一首|open|launch|start|play|turn on)/i.test(clean)
+
+  const music = /(音乐|歌曲|放歌|听歌|\bmusic\b|\bsong\b)/i.test(clean)
+  if (music && close) return 'music_stop'
+  if (music && open) return 'music_play_random'
+
+  const teams = /(^|[^a-z])teams([^a-z]|$)|微软团队/i.test(clean)
+  if (teams && close) return 'teams_close'
+  if (teams && open) return 'teams_open'
+
+  const onenote = /(^|[^a-z])onenote([^a-z]|$)|微软笔记/i.test(clean)
+  if (onenote && close) return 'onenote_close'
+  if (onenote && open) return 'onenote_open'
+
+  return null
+}
+
+function systemActionContext(kind: SystemActionKind, result: LegacyToolResult): string {
+  return `${SYSTEM_ACTION_CONTEXT_PREFIX}${JSON.stringify({ kind, result } satisfies SystemActionContext)}`
+}
+
+function parseSystemActionContext(value: string): SystemActionContext | null {
+  if (!value.startsWith(SYSTEM_ACTION_CONTEXT_PREFIX)) return null
+  try {
+    const parsed = JSON.parse(
+      value.slice(SYSTEM_ACTION_CONTEXT_PREFIX.length),
+    ) as SystemActionContext
+    if (!parsed?.kind || !parsed?.result) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+async function executeSystemAction(
+  kind: SystemActionKind,
+  request: RouteRequest,
+): Promise<LegacyToolResult> {
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/agent/run`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        text: request.text,
+        execute: true,
+      }),
+    },
+    SYSTEM_ACTION_TIMEOUT_MS,
+    request.lease?.signal,
+  )
+  if (!response.ok) {
+    throw new Error(
+      `System action failed: ${response.status} ${await response.text()}`,
+    )
+  }
+  const payload = (await response.json()) as LegacyAgentResponse
+  const result = payload.results?.[0]
+  if (!result) {
+    return {
+      tool_name: kind,
+      ok: false,
+      message: 'The Backend returned no tool result.',
+      data: { verified: false },
+    }
+  }
+  return result
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true
+}
+
+function systemActionReply(context: SystemActionContext, language: VoiceLanguage): string {
+  const { kind, result } = context
+  const data = result.data ?? {}
+  const ok = result.ok === true
+  const verified = booleanValue(data.verified)
+  const alreadyRunning = booleanValue(data.already_running)
+  const alreadyStopped = booleanValue(data.already_stopped)
+  const trackName = String(data.selected_track_name ?? '').trim()
+
+  if (!ok) {
+    const detail = String(result.message ?? '').trim()
+    return language === 'zh'
+      ? `没有完成这项操作。${detail || '请检查应用安装和本机配置。'}`
+      : `I could not complete that action. ${detail || 'Please check the application installation and local configuration.'}`
+  }
+
+  if (kind === 'music_play_random') {
+    if (verified) {
+      return language === 'zh'
+        ? `好的，已经随机播放${trackName ? `《${trackName}》` : '一首本地音乐'}。`
+        : `Okay. I randomly selected and started ${trackName || 'a local track'}.`
+    }
+    return language === 'zh'
+      ? `已经把${trackName ? `《${trackName}》` : '随机选择的音乐'}交给默认媒体播放器，但暂时无法确认播放器窗口。`
+      : `I sent ${trackName || 'the selected track'} to the default media player, but I could not positively identify the player window.`
+  }
+
+  if (kind === 'music_stop') {
+    return language === 'zh'
+      ? alreadyStopped
+        ? '音乐当前已经停止。'
+        : '音乐已经停止，受控媒体播放器也已关闭。'
+      : alreadyStopped
+        ? 'Music is already stopped.'
+        : 'Music has stopped and the managed media player has been closed.'
+  }
+
+  const labels: Record<
+    Exclude<SystemActionKind, 'music_play_random' | 'music_stop'>,
+    { zh: string; en: string; action: 'open' | 'close' }
+  > = {
+    teams_open: { zh: 'Microsoft Teams', en: 'Microsoft Teams', action: 'open' },
+    teams_close: { zh: 'Microsoft Teams', en: 'Microsoft Teams', action: 'close' },
+    onenote_open: { zh: 'OneNote', en: 'OneNote', action: 'open' },
+    onenote_close: { zh: 'OneNote', en: 'OneNote', action: 'close' },
+  }
+  const item = labels[kind]
+  if (item.action === 'open') {
+    return language === 'zh'
+      ? alreadyRunning
+        ? `${item.zh} 已经处于打开状态。`
+        : `${item.zh} 已经打开并通过状态验证。`
+      : alreadyRunning
+        ? `${item.en} is already open.`
+        : `${item.en} is open and its state was verified.`
+  }
+  return language === 'zh'
+    ? alreadyStopped
+      ? `${item.zh} 已经处于关闭状态。`
+      : `${item.zh} 已经关闭并通过状态验证。`
+    : alreadyStopped
+      ? `${item.en} is already closed.`
+      : `${item.en} is closed and its state was verified.`
+}
+
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<FastConversationRoute> {
@@ -128,6 +311,29 @@ export async function previewConversationRoute(
       conversation_complexity: 'simple',
       answer_engine: 'realtime',
       recent_context: interactionContext(interactionKind, result),
+      visit_id: request.visitId,
+    }
+  }
+
+  const systemAction = matchSystemAction(request.text)
+  if (systemAction) {
+    const startedAt = performance.now()
+    const result = await executeSystemAction(systemAction, request)
+    console.info('[ConversationLatency] deterministic-system-action-complete', {
+      kind: systemAction,
+      tool: result.tool_name ?? null,
+      ok: result.ok === true,
+      verified: result.data?.verified === true,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      visitId: request.visitId,
+    })
+    return {
+      route: 'realtime_direct',
+      scene: 'office',
+      route_reason: `deterministic_system_action:${systemAction}`,
+      conversation_complexity: 'simple',
+      answer_engine: 'realtime',
+      recent_context: systemActionContext(systemAction, result),
       visit_id: request.visitId,
     }
   }
@@ -221,6 +427,9 @@ export async function generateSimpleRealtimeAnswer(
 ): Promise<string> {
   const interaction = parseInteractionContext(recentContext)
   if (interaction) return interactionReply(interaction, language)
+
+  const systemAction = parseSystemActionContext(recentContext)
+  if (systemAction) return systemActionReply(systemAction, language)
 
   const startedAt = performance.now()
   const answer = (
