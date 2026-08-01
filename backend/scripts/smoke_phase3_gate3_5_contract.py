@@ -20,6 +20,12 @@ from app.presentation_config import presentation_config  # noqa: E402
 from app.state_store import state_store  # noqa: E402
 
 
+CURRENT_OR_LATER_RUNTIME_PHASES = {
+    "m3a_fusion_phase_3_gate_3_5",
+    "preemptive_visit_orchestration",
+}
+
+
 def verified() -> VerificationResult:
     return VerificationResult(
         ok=True,
@@ -209,7 +215,7 @@ def main() -> None:
     client = TestClient(app)
 
     root = client.get("/").json()
-    assert root["phase"] == "m3a_fusion_phase_3_gate_3_5"
+    assert root["phase"] in CURRENT_OR_LATER_RUNTIME_PHASES
     assert root["capabilities"]["system_volume_control"] is True
     assert root["capabilities"]["system_brightness_control"] is True
     assert root["capabilities"]["presentation_summary_artifacts"] is True
@@ -278,19 +284,16 @@ def main() -> None:
     )
     assert invalid_send is None and error is not None
 
-    visitor = post_office_plan(
-        client,
-        actor="visitor",
-        text="把音量调到35%。",
-        steps=[{"name": "system_set_volume", "value_percent": 35}],
-    )
-    assert visitor["permission_decision"] == "denied"
-    assert visitor["task_id"] is None
-
     fake = fake_executor()
     original_direct = office_api.execute_office_tool_call
     office_api.execute_office_tool_call = fake
     try:
+        visitor = post_office_plan(
+            client,
+            actor="visitor",
+            text="把音量调到35%。",
+            steps=[{"name": "system_set_volume", "value_percent": 35}],
+        )
         direct = post_office_plan(
             client,
             actor="employee",
@@ -299,6 +302,15 @@ def main() -> None:
         )
     finally:
         office_api.execute_office_tool_call = original_direct
+
+    # Exhibition mode normalizes visitor/employee input to Operator so the function
+    # demo is not blocked by role permissions. Approval gates remain independent.
+    assert visitor["actor_type"] == "operator"
+    assert visitor["permission_decision"] == "allowed"
+    assert visitor["task_id"] is None
+    assert visitor["tool_result"]["tool_name"] == "system_set_volume"
+    assert visitor["verification_result"]["ok"] is True
+
     assert direct["route"] == "office_direct"
     assert direct["tool_result"]["tool_name"] == "system_set_volume"
     assert direct["verification_result"]["ok"] is True
@@ -406,8 +418,8 @@ def main() -> None:
     print(
         "PASS: Phase 3 Gate 3-5 validates bounded device control, local summaries, "
         "first-approved Classic Outlook draft creation, second-approved fixed-recipient "
-        "sending after removal of the draft-only notice, visitor denial, and prohibition "
-        "of unrestricted email sending."
+        "sending after removal of the draft-only notice, exhibition Operator normalization, "
+        "and prohibition of unrestricted email sending."
     )
 
 
