@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from datetime import date, datetime, time
 from typing import Any
 
@@ -35,7 +36,12 @@ def _first(item: dict[str, Any], *keys: str, limit: int) -> str:
 
 
 def _meeting_contact_address() -> str:
-    """Resolve one company contact/meeting address without assigning an employee."""
+    """Return one configured meeting address without assigning an employee.
+
+    Employee identity is never returned or persisted for the booking. Staff entries
+    are used only as interchangeable address sources because the exhibition config
+    stores the same office address on each employee.
+    """
 
     configured = _clean(
         contact_record_api.os.getenv("SMART_OFFICE_MEETING_CONTACT_ADDRESS", ""),
@@ -72,6 +78,7 @@ def _meeting_contact_address() -> str:
     else:
         items = []
 
+    addresses: list[str] = []
     if isinstance(items, list):
         for raw in items:
             if not isinstance(raw, dict):
@@ -85,8 +92,11 @@ def _meeting_contact_address() -> str:
                 "location",
                 limit=500,
             )
-            if address:
-                return address
+            if address and address not in addresses:
+                addresses.append(address)
+
+    if addresses:
+        return random.SystemRandom().choice(addresses)
 
     return "Our company will confirm the meeting address when contacting you."
 
@@ -144,9 +154,8 @@ contact_record_api._SLOT_TIMES = [
     for hour in range(_TIMELINE_START_HOUR, _TIMELINE_LAST_START_HOUR + 1)
 ]
 
-# The existing booking table remains backward compatible. New bookings use one
-# neutral company identity so the appointment is explicitly detached from any
-# individual employee while preserving the existing result-center schema.
+# Preserve the existing result-center schema with one neutral company identity.
+# No real employee name or identifier is assigned to a new appointment.
 contact_record_api._DEFAULT_STAFF = [
     {
         "staff_id": _COMPANY_STAFF_ID,
