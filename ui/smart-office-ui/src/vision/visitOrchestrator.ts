@@ -117,9 +117,9 @@ export class VisitOrchestrator<TDetection> {
     current.greetingStarted = true
 
     const task = (async () => {
-      let greeted = false
+      let greetingCompleted = false
       try {
-        greeted = await this.hooks.onGreeting(lease, candidate)
+        greetingCompleted = await this.hooks.onGreeting(lease, candidate)
       } catch (error) {
         console.error('[ProximityDebug] visit-greeting-error', {
           visitId: lease.visitId,
@@ -128,9 +128,21 @@ export class VisitOrchestrator<TDetection> {
         })
       }
       if (!this.isCurrent(lease) || this.active?.lease.epoch !== lease.epoch) return
+
+      // A greeting is presentation, not a gate for command reception. Visitor
+      // barge-in commonly interrupts the welcome audio; that expected interruption
+      // must hand control to the command loop instead of leaving an open microphone
+      // with no consumer. Mark the greeting attempt complete to prevent duplicate
+      // greetings and always start conversation while the Visit remains current.
       this.active.greetingStarted = false
-      this.active.greeted = greeted
-      if (!greeted) return
+      this.active.greeted = true
+      if (!greetingCompleted) {
+        console.info('[ProximityDebug] conversation-started-without-completed-greeting', {
+          visitId: lease.visitId,
+          epoch: lease.epoch,
+          reason: 'greeting_interrupted_or_unavailable',
+        })
+      }
       await this.hooks.onConversation(lease, this.active.candidate)
     })()
     this.runBackground(task)
