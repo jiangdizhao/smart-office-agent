@@ -3,6 +3,7 @@ import './index.css'
 import './voice/visitRealtimeLeaseBridge'
 import './voice/proximityTimelineDiagnostics'
 import './voice/commandSpeechRecovery'
+import './voice/meetingVoiceIntentPromptPatch'
 import './voice/officeInterpreterCommandRecovery'
 import './voice/preemptiveTurnCoordinator'
 import './voice/continuousVoiceBootstrap'
@@ -84,9 +85,6 @@ function installProximityTerminalForwarding(): void {
 
 installProximityTerminalForwarding()
 
-// Exhibition mode is function-first: every visitor is treated as an operator for
-// PowerPoint, volume and other demonstration capabilities. Destructive actions
-// such as real email sending retain their separate confirmation workflow.
 localStorage.setItem('smartoffice_actor_type', 'operator')
 
 const appRoot = document.getElementById('root')
