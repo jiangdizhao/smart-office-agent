@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date, datetime, time
-from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -22,9 +21,16 @@ def _clean(value: Any, limit: int) -> str:
 
 def _first(item: dict[str, Any], *keys: str, limit: int) -> str:
     for key in keys:
-        value = _clean(item.get(key), limit)
-        if value:
-            return value
+        value = item.get(key)
+        if isinstance(value, dict):
+            value = ", ".join(
+                _clean(part, limit)
+                for part in value.values()
+                if _clean(part, limit)
+            )
+        clean = _clean(value, limit)
+        if clean:
+            return clean
     return ""
 
 
@@ -154,7 +160,8 @@ def _hourly_availability_for(day: date) -> list[dict[str, Any]]:
         digest = _hour_digest(seed, day, hour)
         scheduled = hour in available_hours
         staff_item = staff[digest[1] % len(staff)] if scheduled else None
-        is_past = end_local <= now_local
+        # Once an hourly block has started, it is no longer a valid new booking.
+        is_past = start_local <= now_local
         is_booked = bool(
             staff_item
             and (staff_item["staff_id"], start_local.isoformat()) in booked
