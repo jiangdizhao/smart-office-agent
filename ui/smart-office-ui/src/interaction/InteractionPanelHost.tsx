@@ -24,9 +24,10 @@ type ActivePanel = {
 
 const PANEL_LABELS: Record<InteractionWindowKind, { eyebrow: string; title: string }> = {
   contact: { eyebrow: 'Visitor Registration', title: '登记信息' },
+  meeting: { eyebrow: 'Meeting Scheduler', title: '预约会议' },
   recording: { eyebrow: 'Conversation Recording', title: '实时录音' },
-  transcript: { eyebrow: 'Current Session', title: '对话记录' },
-  results: { eyebrow: 'Saved Results', title: '结果中心' },
+  transcript: { eyebrow: 'Current Session Summary', title: '对话总结' },
+  results: { eyebrow: 'Visitor Profiles', title: '结果中心' },
 }
 
 export default function InteractionPanelHost() {
