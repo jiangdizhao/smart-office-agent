@@ -201,15 +201,38 @@ export function installRealtimeLivenessPatch(): void {
     }
 
     if (type === 'input_audio_buffer.speech_stopped') {
-      clearMaxSpeechTimer()
-      speechEpoch += 1
-      speechItemId = ''
+      // A real server endpoint can arrive after the same item was force-bounded. If a
+      // newer speech segment is already active, suppress the stale duplicate without
+      // clearing the new segment's timer or changing its VAD state.
       if (!watchdogSynthetic && itemId && forcedItems.delete(itemId)) {
+        if (!speechItemId || speechItemId === itemId) {
+          clearMaxSpeechTimer()
+          speechEpoch += 1
+          speechItemId = ''
+        }
         console.info('[RealtimeDiagnostics] duplicate-server-endpoint-suppressed', {
           itemId,
+          activeItemId: speechItemId || null,
         })
         return
       }
+
+      const endpointMatchesActive =
+        watchdogSynthetic
+        || !speechItemId
+        || !itemId
+        || speechItemId === itemId
+      if (!endpointMatchesActive) {
+        console.info('[RealtimeDiagnostics] stale-server-endpoint-suppressed', {
+          itemId,
+          activeItemId: speechItemId,
+        })
+        return
+      }
+
+      clearMaxSpeechTimer()
+      speechEpoch += 1
+      speechItemId = ''
       originalHandle(message)
       return
     }
