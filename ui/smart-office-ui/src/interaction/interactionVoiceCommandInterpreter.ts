@@ -8,6 +8,27 @@ import {
 } from './interactionPanelCommandBus'
 import { resolveSemanticInteractionIntent } from './semanticInteractionInterpreter'
 
+function isDirectContactFormRequest(clean: string): boolean {
+  return (
+    /^(?:打开|显示|调出|进入|填写|我要填写|我想填写|我想打开|请打开|帮我打开).{0,8}(?:登记信息表|登记表|个人信息表|联系信息表|访客登记表|登记信息|个人信息|联系信息|联系方式)(?:窗口|表单|页面)?$/i.test(clean)
+    || /^(?:登记信息表|登记表|个人信息表|联系信息表|访客登记表)$/i.test(clean)
+    || /\b(?:open|show|display|fill(?: in)?|complete)\b.{0,24}\b(?:registration form|visitor form|contact form|personal information form)\b/i.test(clean)
+  )
+}
+
+function isDirectTranscriptPanelRequest(clean: string): boolean {
+  if (/结果中心|保存的|历史|已保存|列表/i.test(clean)) return false
+  return (
+    /^(?:打开|显示|调出|进入|查看|看看|我要看|我想看|请打开|帮我打开).{0,8}(?:对话记录|聊天记录|会话记录|当前对话|当前聊天)(?:窗口|页面)?$/i.test(clean)
+    || /^(?:对话记录|聊天记录|会话记录)$/i.test(clean)
+    || /\b(?:open|show|display|view)\b.{0,24}\b(?:current transcript|current conversation|chat history|conversation history)\b/i.test(clean)
+  )
+}
+
+function hasProtectedResultsContext(clean: string, active: string | null): boolean {
+  return active === 'results' || /结果中心|已登记|登记结果|保存的|已保存|历史|列表|记录库|客户资料库|联系人记录|收集的结果/i.test(clean)
+}
+
 function localCommand(text: string): InteractionVoiceCommand | null {
   const clean = text.trim().toLocaleLowerCase()
   if (!clean) return null
@@ -34,20 +55,50 @@ function localCommand(text: string): InteractionVoiceCommand | null {
     /(?:下载|保存到本地).{0,8}(?:录音|音频)|(?:download).{0,20}(?:recording|audio)/i.test(clean)
   ) return { target: 'recording', action: 'download' }
 
+  // Explicit close targets must be resolved before the generic "close active panel"
+  // fallback. Otherwise “关闭登记表” could close whichever unrelated panel happens
+  // to be active.
+  if (close && /(?:录音界面|录音窗口|实时录音)/i.test(clean)) {
+    return { target: 'recording', action: 'close' }
+  }
+  if (close && /(?:对话记录|聊天记录|会话记录)/i.test(clean)) {
+    return { target: 'transcript', action: 'close' }
+  }
+  if (close && /(?:结果中心)/i.test(clean)) {
+    return { target: 'results', action: 'close' }
+  }
+  if (close && /(?:登记信息|登记表|个人信息表|联系表)/i.test(clean)) {
+    return { target: 'contact', action: 'close' }
+  }
+
+  // Direct visitor-facing panels take precedence over protected result subviews.
+  // “打开登记信息表” means the writable registration form, never saved contacts.
+  if (isDirectContactFormRequest(clean)) {
+    return { target: 'contact', action: 'open' }
+  }
+  if (isDirectTranscriptPanelRequest(clean)) {
+    return { target: 'transcript', action: 'open' }
+  }
+
+  const protectedContext = hasProtectedResultsContext(clean, active)
+
   if (
-    /(?:显示|查看|切换到|打开).{0,8}(?:登记信息|联系人|客户资料)|(?:show|view).{0,20}(?:contacts|contact records)/i.test(clean)
+    protectedContext
+    && /(?:显示|查看|切换到|打开).{0,8}(?:已登记信息|联系人(?:列表|记录)?|客户资料(?:列表|记录)?|登记结果)|(?:show|view).{0,20}(?:contacts|contact records|registered visitors)/i.test(clean)
   ) return { target: 'results', action: 'show_contacts' }
 
   if (
-    /(?:显示|查看|切换到|打开).{0,8}(?:录音文件|录音列表)|(?:show|view).{0,20}(?:recordings|recording list)/i.test(clean)
+    protectedContext
+    && /(?:显示|查看|切换到|打开).{0,8}(?:录音文件|录音列表|已保存录音)|(?:show|view).{0,20}(?:recordings|recording list|saved recordings)/i.test(clean)
   ) return { target: 'results', action: 'show_recordings' }
 
   if (
-    /(?:结果中心).{0,8}(?:当前对话|对话记录)|(?:切换到|显示|查看).{0,8}(?:结果中心里的)?(?:当前对话|对话记录)|(?:show|view).{0,20}(?:transcript).{0,12}(?:result center)?/i.test(clean)
+    protectedContext
+    && /(?:结果中心).{0,8}(?:当前对话|对话记录)|(?:切换到|显示|查看).{0,8}(?:结果中心里的|已保存的)?(?:当前对话|对话记录)|(?:show|view).{0,20}(?:transcript).{0,12}(?:result center)?/i.test(clean)
   ) return { target: 'results', action: 'show_transcript' }
 
   if (
-    /(?:导出|下载).{0,8}(?:csv|联系人|登记信息)|(?:export|download).{0,20}(?:csv|contacts)/i.test(clean)
+    /(?:导出|下载).{0,8}(?:csv|联系人(?:列表|记录)?|已登记信息)|(?:export|download).{0,20}(?:csv|contacts)/i.test(clean)
   ) return { target: 'results', action: 'export_csv' }
 
   if (
@@ -68,19 +119,6 @@ function localCommand(text: string): InteractionVoiceCommand | null {
     if (active === 'recording') return { target: 'recording', action: 'close' }
     if (active === 'transcript') return { target: 'transcript', action: 'close' }
     return { target: 'results', action: 'close' }
-  }
-
-  if (close && /(?:录音界面|录音窗口)/i.test(clean)) {
-    return { target: 'recording', action: 'close' }
-  }
-  if (close && /(?:对话记录|聊天记录|会话记录)/i.test(clean)) {
-    return { target: 'transcript', action: 'close' }
-  }
-  if (close && /(?:结果中心)/i.test(clean)) {
-    return { target: 'results', action: 'close' }
-  }
-  if (close && /(?:登记信息|登记表|联系表)/i.test(clean)) {
-    return { target: 'contact', action: 'close' }
   }
 
   return null
