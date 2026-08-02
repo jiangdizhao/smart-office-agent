@@ -201,7 +201,10 @@ function deterministicReply(
   result: DesktopToolResult,
   language: 'zh' | 'en',
 ): string {
-  const completed = result.ok === true && result.data?.verified !== false
+  // Desktop commands now use the bounded tool result as the only success signal.
+  // Legacy data.verified/window-placement metadata is diagnostic only and must not
+  // turn a successful launch into “operation did not complete”.
+  const completed = result.ok === true
   if (!completed) {
     const detail = String(result.message ?? '').trim()
     return language === 'zh'
