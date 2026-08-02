@@ -1,7 +1,11 @@
 import {
   openInteractionWindow,
   matchInteractionWindowIntent,
+  type InteractionWindowKind,
 } from '../display/multiScreenWindowManager'
+import {
+  resolveSemanticInteractionIntent,
+} from '../interaction/semanticInteractionInterpreter'
 import { publishSessionMessage } from '../interaction/sessionEventBus'
 import {
   commandClarification,
@@ -46,6 +50,17 @@ type DesktopCommandResponse = {
   result?: DesktopToolResult
 }
 
+type PendingInteractionConfirmation = {
+  kind: InteractionWindowKind
+  visitId: string | null
+  expiresAt: number
+}
+
+let pendingInteractionConfirmation: PendingInteractionConfirmation | null = null
+
+const CONFIRM_PATTERN = /^(?:是|是的|对|对的|好的|好|可以|确认|没错|yes|yeah|yep|correct|please do|go ahead)$/i
+const REJECT_PATTERN = /^(?:不|不是|不要|取消|算了|不用|no|nope|cancel|never mind)$/i
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -71,19 +86,35 @@ function waitWithSignal(milliseconds: number, signal: AbortSignal): Promise<void
 }
 
 function interactionReply(
-  kind: ReturnType<typeof matchInteractionWindowIntent>,
+  kind: InteractionWindowKind,
   language: 'zh' | 'en',
 ): string {
   if (language === 'en') {
     if (kind === 'contact') return 'I have opened contact registration beside Sara on the main display.'
     if (kind === 'recording') return 'I have opened live recording beside Sara on the main display.'
     if (kind === 'transcript') return 'I have opened the current conversation transcript beside Sara on the main display.'
-    return 'I have opened the result center beside Sara on the main display.'
+    return 'I have opened the administrator verification screen. Enter the administrator password on the display to access the result center.'
   }
   if (kind === 'contact') return '我已经在主屏幕 Sara 左侧打开登记信息表。'
   if (kind === 'recording') return '我已经在主屏幕 Sara 左侧打开实时录音。'
   if (kind === 'transcript') return '我已经在主屏幕 Sara 左侧打开当前对话记录。'
-  return '我已经在主屏幕 Sara 左侧打开结果中心。'
+  return '我已经打开管理员验证界面，请在屏幕上输入管理员密码后进入结果中心。'
+}
+
+function interactionConfirmation(
+  kind: InteractionWindowKind,
+  language: 'zh' | 'en',
+): string {
+  if (language === 'en') {
+    if (kind === 'contact') return 'Would you like me to open visitor registration?'
+    if (kind === 'recording') return 'Would you like me to open live recording?'
+    if (kind === 'transcript') return 'Would you like me to show the current conversation transcript?'
+    return 'Would you like me to open the administrator verification screen for the result center?'
+  }
+  if (kind === 'contact') return '您是想打开访客登记信息表吗？'
+  if (kind === 'recording') return '您是想打开实时录音吗？'
+  if (kind === 'transcript') return '您是想查看当前对话记录吗？'
+  return '您是想打开结果中心的管理员验证界面吗？'
 }
 
 async function speakDirect(
@@ -108,6 +139,28 @@ async function speakDirect(
     signal,
     allowLocalFallback: false,
   })
+}
+
+async function openInteractionAndReply(
+  controller: OfficeVoiceController,
+  kind: InteractionWindowKind,
+  signal: AbortSignal,
+  source: string,
+): Promise<boolean> {
+  const lease = visitLeaseRegistry.current()
+  const result = await openInteractionWindow({
+    kind,
+    conversationId: controller.conversationId,
+    visitId: lease?.visitId ?? null,
+    language: controller.language,
+  })
+  const reply = result.ok
+    ? interactionReply(kind, controller.language)
+    : controller.language === 'zh'
+      ? '主屏幕交互面板没有成功打开，请刷新页面后再试。'
+      : 'The main-display interaction panel did not open. Please refresh the page and try again.'
+  await speakDirect(controller, reply, source, signal)
+  return result.ok
 }
 
 async function recoverTurnState(
@@ -201,9 +254,6 @@ function deterministicReply(
   result: DesktopToolResult,
   language: 'zh' | 'en',
 ): string {
-  // Desktop commands now use the bounded tool result as the only success signal.
-  // Legacy data.verified/window-placement metadata is diagnostic only and must not
-  // turn a successful launch into “operation did not complete”.
   const completed = result.ok === true
   if (!completed) {
     const detail = String(result.message ?? '').trim()
@@ -271,6 +321,16 @@ function isDeterministicDesktopCommand(
   )
 }
 
+function currentPendingInteraction(visitId: string | null): PendingInteractionConfirmation | null {
+  const pending = pendingInteractionConfirmation
+  if (!pending) return null
+  if (pending.expiresAt <= Date.now() || pending.visitId !== visitId) {
+    pendingInteractionConfirmation = null
+    return null
+  }
+  return pending
+}
+
 export async function captureAutomaticRealtimeTurn(
   controller: () => OfficeVoiceController,
   signal: AbortSignal,
@@ -285,9 +345,10 @@ export async function captureAutomaticRealtimeTurn(
     const recovered = recoverCommandTranscript(rawTranscript, current.language)
     const transcript = recovered.normalized
     const lease = visitLeaseRegistry.current()
+    const visitId = lease?.visitId ?? null
     publishSessionMessage({
       conversationId: current.conversationId,
-      visitId: lease?.visitId ?? null,
+      visitId,
       role: 'user',
       text: transcript,
       source: recovered.recovered
@@ -308,8 +369,6 @@ export async function captureAutomaticRealtimeTurn(
       return { kind: 'heard', transcript }
     }
 
-    // These commands use an exact action enum and never touch the natural-language
-    // planner. Window placement is best effort and never invalidates a launch.
     if (isDeterministicDesktopCommand(recovered.target, recovered.action)) {
       const action = recovered.action as Exclude<CommandAction, null>
       const result = await executeDeterministicDesktopCommand(
@@ -327,20 +386,66 @@ export async function captureAutomaticRealtimeTurn(
       return { kind: 'heard', transcript }
     }
 
-    const interactionKind = matchInteractionWindowIntent(transcript)
-    if (interactionKind) {
-      const result = await openInteractionWindow({
-        kind: interactionKind,
-        conversationId: current.conversationId,
-        visitId: lease?.visitId ?? null,
-        language: current.language,
-      })
-      const reply = result.ok
-        ? interactionReply(interactionKind, current.language)
-        : current.language === 'zh'
-          ? '主屏幕交互面板没有成功打开，请刷新页面后再试。'
-          : 'The main-display interaction panel did not open. Please refresh the page and try again.'
-      await speakDirect(current, reply, 'interaction_window_command', signal)
+    const pending = currentPendingInteraction(visitId)
+    if (pending && CONFIRM_PATTERN.test(transcript.trim())) {
+      pendingInteractionConfirmation = null
+      await openInteractionAndReply(
+        current,
+        pending.kind,
+        signal,
+        'semantic_interaction_confirmation',
+      )
+      return { kind: 'heard', transcript }
+    }
+    if (pending && REJECT_PATTERN.test(transcript.trim())) {
+      pendingInteractionConfirmation = null
+      await speakDirect(
+        current,
+        current.language === 'zh' ? '好的，已取消。' : 'Okay, cancelled.',
+        'semantic_interaction_cancelled',
+        signal,
+      )
+      return { kind: 'heard', transcript }
+    }
+    if (pending) pendingInteractionConfirmation = null
+
+    const fastInteractionKind = matchInteractionWindowIntent(transcript)
+    if (fastInteractionKind) {
+      await openInteractionAndReply(
+        current,
+        fastInteractionKind,
+        signal,
+        'interaction_window_command',
+      )
+      return { kind: 'heard', transcript }
+    }
+
+    const semantic = await resolveSemanticInteractionIntent(
+      transcript,
+      current.language,
+      signal,
+    )
+    if (semantic.intent !== 'none' && semantic.confidence >= 0.78) {
+      await openInteractionAndReply(
+        current,
+        semantic.intent,
+        signal,
+        `semantic_interaction_${semantic.source}`,
+      )
+      return { kind: 'heard', transcript }
+    }
+    if (semantic.intent !== 'none' && semantic.confidence >= 0.55) {
+      pendingInteractionConfirmation = {
+        kind: semantic.intent,
+        visitId,
+        expiresAt: Date.now() + 20_000,
+      }
+      await speakDirect(
+        current,
+        interactionConfirmation(semantic.intent, current.language),
+        'semantic_interaction_clarification',
+        signal,
+      )
       return { kind: 'heard', transcript }
     }
 
