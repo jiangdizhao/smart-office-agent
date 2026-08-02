@@ -1,6 +1,7 @@
 import {
   currentInteractionPanel,
   matchInteractionWindowIntent,
+  type InteractionWindowKind,
 } from '../display/multiScreenWindowManager'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import {
@@ -19,14 +20,14 @@ function isDirectContactFormRequest(clean: string): boolean {
 function isDirectTranscriptPanelRequest(clean: string): boolean {
   if (/结果中心|保存的|历史|已保存|列表/i.test(clean)) return false
   return (
-    /^(?:打开|显示|调出|进入|查看|看看|我要看|我想看|请打开|帮我打开).{0,8}(?:对话记录|聊天记录|会话记录|当前对话|当前聊天)(?:窗口|页面)?$/i.test(clean)
-    || /^(?:对话记录|聊天记录|会话记录)$/i.test(clean)
-    || /\b(?:open|show|display|view)\b.{0,24}\b(?:current transcript|current conversation|chat history|conversation history)\b/i.test(clean)
+    /^(?:打开|显示|调出|进入|查看|看看|我要看|我想看|请打开|帮我打开).{0,8}(?:对话记录|对话总结|聊天记录|聊天总结|会话记录|会话总结|当前对话|当前聊天|session要点)(?:窗口|页面)?$/i.test(clean)
+    || /^(?:对话记录|对话总结|聊天记录|聊天总结|会话记录|会话总结)$/i.test(clean)
+    || /\b(?:open|show|display|view)\b.{0,24}\b(?:current summary|session summary|current conversation|chat history|conversation history)\b/i.test(clean)
   )
 }
 
 function hasProtectedResultsContext(clean: string, active: string | null): boolean {
-  return active === 'results' || /结果中心|已登记|登记结果|保存的|已保存|历史|列表|记录库|客户资料库|联系人记录|收集的结果/i.test(clean)
+  return active === 'results' || /结果中心|已登记|登记结果|保存的|已保存|历史|列表|记录库|客户资料库|联系人记录|收集的结果|访客档案/i.test(clean)
 }
 
 function isGenericPanelCloseRequest(clean: string): boolean {
@@ -65,7 +66,10 @@ function localCommand(text: string): InteractionVoiceCommand | null {
   if (close && /(?:录音界面|录音窗口|实时录音)/i.test(clean)) {
     return { target: 'recording', action: 'close' }
   }
-  if (close && /(?:对话记录|聊天记录|会话记录)/i.test(clean)) {
+  if (close && /(?:预约会议|会议预约|会议日历|预约日历)/i.test(clean)) {
+    return { target: 'meeting', action: 'close' }
+  }
+  if (close && /(?:对话记录|对话总结|聊天记录|聊天总结|会话记录|会话总结)/i.test(clean)) {
     return { target: 'transcript', action: 'close' }
   }
   if (close && /(?:结果中心)/i.test(clean)) {
@@ -98,7 +102,7 @@ function localCommand(text: string): InteractionVoiceCommand | null {
 
   if (
     protectedContext
-    && /(?:结果中心).{0,8}(?:当前对话|对话记录)|(?:切换到|显示|查看).{0,8}(?:结果中心里的|已保存的)?(?:当前对话|对话记录)|(?:show|view).{0,20}(?:transcript).{0,12}(?:result center)?/i.test(clean)
+    && /(?:结果中心).{0,8}(?:当前对话|对话记录|对话总结)|(?:切换到|显示|查看).{0,8}(?:结果中心里的|已保存的)?(?:当前对话|对话记录|对话总结)|(?:show|view).{0,20}(?:summary|transcript).{0,12}(?:result center)?/i.test(clean)
   ) return { target: 'results', action: 'show_transcript' }
 
   if (
@@ -120,6 +124,7 @@ function localCommand(text: string): InteractionVoiceCommand | null {
 
   if (active && isGenericPanelCloseRequest(clean)) {
     if (active === 'contact') return { target: 'contact', action: 'close' }
+    if (active === 'meeting') return { target: 'meeting', action: 'close' }
     if (active === 'recording') return { target: 'recording', action: 'close' }
     if (active === 'transcript') return { target: 'transcript', action: 'close' }
     return { target: 'results', action: 'close' }
@@ -128,8 +133,9 @@ function localCommand(text: string): InteractionVoiceCommand | null {
   return null
 }
 
-function openCommand(kind: 'contact' | 'recording' | 'transcript' | 'results'): InteractionVoiceCommand {
+function openCommand(kind: InteractionWindowKind): InteractionVoiceCommand {
   if (kind === 'contact') return { target: 'contact', action: 'open' }
+  if (kind === 'meeting') return { target: 'meeting', action: 'open' }
   if (kind === 'recording') return { target: 'recording', action: 'open' }
   if (kind === 'transcript') return { target: 'transcript', action: 'open' }
   return { target: 'results', action: 'open' }
