@@ -12,6 +12,7 @@ import DebugApp from './debug/DebugApp.tsx'
 import InteractionActionRail from './interaction/InteractionActionRail.tsx'
 import InteractionApp from './interaction/InteractionApp.tsx'
 import InteractionPanelHost from './interaction/InteractionPanelHost.tsx'
+import ProtectedResultCenterApp from './interaction/ProtectedResultCenterApp.tsx'
 import VirtualHostApp from './virtual-host/VirtualHostApp.tsx'
 
 function serialiseDiagnostic(value: unknown): unknown {
@@ -88,6 +89,9 @@ const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
 const debugRoute = normalizedPath === '/debug' || normalizedPath.startsWith('/debug/')
 const interactionRoute =
   normalizedPath === '/interaction' || normalizedPath.startsWith('/interaction/')
+const resultCenterRoute =
+  normalizedPath === '/interaction/results'
+  || normalizedPath.startsWith('/interaction/results/')
 const embeddedInteraction =
   interactionRoute && new URLSearchParams(window.location.search).get('embedded') === '1'
 document.documentElement.dataset.smartOfficeRoute = debugRoute
@@ -100,6 +104,8 @@ document.documentElement.dataset.smartOfficeEmbedded = embeddedInteraction ? 'tr
 createRoot(appRoot).render(
   debugRoute ? (
     <DebugApp />
+  ) : resultCenterRoute ? (
+    <ProtectedResultCenterApp />
   ) : interactionRoute ? (
     <InteractionApp />
   ) : (
