@@ -72,6 +72,7 @@ function authorizedRequest(
 
 export default function ProtectedResultCenterApp() {
   const [token, setToken] = useState('')
+  const [authorizedFetchReady, setAuthorizedFetchReady] = useState(false)
   const [password, setPassword] = useState('')
   const [checking, setChecking] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -115,14 +116,19 @@ export default function ProtectedResultCenterApp() {
   }, [statusUrl])
 
   useEffect(() => {
-    if (!token) return
+    if (!token) {
+      setAuthorizedFetchReady(false)
+      return
+    }
     const originalFetch = window.fetch.bind(window)
     window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
       const [authorizedInput, authorizedInit] = authorizedRequest(input, init, token)
       return originalFetch(authorizedInput, authorizedInit)
     }
+    setAuthorizedFetchReady(true)
 
     return () => {
+      setAuthorizedFetchReady(false)
       window.fetch = originalFetch
       sessionStorage.removeItem(TOKEN_KEY)
       void originalFetch(`${API_BASE_URL}/api/result-center/admin/logout`, {
@@ -160,7 +166,7 @@ export default function ProtectedResultCenterApp() {
     }
   }
 
-  if (token) return <InteractionApp />
+  if (token && authorizedFetchReady) return <InteractionApp />
 
   return (
     <main className="result-admin-gate-shell">
@@ -183,7 +189,7 @@ export default function ProtectedResultCenterApp() {
           <p>结果中心包含访客登记信息和录音文件。请输入管理员密码后继续。</p>
           <p className="result-admin-gate-warning">请勿通过语音说出密码。密码不会发送给 GPT Realtime。</p>
 
-          {checking ? (
+          {checking || (token && !authorizedFetchReady) ? (
             <div className="result-admin-gate-status">正在检查管理员会话…</div>
           ) : !configured ? (
             <div className="result-admin-gate-error" role="alert">
