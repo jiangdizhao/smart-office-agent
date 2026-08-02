@@ -16,18 +16,17 @@ function conversationId(): string {
 }
 
 type RailAction = {
-  kind: InteractionWindowKind | 'meeting'
+  kind: InteractionWindowKind
   icon: string
   label: string
   description: string
-  disabled?: boolean
 }
 
 const ACTIONS: RailAction[] = [
   { kind: 'contact', icon: '✎', label: '登记信息', description: '填写联系方式' },
-  { kind: 'meeting', icon: '◇', label: '预约会议', description: '即将开放', disabled: true },
+  { kind: 'meeting', icon: '◇', label: '预约会议', description: '选择日期与可用员工' },
   { kind: 'recording', icon: '●', label: '实时录音', description: '录制现场对话' },
-  { kind: 'transcript', icon: '≡', label: '对话记录', description: '仅当前 Session' },
+  { kind: 'transcript', icon: '≡', label: '对话总结', description: '本 Session 要点' },
   { kind: 'results', icon: '▣', label: '结果中心', description: '管理员密码验证' },
 ]
 
@@ -63,10 +62,7 @@ export default function InteractionActionRail() {
             key={action.kind}
             type="button"
             className="interaction-action-button"
-            disabled={action.disabled}
-            onClick={() => {
-              if (action.kind !== 'meeting') void launch(action.kind)
-            }}
+            onClick={() => void launch(action.kind)}
           >
             <span className="interaction-action-icon" aria-hidden="true">
               {action.icon}
