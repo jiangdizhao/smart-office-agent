@@ -26,10 +26,6 @@ export class SupersededTurnError extends Error {
   }
 }
 
-function abortError(message: string): Error {
-  return new SupersededTurnError(message)
-}
-
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
