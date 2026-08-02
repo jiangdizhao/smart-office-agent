@@ -5,19 +5,22 @@ import './ProtectedResultCenterApp.css'
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
-const TOKEN_KEY = 'smartoffice_result_center_admin_token'
 
 type LoginResponse = {
   ok?: boolean
   access_token?: string
   expires_in_seconds?: number
+  visit_id?: string
+  panel_instance_id?: string
 }
 
 type StatusResponse = {
   ok?: boolean
   configured?: boolean
-  authenticated?: boolean
-  expires_in_seconds?: number
+}
+
+function query(name: string): string {
+  return new URLSearchParams(window.location.search).get(name)?.trim() ?? ''
 }
 
 function closeProtectedPanel(): void {
@@ -51,10 +54,25 @@ function shouldAuthorize(url: URL): boolean {
   )
 }
 
+function appendContext(
+  url: URL,
+  token: string,
+  visitId: string,
+  panelInstanceId: string,
+): URL {
+  if (!shouldAuthorize(url)) return url
+  url.searchParams.set('access_token', token)
+  url.searchParams.set('visit_id', visitId)
+  url.searchParams.set('panel_instance_id', panelInstanceId)
+  return url
+}
+
 function authorizedRequest(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
   token: string,
+  visitId: string,
+  panelInstanceId: string,
 ): [RequestInfo | URL, RequestInit | undefined] {
   const sourceUrl = input instanceof Request ? input.url : String(input)
   const url = new URL(sourceUrl, window.location.href)
@@ -63,6 +81,8 @@ function authorizedRequest(
   const headers = new Headers(input instanceof Request ? input.headers : undefined)
   new Headers(init?.headers).forEach((value, key) => headers.set(key, value))
   headers.set('Authorization', `Bearer ${token}`)
+  headers.set('X-SmartOffice-Visit-Id', visitId)
+  headers.set('X-SmartOffice-Panel-Instance-Id', panelInstanceId)
 
   if (input instanceof Request) {
     return [new Request(input, { ...init, headers }), undefined]
@@ -70,7 +90,36 @@ function authorizedRequest(
   return [input, { ...init, headers }]
 }
 
+function rewriteProtectedResources(
+  token: string,
+  visitId: string,
+  panelInstanceId: string,
+): void {
+  const rewrite = (element: HTMLAnchorElement | HTMLAudioElement | HTMLSourceElement) => {
+    const attribute = element instanceof HTMLAnchorElement ? 'href' : 'src'
+    const current = element.getAttribute(attribute)
+    if (!current) return
+    const url = new URL(current, window.location.href)
+    if (!shouldAuthorize(url)) return
+    const next = appendContext(url, token, visitId, panelInstanceId).toString()
+    if (current !== next) element.setAttribute(attribute, next)
+  }
+  document
+    .querySelectorAll<HTMLAnchorElement | HTMLAudioElement | HTMLSourceElement>('a[href], audio[src], source[src]')
+    .forEach(rewrite)
+}
+
 export default function ProtectedResultCenterApp() {
+  const visitId = useMemo(() => query('visit_id'), [])
+  const panelInstanceId = useMemo(() => {
+    const configured = query('panel_instance_id')
+    if (configured) return configured
+    const generated = crypto.randomUUID()
+    const url = new URL(window.location.href)
+    url.searchParams.set('panel_instance_id', generated)
+    window.history.replaceState(null, '', url)
+    return generated
+  }, [])
   const [token, setToken] = useState('')
   const [authorizedFetchReady, setAuthorizedFetchReady] = useState(false)
   const [password, setPassword] = useState('')
@@ -80,31 +129,23 @@ export default function ProtectedResultCenterApp() {
   const [error, setError] = useState('')
   const [expiresIn, setExpiresIn] = useState(0)
 
-  const statusUrl = useMemo(
-    () => `${API_BASE_URL}/api/result-center/admin/status`,
-    [],
-  )
+  const statusUrl = useMemo(() => {
+    const url = new URL(`${API_BASE_URL}/api/result-center/admin/status`)
+    if (visitId) url.searchParams.set('visit_id', visitId)
+    url.searchParams.set('panel_instance_id', panelInstanceId)
+    return url.toString()
+  }, [panelInstanceId, visitId])
 
   useEffect(() => {
+    document.documentElement.dataset.resultCenterAuthenticated = 'false'
     let disposed = false
-    const existing = sessionStorage.getItem(TOKEN_KEY) ?? ''
-    const headers = existing
-      ? { Authorization: `Bearer ${existing}` }
-      : undefined
-    void fetch(statusUrl, { headers })
+    void fetch(statusUrl)
       .then(async (response) => {
         if (!response.ok) throw new Error(await responseMessage(response))
         return await response.json() as StatusResponse
       })
       .then((status) => {
-        if (disposed) return
-        setConfigured(status.configured !== false)
-        if (existing && status.authenticated) {
-          setToken(existing)
-          setExpiresIn(Number(status.expires_in_seconds ?? 0))
-        } else {
-          sessionStorage.removeItem(TOKEN_KEY)
-        }
+        if (!disposed) setConfigured(status.configured !== false)
       })
       .catch((value) => {
         if (!disposed) setError(value instanceof Error ? value.message : String(value))
@@ -116,45 +157,78 @@ export default function ProtectedResultCenterApp() {
   }, [statusUrl])
 
   useEffect(() => {
-    if (!token) {
+    if (!token || !visitId) {
+      document.documentElement.dataset.resultCenterAuthenticated = 'false'
       setAuthorizedFetchReady(false)
       return
     }
     const originalFetch = window.fetch.bind(window)
     window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-      const [authorizedInput, authorizedInit] = authorizedRequest(input, init, token)
+      const [authorizedInput, authorizedInit] = authorizedRequest(
+        input,
+        init,
+        token,
+        visitId,
+        panelInstanceId,
+      )
       return originalFetch(authorizedInput, authorizedInit)
     }
+    document.documentElement.dataset.resultCenterAuthenticated = 'true'
     setAuthorizedFetchReady(true)
 
+    const rewrite = () => rewriteProtectedResources(token, visitId, panelInstanceId)
+    rewrite()
+    const observer = new MutationObserver(rewrite)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['href', 'src'],
+    })
+    const expiryTimer = window.setTimeout(() => {
+      setToken('')
+      setError('管理员会话已过期，请重新输入密码。')
+    }, Math.max(1, expiresIn) * 1000)
+
     return () => {
+      window.clearTimeout(expiryTimer)
+      observer.disconnect()
+      document.documentElement.dataset.resultCenterAuthenticated = 'false'
       setAuthorizedFetchReady(false)
       window.fetch = originalFetch
-      sessionStorage.removeItem(TOKEN_KEY)
-      void originalFetch(`${API_BASE_URL}/api/result-center/admin/logout`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        keepalive: true,
-      }).catch(() => undefined)
+      const logout = new URL(`${API_BASE_URL}/api/result-center/admin/logout`)
+      logout.searchParams.set('access_token', token)
+      logout.searchParams.set('visit_id', visitId)
+      logout.searchParams.set('panel_instance_id', panelInstanceId)
+      void originalFetch(logout, { method: 'POST', keepalive: true }).catch(() => undefined)
     }
-  }, [token])
+  }, [expiresIn, panelInstanceId, token, visitId])
 
   async function login(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
-    if (submitting || !password) return
+    if (submitting || !password || !visitId) return
     setSubmitting(true)
     setError('')
     try {
       const response = await fetch(`${API_BASE_URL}/api/result-center/admin/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({
+          password,
+          visit_id: visitId,
+          panel_instance_id: panelInstanceId,
+        }),
       })
       if (!response.ok) throw new Error(await responseMessage(response))
       const payload = await response.json() as LoginResponse
       const accessToken = String(payload.access_token ?? '').trim()
       if (!accessToken) throw new Error('Backend 未返回管理员访问令牌。')
-      sessionStorage.setItem(TOKEN_KEY, accessToken)
+      if (
+        payload.visit_id !== visitId
+        || payload.panel_instance_id !== panelInstanceId
+      ) {
+        throw new Error('Backend 返回的管理员会话上下文不匹配。')
+      }
       setPassword('')
       setExpiresIn(Number(payload.expires_in_seconds ?? 0))
       setToken(accessToken)
@@ -186,11 +260,15 @@ export default function ProtectedResultCenterApp() {
         </header>
 
         <div className="result-admin-gate-body">
-          <p>结果中心包含访客登记信息和录音文件。请输入管理员密码后继续。</p>
+          <p>结果中心包含访客登记信息和录音文件。每个新访客 Session 都必须重新输入管理员密码。</p>
           <p className="result-admin-gate-warning">请勿通过语音说出密码。密码不会发送给 GPT Realtime。</p>
 
-          {checking || (token && !authorizedFetchReady) ? (
-            <div className="result-admin-gate-status">正在检查管理员会话…</div>
+          {!visitId ? (
+            <div className="result-admin-gate-error" role="alert">
+              当前结果中心没有绑定有效的访客 Session。请关闭后从 Sara 主界面重新打开。
+            </div>
+          ) : checking || (token && !authorizedFetchReady) ? (
+            <div className="result-admin-gate-status">正在检查管理员配置…</div>
           ) : !configured ? (
             <div className="result-admin-gate-error" role="alert">
               Backend 尚未配置管理员密码。请设置 SMART_OFFICE_ADMIN_PASSWORD 或 SMART_OFFICE_ADMIN_PASSWORD_HASH 后重启 Backend。
@@ -218,7 +296,7 @@ export default function ProtectedResultCenterApp() {
               </div>
             </form>
           )}
-          {expiresIn > 0 ? <small>管理员会话将在 {Math.ceil(expiresIn / 60)} 分钟内自动失效。</small> : null}
+          {expiresIn > 0 ? <small>本面板的管理员会话将在 {Math.ceil(expiresIn / 60)} 分钟内自动失效；关闭面板或进入新访客 Session 会立即失效。</small> : null}
         </div>
       </section>
     </main>
