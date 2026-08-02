@@ -24,10 +24,11 @@ function localSemanticDecision(text: string): SemanticInteractionDecision | null
   const clean = text.trim().toLocaleLowerCase()
   if (!clean) return null
 
+  // Writable registration/contact forms always win over result-center semantics.
   if (
-    /(我想|我要|希望|可以|能否|能不能|请|帮我|麻烦).{0,10}(登记|注册|留资料|留信息|留下.{0,5}联系方式|填写.{0,5}资料)|(?:把|将).{0,8}(我的|个人|联系).{0,8}(信息|资料|联系方式).{0,8}(给|留给|登记)|\b(?:i want to|i'd like to|let me|can i|help me)\b.{0,35}\b(?:register|leave my details|share my contact details|sign up)\b/i.test(clean)
+    /(?:打开|显示|调出|进入|填写|我想|我要|希望|可以|能否|能不能|请|帮我|麻烦).{0,10}(登记信息表|登记表|个人信息表|联系信息表|访客登记表|登记|注册|留资料|留信息|留下.{0,5}联系方式|填写.{0,5}资料)|(?:把|将).{0,8}(我的|个人|联系).{0,8}(信息|资料|联系方式).{0,8}(给|留给|登记)|\b(?:i want to|i'd like to|let me|can i|help me|open|show|fill)\b.{0,35}\b(?:register|leave my details|share my contact details|sign up|registration form|contact form|personal information form)\b/i.test(clean)
   ) {
-    return { intent: 'contact', confidence: 0.97, source: 'local_semantic' }
+    return { intent: 'contact', confidence: 0.98, source: 'local_semantic' }
   }
 
   if (
@@ -43,9 +44,9 @@ function localSemanticDecision(text: string): SemanticInteractionDecision | null
   }
 
   if (
-    /(我想|我要|请|帮我|让我|可以|能否).{0,10}(查看|看看|打开|显示).{0,10}(保存的资料|登记结果|已登记|客户资料|联系人|录音文件|收集的结果|结果)|(?:录音|登记资料|客户资料).{0,8}(保存在哪|在哪里|列表|结果)|\b(?:show|view|open|see)\b.{0,35}\b(?:saved results|registered visitors|contact records|recording files|result center)\b/i.test(clean)
+    /(我想|我要|请|帮我|让我|可以|能否).{0,10}(查看|看看|打开|显示).{0,10}(保存的资料|登记结果|已登记|联系人列表|联系人记录|录音文件|录音列表|收集的结果|结果中心)|(?:录音|登记资料|客户资料).{0,8}(保存在哪|在哪里|列表|结果)|\b(?:show|view|open|see)\b.{0,35}\b(?:saved results|registered visitors|contact records|recording files|result center)\b/i.test(clean)
   ) {
-    return { intent: 'results', confidence: 0.95, source: 'local_semantic' }
+    return { intent: 'results', confidence: 0.96, source: 'local_semantic' }
   }
 
   return null
@@ -87,14 +88,18 @@ Return exactly one JSON object with two keys:
 {"intent":"contact|recording|transcript|results|none","confidence":0.0}
 
 Definitions:
-- contact: the user wants to register, sign up, leave personal/contact details, or fill in visitor information.
+- contact: the user wants to open or fill the writable visitor registration/contact form, register, sign up, or leave personal/contact details.
 - recording: the user wants to start or open live recording of the people in the room.
 - transcript: the user wants to view the current conversation/session transcript.
-- results: the user wants to view saved contact records, saved recordings, collected visitor data, or the result center. This opens an administrator-password screen, never the data directly.
+- results: the user explicitly wants saved or historical contact records, saved recordings, registered-visitor lists, collected data, or the result center. This opens an administrator-password screen, never the data directly.
 - none: ordinary conversation, questions about what a feature means, Office application control, or any request not clearly asking to open one of these interfaces.
 
-Rules:
-- Infer meaning rather than requiring exact keywords. “我想登记” is contact.
+Hard disambiguation rules:
+- “打开登记信息表”, “打开个人信息表”, “打开登记表”, “我想登记”, and “填写联系方式” are always contact.
+- A phrase containing 登记信息表, 个人信息表, 登记表, registration form, contact form, or personal information form must never be results.
+- “查看已登记信息”, “查看联系人列表”, “查看保存的客户资料”, “查看录音文件”, and “打开结果中心” are results.
+- “打开对话记录” means the current transcript, unless the user explicitly says 结果中心、已保存、历史 or saved results.
+- Infer meaning rather than requiring exact keywords.
 - Classify an action request, not a mere mention. “登记信息是什么” is none.
 - Do not invent an action when the utterance is ambiguous.
 - Product names and mixed Chinese-English speech do not change these definitions.
