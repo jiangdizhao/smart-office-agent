@@ -79,6 +79,7 @@
 
 .meeting-layout[data-meeting-wizard-step="availability"] .availability-card {
   display: block;
+  padding: 18px;
 }
 
 .meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header {
@@ -93,6 +94,12 @@
   font-size: 19px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header span {
+  color: #2d8a62;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .meeting-wizard-back-date,
@@ -116,19 +123,100 @@
 }
 
 .meeting-layout[data-meeting-wizard-step="availability"] .availability-list {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 20px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-top: 14px;
 }
 
-.meeting-layout[data-meeting-wizard-step="availability"] .availability-list button {
-  min-height: 112px;
-  padding: 18px;
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 16px;
+  row-gap: 2px;
+  width: 100%;
+  min-height: 58px;
+  padding: 9px 14px;
+  border: 1px solid #d7e2e8;
+  border-radius: 10px;
+  background: #fff;
+  color: #385766;
+  text-align: left;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row strong {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  font-size: 16px;
+  color: #23485b;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row > span {
+  grid-column: 2;
+  grid-row: 1;
   font-size: 15px;
+  font-weight: 800;
 }
 
-.meeting-layout[data-meeting-wizard-step="availability"] .availability-list button strong {
-  font-size: 18px;
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row > small {
+  grid-column: 2;
+  color: #607986;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row .meeting-hour-address {
+  grid-row: 3;
+  margin-top: 1px;
+  color: #48715e;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row > em {
+  grid-column: 3;
+  grid-row: 1 / 4;
+  justify-self: end;
+  min-width: 92px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  text-align: right;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="available"] {
+  border-color: #65be91;
+  background: #e9f8f0;
+  color: #175f41;
+  cursor: pointer;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="available"]:hover,
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="available"].selected {
+  border-color: #22915d;
+  background: #dcf3e7;
+  box-shadow: 0 0 0 3px rgba(36, 145, 93, 0.14);
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="available"] > em {
+  color: #167048;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="unavailable"],
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="booked"],
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="past"] {
+  border-color: #dfe7eb;
+  background: #fff;
+  color: #8a989f;
+  cursor: default;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="unavailable"] > em,
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="booked"] > em,
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="past"] > em {
+  color: #83939b;
 }
 
 .meeting-layout[data-meeting-wizard-step="confirm"] .availability-card,
@@ -224,6 +312,11 @@
   line-height: 1.65;
 }
 
+.meeting-success-address {
+  color: #315f4a;
+  font-weight: 700;
+}
+
 .meeting-wizard-restart {
   margin-top: 10px;
 }
@@ -254,11 +347,22 @@
 
   .meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header span {
     grid-column: 1 / -1;
-    padding-left: 2px;
   }
 
-  .meeting-layout[data-meeting-wizard-step="availability"] .availability-list {
-    grid-template-columns: 1fr;
+  .meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row {
+    grid-template-columns: 94px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    min-height: 54px;
+    padding: 8px 10px;
+  }
+
+  .meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row strong {
+    font-size: 14px;
+  }
+
+  .meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row > em {
+    min-width: 72px;
+    font-size: 10px;
   }
 
   .meeting-layout[data-meeting-wizard-step="confirm"] .booking-confirmation {
