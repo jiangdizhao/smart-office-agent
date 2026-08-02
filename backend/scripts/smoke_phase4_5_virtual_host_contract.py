@@ -81,6 +81,7 @@ def main() -> None:
     phase4_css = read("ui/smart-office-ui/src/virtual-host/VirtualHostPhase4.css")
     controller_source = read("ui/smart-office-ui/src/voice/useOfficeVoiceController.ts")
     realtime_source = read("ui/smart-office-ui/src/voice/realtimeAgentRuntime.ts")
+    liveness_source = read("ui/smart-office-ui/src/voice/realtimeLivenessPatch.ts")
     visit_bridge_source = read("ui/smart-office-ui/src/voice/visitRealtimeLeaseBridge.ts")
     command_recovery_source = read("ui/smart-office-ui/src/voice/commandSpeechRecovery.ts")
     proactive_loop_source = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
@@ -150,6 +151,15 @@ def main() -> None:
         "async stopContinuousCapture",
     )
     assert_contains(
+        liveness_source,
+        "VITE_REALTIME_MAX_UTTERANCE_MS",
+        "VITE_REALTIME_UTTERANCE_WAIT_TIMEOUT_MS",
+        "vad-max-utterance-forced-boundary",
+        "UtteranceLivenessError",
+        "utteranceQueue.splice(0)",
+        "input_audio_buffer.commit",
+    )
+    assert_contains(
         visit_bridge_source,
         "realtimeAgent.shutdown()",
         "smartoffice:visit-revoked",
@@ -163,11 +173,12 @@ def main() -> None:
     )
     assert_contains(
         proactive_loop_source,
-        "recoverTurnState",
+        "preemptiveTurnCoordinator.recoverToReady",
         "resolveInteractionVoiceCommand",
         "executeInteractionPanelCommand",
-        "preemptiveTurnCoordinator",
-        "preferLatestUtterance",
+        "takeLatestUtterance",
+        "presentReply",
+        "asynchronous-command-feedback-failed",
     )
     assert_contains(
         semantic_source,
@@ -213,6 +224,14 @@ def main() -> None:
         "smartoffice:realtime-vad-speech-started",
         "preempt('visitor_barge_in')",
         "/cancel",
+        "takeLatestUtterance",
+        "recoverToReady",
+        "TURN_SCOPED_PATHS",
+    )
+    assert_not_contains(
+        coordinator_source,
+        "'/agent/tasks/'",
+        "'/api/human-recordings/'",
         "preferLatestUtterance",
     )
     assert_contains(controller_source, "await voiceOutputManager.stop()")
@@ -235,12 +254,14 @@ def main() -> None:
     result_center_admin_contract.main()
 
     print(
-        "PASS: Phase 4-5 includes Visit-scoped result protection, full panel voice "
-        "actions, latest-command preemption, and existing exhibition guarantees."
+        "PASS: Phase 4-5 includes Visit-scoped result protection, bounded VAD liveness, "
+        "full panel voice actions, latest-command preemption, asynchronous feedback, "
+        "and existing exhibition guarantees."
     )
     print(
         "NOTE: Windows Office, Outlook, rightmost-display placement, real microphone "
-        "barge-in timing, MediaRecorder, and Word opening remain local acceptance tests."
+        "barge-in timing, VAD watchdog timing, MediaRecorder, and Word opening remain "
+        "local acceptance tests."
     )
 
 
