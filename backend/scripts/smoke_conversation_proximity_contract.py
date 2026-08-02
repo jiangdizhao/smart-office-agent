@@ -292,6 +292,8 @@ def main() -> None:
     proximity_hook = read("ui/smart-office-ui/src/vision/useProximityGreeting.ts")
     proactive_loop = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
     realtime_runtime = read("ui/smart-office-ui/src/voice/realtimeAgentRuntime.ts")
+    liveness_patch = read("ui/smart-office-ui/src/voice/realtimeLivenessPatch.ts")
+    coordinator = read("ui/smart-office-ui/src/voice/preemptiveTurnCoordinator.ts")
     voice_output = read("ui/smart-office-ui/src/voice/voiceOutputManager.ts")
     remote_client = read("ui/smart-office-ui/src/vision/remoteVisionClient.ts")
     conversation_store = read("backend/app/conversation_store.py")
@@ -325,16 +327,40 @@ def main() -> None:
     assert "VISIT_ARCHIVE_TIMEOUT_MS = 3_000" in proximity_hook
     assert "proactive-reception-farewell" in proximity_hook
 
-    # The current proactive loop delegates microphone ownership to the persistent
-    # Realtime agent. It never acquires a second browser stream.
+    # The proactive ingress delegates microphone ownership to the persistent Realtime
+    # agent. It executes the newest completed utterance, recovers preempted turns, and
+    # presents command acknowledgements asynchronously.
     for needle in (
         "realtimeAgent.startContinuousCapture",
         "realtimeAgent.nextContinuousUtterance",
         "current.submit(transcript, 'voice')",
-        "recoverTurnState",
+        "takeLatestUtterance",
+        "preemptiveTurnCoordinator.recoverToReady",
+        "presentReply",
     ):
-        assert needle in proactive_loop, f"Missing single-microphone contract: {needle}"
+        assert needle in proactive_loop, f"Missing voice-ingress contract: {needle}"
     assert "navigator.mediaDevices.getUserMedia" not in proactive_loop
+
+    for needle in (
+        "VITE_REALTIME_MAX_UTTERANCE_MS",
+        "VITE_REALTIME_UTTERANCE_WAIT_TIMEOUT_MS",
+        "vad-max-utterance-forced-boundary",
+        "client_endpoint_watchdog",
+        "utteranceQueue.splice(0)",
+        "waiterAbort.abort()",
+    ):
+        assert needle in liveness_patch, f"Missing VAD liveness contract: {needle}"
+
+    for needle in (
+        "recoverToReady",
+        "takeLatestUtterance",
+        "preempt('visitor_barge_in')",
+        "TURN_SCOPED_PATHS",
+    ):
+        assert needle in coordinator, f"Missing preemptive-turn contract: {needle}"
+    assert "'/agent/tasks/'" not in coordinator
+    assert "'/api/human-recordings/'" not in coordinator
+    assert "preferLatestUtterance" not in coordinator
 
     for needle in (
         "private generation = 0",
@@ -399,12 +425,14 @@ def main() -> None:
         assert needle in controller, f"Missing controller fencing contract: {needle}"
 
     print(
-        "PASS: new Visits preempt old Visits; stale results are fenced; Visit-end is nonblocking; "
-        "registered memory is queued; owned tasks are cancelled; Realtime owns one microphone stream."
+        "PASS: new Visits preempt old Visits; stale results are fenced; Visit-end is "
+        "nonblocking; registered memory is queued; owned tasks are cancelled; Realtime "
+        "owns one microphone stream; VAD liveness and latest-command recovery are present."
     )
     print(
-        "NOTE: Real LAN ordering, browser audio permission, Windows COM worker termination, camera "
-        "freshness, and GPT Realtime event timing still require two-machine acceptance testing."
+        "NOTE: Real LAN ordering, browser audio permission, Windows COM worker termination, "
+        "camera freshness, VAD watchdog behavior, and GPT Realtime event timing still "
+        "require two-machine acceptance testing."
     )
 
 
