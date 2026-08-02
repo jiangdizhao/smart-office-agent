@@ -102,6 +102,21 @@ function presentReply(
   })
 }
 
+async function continueAfterSupersededTurn(
+  transcript: string,
+  reason: string,
+): Promise<AutomaticVoiceTurnResult> {
+  await preemptiveTurnCoordinator.recoverToReady(reason)
+  console.info('[PreemptiveTurn] superseded-turn-continues-listening', {
+    reason,
+    transcriptLength: transcript.length,
+  })
+  // The Visit is still active. Returning "heard" makes the outer proactive loop
+  // continue immediately; the capacity-one utterance slot then supplies the newest
+  // command. Only a revoked Visit is allowed to return kind="aborted".
+  return { kind: 'heard', transcript }
+}
+
 function desktopActionFor(
   target: 'teams' | 'onenote' | 'powerpoint' | 'music',
   action: Exclude<CommandAction, null>,
@@ -354,7 +369,12 @@ export async function captureAutomaticRealtimeTurn(
         action,
         turnSignal,
       )
-      if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) return { kind: 'aborted' }
+      if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) {
+        return await continueAfterSupersededTurn(
+          transcript,
+          'desktop_command_superseded',
+        )
+      }
       presentReply(
         current,
         deterministicReply(recovered.target, action, result, recovered.language),
@@ -416,19 +436,29 @@ export async function captureAutomaticRealtimeTurn(
     // Natural conversation still uses the shared Controller, but a barge-in aborts
     // its turn-scoped HTTP calls and forces the Controller back to idle.
     await preemptiveTurnCoordinator.waitForCancellation()
-    if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) return { kind: 'aborted' }
+    if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) {
+      return await continueAfterSupersededTurn(
+        transcript,
+        'natural_turn_superseded_before_submit',
+      )
+    }
     await current.submit(transcript, 'voice')
-    if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) return { kind: 'aborted' }
+    if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) {
+      return await continueAfterSupersededTurn(
+        transcript,
+        'natural_turn_superseded_after_submit',
+      )
+    }
     return { kind: 'heard', transcript }
   } catch (error) {
-    const aborted = error instanceof Error && error.name === 'AbortError'
-    if (aborted || turnSignal.aborted || visitSignal.aborted) {
-      if (visitSignal.aborted) {
-        await realtimeAgent.stopContinuousCapture(true).catch(() => undefined)
-      } else {
-        await preemptiveTurnCoordinator.recoverToReady('superseded_turn')
-      }
+    if (visitSignal.aborted) {
+      await realtimeAgent.stopContinuousCapture(true).catch(() => undefined)
       return { kind: 'aborted' }
+    }
+
+    const aborted = error instanceof Error && error.name === 'AbortError'
+    if (aborted || turnSignal.aborted) {
+      return await continueAfterSupersededTurn(transcript, 'superseded_turn')
     }
 
     const livenessTimeout = error instanceof Error && error.name === 'UtteranceLivenessError'
