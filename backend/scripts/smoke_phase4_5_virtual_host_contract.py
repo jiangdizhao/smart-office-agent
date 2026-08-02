@@ -86,6 +86,10 @@ def main() -> None:
     proactive_loop_source = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
     semantic_source = read("ui/smart-office-ui/src/interaction/semanticInteractionInterpreter.ts")
     protected_results_source = read("ui/smart-office-ui/src/interaction/ProtectedResultCenterApp.tsx")
+    voice_command_source = read("ui/smart-office-ui/src/interaction/interactionVoiceCommandInterpreter.ts")
+    panel_bridge_source = read("ui/smart-office-ui/src/interaction/interactionPanelCommandBridge.ts")
+    panel_host_source = read("ui/smart-office-ui/src/interaction/InteractionPanelHost.tsx")
+    coordinator_source = read("ui/smart-office-ui/src/voice/preemptiveTurnCoordinator.ts")
     acceptance = read("PHASE4_5_EXHIBITION_ACCEPTANCE.md")
 
     assert_contains(
@@ -160,11 +164,10 @@ def main() -> None:
     assert_contains(
         proactive_loop_source,
         "recoverTurnState",
-        "latest.clearError()",
-        "await latest.connect()",
-        "controller-turn-recovery-complete",
-        "resolveSemanticInteractionIntent",
-        "semantic_interaction_clarification",
+        "resolveInteractionVoiceCommand",
+        "executeInteractionPanelCommand",
+        "preemptiveTurnCoordinator",
+        "preferLatestUtterance",
     )
     assert_contains(
         semantic_source,
@@ -179,8 +182,38 @@ def main() -> None:
         protected_results_source,
         "管理员验证",
         "/api/result-center/admin/login",
-        "Authorization",
-        "SMART_OFFICE_ADMIN_PASSWORD",
+        "X-SmartOffice-Visit-Id",
+        "panel_instance_id",
+        "每个新访客 Session 都必须重新输入管理员密码",
+    )
+    assert_not_contains(protected_results_source, "sessionStorage")
+    assert_contains(
+        voice_command_source,
+        "stop_save_summarize",
+        "show_contacts",
+        "export_csv",
+        "play_latest_recording",
+        "open_directory",
+    )
+    assert_contains(
+        panel_bridge_source,
+        "startRecording",
+        "stopAndSaveRecording",
+        "summarizeRecording",
+        "resultCenterAuthenticated",
+    )
+    assert_contains(
+        panel_host_source,
+        "smartoffice:visit-activated",
+        "smartoffice:visit-revoked",
+        "pendingCommands",
+    )
+    assert_contains(
+        coordinator_source,
+        "smartoffice:realtime-vad-speech-started",
+        "preempt('visitor_barge_in')",
+        "/cancel",
+        "preferLatestUtterance",
     )
     assert_contains(controller_source, "await voiceOutputManager.stop()")
     assert_contains(controller_source, "smartoffice_voice_conversation_id")
@@ -202,12 +235,12 @@ def main() -> None:
     result_center_admin_contract.main()
 
     print(
-        "PASS: Phase 4 approval/settings, guide-style reception, persistent voice, "
-        "semantic visitor services, protected results, and post-error listening recovery are present."
+        "PASS: Phase 4-5 includes Visit-scoped result protection, full panel voice "
+        "actions, latest-command preemption, and existing exhibition guarantees."
     )
     print(
-        "NOTE: Windows Office, Outlook, rightmost-display placement, microphone, and "
-        "five-round audio remain local acceptance tests."
+        "NOTE: Windows Office, Outlook, rightmost-display placement, real microphone "
+        "barge-in timing, MediaRecorder, and Word opening remain local acceptance tests."
     )
 
 
