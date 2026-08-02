@@ -14,7 +14,7 @@ _TIMELINE_LAST_START_HOUR = 18
 _CONFIG_FILE = contact_record_api._REPO_ROOT / "config" / "demo_meeting_staff.json"
 _COMPANY_STAFF_ID = "company_meeting_team"
 _COMPANY_STAFF_NAME = "Smart Office Team"
-_COMPANY_STAFF_ROLE = "Company representative"
+_COMPANY_STAFF_ROLE = "Company representative to be arranged"
 
 
 def _clean(value: Any, limit: int) -> str:
@@ -36,12 +36,7 @@ def _first(item: dict[str, Any], *keys: str, limit: int) -> str:
 
 
 def _meeting_contact_address() -> str:
-    """Return one configured meeting address without assigning an employee.
-
-    Employee identity is never returned or persisted for the booking. Staff entries
-    are used only as interchangeable address sources because the exhibition config
-    stores the same office address on each employee.
-    """
+    """Return one configured address without assigning an employee to the booking."""
 
     configured = _clean(
         contact_record_api.os.getenv("SMART_OFFICE_MEETING_CONTACT_ADDRESS", ""),
@@ -134,8 +129,8 @@ def _company_hourly_availability(day: date) -> list[dict[str, Any]]:
                 "start_label": start_local.strftime("%H:%M"),
                 "end_label": end_local.strftime("%H:%M"),
                 "staff_id": _COMPANY_STAFF_ID,
-                "staff_name": "",
-                "staff_role": "",
+                "staff_name": _COMPANY_STAFF_NAME,
+                "staff_role": _COMPANY_STAFF_ROLE,
                 "staff_address": address,
                 "contact_address": address,
                 "timezone": contact_record_api._timezone_name(),
@@ -154,8 +149,8 @@ contact_record_api._SLOT_TIMES = [
     for hour in range(_TIMELINE_START_HOUR, _TIMELINE_LAST_START_HOUR + 1)
 ]
 
-# Preserve the existing result-center schema with one neutral company identity.
-# No real employee name or identifier is assigned to a new appointment.
+# Preserve the existing result-center schema using one neutral company identity.
+# No real employee name or employee ID is assigned to a new appointment.
 contact_record_api._DEFAULT_STAFF = [
     {
         "staff_id": _COMPANY_STAFF_ID,
