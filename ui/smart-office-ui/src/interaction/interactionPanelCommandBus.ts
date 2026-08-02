@@ -20,6 +20,7 @@ export type RecordingPanelAction =
   | 'close'
 
 export type TranscriptPanelAction = 'open' | 'refresh' | 'close'
+export type MeetingPanelAction = 'open' | 'close'
 
 export type ResultPanelAction =
   | 'open'
@@ -36,6 +37,7 @@ export type ContactPanelAction = 'open' | 'close'
 
 export type InteractionVoiceCommand =
   | { target: 'contact'; action: ContactPanelAction }
+  | { target: 'meeting'; action: MeetingPanelAction }
   | { target: 'recording'; action: RecordingPanelAction }
   | { target: 'transcript'; action: TranscriptPanelAction }
   | { target: 'results'; action: ResultPanelAction }
