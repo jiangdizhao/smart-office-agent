@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 
 from app import contact_record_api
+
+
+_original_contact_dict = contact_record_api._contact_dict
 
 
 def _safe_bind_context_records(
@@ -61,4 +65,61 @@ def _safe_bind_context_records(
     )
 
 
+def _profile_contact_dict(row: sqlite3.Row) -> dict:
+    """Return identical appointment/summary metadata in list and detail views."""
+
+    result = _original_contact_dict(row)
+    keys = set(row.keys())
+    if {
+        "appointment_count",
+        "session_summary_count",
+        "next_appointment_at",
+    }.issubset(keys):
+        next_at = row["next_appointment_at"]
+        result.update(
+            {
+                "appointment_count": int(row["appointment_count"] or 0),
+                "session_summary_count": int(row["session_summary_count"] or 0),
+                "next_appointment_at": next_at,
+                "has_upcoming_appointment": bool(next_at),
+                "latest_activity_at": (
+                    row["latest_activity_at"]
+                    if "latest_activity_at" in keys and row["latest_activity_at"]
+                    else row["updated_at"]
+                ),
+            }
+        )
+        return result
+
+    contact_id = str(row["contact_id"])
+    now = datetime.now(contact_record_api._timezone()).isoformat()
+    with contact_record_api._connect() as connection:
+        appointment = connection.execute(
+            """
+            SELECT COUNT(*) AS appointment_count,
+                   MIN(CASE WHEN status = 'confirmed' AND start_at >= ? THEN start_at END)
+                       AS next_appointment_at
+            FROM meeting_bookings
+            WHERE contact_id = ?
+            """,
+            (now, contact_id),
+        ).fetchone()
+        summary = connection.execute(
+            "SELECT COUNT(*) AS summary_count FROM session_summaries WHERE contact_id = ?",
+            (contact_id,),
+        ).fetchone()
+    next_at = appointment["next_appointment_at"] if appointment else None
+    result.update(
+        {
+            "appointment_count": int(appointment["appointment_count"] or 0) if appointment else 0,
+            "session_summary_count": int(summary["summary_count"] or 0) if summary else 0,
+            "next_appointment_at": next_at,
+            "has_upcoming_appointment": bool(next_at),
+            "latest_activity_at": row["updated_at"],
+        }
+    )
+    return result
+
+
 contact_record_api._bind_context_records = _safe_bind_context_records
+contact_record_api._contact_dict = _profile_contact_dict
