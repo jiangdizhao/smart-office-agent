@@ -123,3 +123,8 @@ def _profile_contact_dict(row: sqlite3.Row) -> dict:
 
 contact_record_api._bind_context_records = _safe_bind_context_records
 contact_record_api._contact_dict = _profile_contact_dict
+
+# Install the 09:00-18:00 hourly timeline after the base contact/booking module is
+# loaded. This replaces the built-in fake employee fallback with the real staff
+# catalog from config/demo_meeting_staff.json.
+from app import meeting_hourly_timeline_patch as _meeting_hourly_timeline_patch  # noqa: E402,F401
