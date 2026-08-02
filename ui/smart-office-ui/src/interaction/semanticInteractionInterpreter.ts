@@ -51,6 +51,12 @@ function localSemanticDecision(text: string): SemanticInteractionDecision | null
   return null
 }
 
+function mayBeVisitorServiceRequest(text: string): boolean {
+  const clean = text.trim().toLocaleLowerCase()
+  if (!clean || clean.length > 240) return false
+  return /登记|注册|报名|名单|资料|个人信息|联系|联系方式|电话|邮箱|录音|录制|录下来|谈话|对话|聊天|会话|刚才说|说了什么|转写|记录|结果|保存|客户|访客|register|registration|sign up|details|contact|phone|email|record|recording|conversation|chat|transcript|result|saved|visitor|customer/i.test(clean)
+}
+
 function parseDecision(value: string): SemanticInteractionDecision | null {
   const clean = value
     .trim()
@@ -107,6 +113,9 @@ export async function resolveSemanticInteractionIntent(
 ): Promise<SemanticInteractionDecision> {
   const local = localSemanticDecision(text)
   if (local) return local
+  if (!mayBeVisitorServiceRequest(text)) {
+    return { intent: 'none', confidence: 1, source: 'local_semantic' }
+  }
 
   try {
     const generated = await realtimeAgent.generateText(
