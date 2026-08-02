@@ -1,0 +1,24 @@
+{
+  "staff": [
+    {
+      "staff_id": "rico",
+      "name": "Rico",
+      "role": "Smart Office Consultant"
+    },
+    {
+      "staff_id": "tom",
+      "name": "Tom",
+      "role": "Solution Engineer"
+    },
+    {
+      "staff_id": "alice",
+      "name": "Alice",
+      "role": "Product Specialist"
+    },
+    {
+      "staff_id": "yu",
+      "name": "Yu",
+      "role": "Technical Demonstrator"
+    }
+  ]
+}
