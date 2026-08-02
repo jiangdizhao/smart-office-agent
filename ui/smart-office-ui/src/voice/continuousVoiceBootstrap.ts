@@ -1,3 +1,4 @@
+import './realtimeLivenessPatch'
 import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
 import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
 
