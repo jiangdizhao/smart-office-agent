@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
 from app.contact_record_api import _connect, _database_path, _initialise
@@ -19,7 +19,15 @@ from app.human_recording_api import (
     _SUMMARY_PREFIX,
     _output_directory,
 )
-from app.result_center_auth import AdminSession, require_result_center_admin
+from app.result_center_auth import (
+    AdminLoginRequest,
+    AdminLoginResponse,
+    AdminSession,
+    login_result_center_admin,
+    logout_result_center_admin,
+    require_result_center_admin,
+    result_center_admin_status,
+)
 
 router = APIRouter(prefix="/api/result-center", tags=["exhibition-result-center"])
 AdminDependency = Annotated[AdminSession, Depends(require_result_center_admin)]
@@ -249,3 +257,29 @@ def open_output_directory(_admin: AdminDependency) -> dict[str, Any]:
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not open the output directory: {exc}") from exc
     return {"ok": True, "opened": True, "output_directory": str(directory)}
+
+
+@router.post("/admin/login", response_model=AdminLoginResponse)
+def result_center_admin_login(
+    payload: AdminLoginRequest,
+    request: Request,
+) -> AdminLoginResponse:
+    return login_result_center_admin(payload, request)
+
+
+@router.get("/admin/status")
+def result_center_admin_session_status(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    access_token: str | None = Query(default=None),
+) -> dict[str, object]:
+    return result_center_admin_status(request, authorization, access_token)
+
+
+@router.post("/admin/logout")
+def result_center_admin_logout(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    access_token: str | None = Query(default=None),
+) -> dict[str, bool]:
+    return logout_result_center_admin(request, authorization, access_token)
