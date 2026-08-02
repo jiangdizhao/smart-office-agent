@@ -35,6 +35,7 @@ from app.task_graph import build_task_graph, task_graph_event_data
 from app.task_logger import log_task_record
 from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
+from app import visitor_context_linking_patch as _visitor_context_linking_patch  # noqa: F401
 
 install_lightweight_system_status_policy()
 start_display_role_service()
@@ -117,6 +118,10 @@ def health_check():
             "contact_records": True,
             "contact_consent_required": True,
             "exhibition_result_center": True,
+            "visitor_session_bullet_summaries": True,
+            "simulated_meeting_booking": True,
+            "visit_scoped_profile_linking": True,
+            "appointment_first_visitor_profiles": True,
             "contact_csv_export": True,
             "recording_list_and_playback": True,
             "touch_interaction_windows": True,
