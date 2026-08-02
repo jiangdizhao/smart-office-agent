@@ -130,8 +130,17 @@ export function closeInteractionPanel(): void {
   window.dispatchEvent(new CustomEvent(INTERACTION_PANEL_CLOSE_EVENT))
 }
 
+function normalizeInteractionIntentText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[，。！？、;；:：,.!?]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function matchInteractionWindowIntent(text: string): InteractionWindowKind | null {
-  const clean = text.trim().toLocaleLowerCase()
+  const clean = normalizeInteractionIntentText(text)
   if (!clean) return null
 
   if (
@@ -149,16 +158,26 @@ export function matchInteractionWindowIntent(text: string): InteractionWindowKin
     || /(打开|显示|调出|进入|填写|登记|注册|留下|我想|我要|希望|帮我|请).{0,10}(登记信息|登记表|登记|注册|联系信息|联系方式|个人信息|个人信息表|访客信息|我的资料|我的信息)|(?:登记信息|联系信息|联系方式|个人信息).{0,8}(窗口|表单|页面)|\b(?:open|show|display|fill|register|sign up|leave)\b.{0,30}\b(?:contact form|contact details|my details|registration form)\b/.test(clean)
   ) return 'contact'
 
+  // Meeting booking is a deterministic visitor-facing action. Resolve it before any
+  // general-chat fallback so phrases such as “预约会议功能” or “帮我预约一下” can
+  // never be answered as an unavailable capability.
   if (
     [
       '预约会议',
+      '预约会议功能',
       '会议预约',
       '我想预约',
+      '我想预约会议',
+      '我要预约会议',
+      '帮我预约会议',
       '安排会议',
+      '打开预约会议',
+      '打开预约日历',
       'book a meeting',
       'schedule a meeting',
     ].includes(clean)
-    || /(打开|显示|调出|进入|我想|我要|希望|请|帮我|安排|预约).{0,12}(预约会议|会议预约|会议日历|预约日历|产品演示|演示会议)|(?:什么时候|哪天|哪个时间).{0,12}(有空|可以见面|能开会)|\b(?:book|schedule|arrange|open|show)\b.{0,28}\b(?:meeting|appointment|demo session|calendar)\b/.test(clean)
+    || /^(?:请|帮我|麻烦|我想|我要|希望|需要|可以|能不能)?(?:打开|显示|进入|安排|预约|预订)?(?:一下|一个|一次)?(?:会议预约|预约会议|预约日历|会议日历|产品演示预约|演示预约)(?:功能|界面|页面|窗口)?$/i.test(clean)
+    || /(?:打开|显示|调出|进入|我想|我要|希望|需要|请|帮我|安排|预约|预订).{0,16}(预约会议|会议预约|会议日历|预约日历|产品演示|演示会议|演示预约)|(?:预约会议|会议预约).{0,8}(功能|界面|页面|窗口)|(?:什么时候|哪天|哪个时间).{0,12}(有空|可以见面|能开会)|\b(?:book|schedule|arrange|open|show)\b.{0,28}\b(?:meeting|appointment|demo session|calendar)\b/.test(clean)
   ) return 'meeting'
 
   if (
