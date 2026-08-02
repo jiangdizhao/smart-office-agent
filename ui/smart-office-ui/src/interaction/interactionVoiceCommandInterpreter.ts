@@ -9,6 +9,27 @@ import {
 } from './interactionPanelCommandBus'
 import { resolveSemanticInteractionIntent } from './semanticInteractionInterpreter'
 
+function normalizeCommandText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[，。！？、;；:：,.!?]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isDirectMeetingRequest(clean: string): boolean {
+  if (/(?:取消预约|取消会议|查看预约|预约记录|历史预约)/i.test(clean)) return false
+  return (
+    /^(?:请|帮我|麻烦|我想|我要|希望|需要|可以|能不能|给我)?(?:打开|显示|进入|安排|预约|预订|约)?(?:一下|一个|一次|个)?(?:预约会议|会议预约|预约日历|会议日历|产品演示预约|演示预约|产品演示|会议)(?:功能|界面|页面|窗口)?$/i.test(clean)
+    || /^(?:预约|预订|约)(?:一下|一个|一次|个)?(?:会议|时间|产品演示)$/i.test(clean)
+    || /^(?:帮我|请|麻烦)?(?:约个时间|安排个时间|安排一次会面|安排一次会议|安排产品演示)$/i.test(clean)
+    || /(?:我想|我要|希望|需要|帮我|请|可以|能不能).{0,10}(?:预约|预订|约|安排).{0,12}(?:会议|会面|时间|产品演示)/i.test(clean)
+    || /(?:什么时候|哪天|哪个时间).{0,12}(?:可以见面|能开会|方便会面|有时间)/i.test(clean)
+    || /\b(?:book|schedule|arrange|open|show)\b.{0,28}\b(?:meeting|appointment|demo session|calendar)\b/i.test(clean)
+  )
+}
+
 function isDirectContactFormRequest(clean: string): boolean {
   return (
     /^(?:打开|显示|调出|进入|填写|我要填写|我想填写|我想打开|请打开|帮我打开).{0,8}(?:登记信息表|登记表|个人信息表|联系信息表|访客登记表|登记信息|个人信息|联系信息|联系方式)(?:窗口|表单|页面)?$/i.test(clean)
@@ -35,7 +56,7 @@ function isGenericPanelCloseRequest(clean: string): boolean {
 }
 
 function localCommand(text: string): InteractionVoiceCommand | null {
-  const clean = text.trim().toLocaleLowerCase()
+  const clean = normalizeCommandText(text)
   if (!clean) return null
   const active = currentInteractionPanel()?.kind ?? null
   const close = /(?:关闭|关掉|退出|收起|取消|close|dismiss|exit)/i.test(clean)
@@ -60,9 +81,6 @@ function localCommand(text: string): InteractionVoiceCommand | null {
     /(?:下载|保存到本地).{0,8}(?:录音|音频)|(?:download).{0,20}(?:recording|audio)/i.test(clean)
   ) return { target: 'recording', action: 'download' }
 
-  // Explicit close targets must be resolved before the generic "close active panel"
-  // fallback. Otherwise “关闭登记表” could close whichever unrelated panel happens
-  // to be active.
   if (close && /(?:录音界面|录音窗口|实时录音)/i.test(clean)) {
     return { target: 'recording', action: 'close' }
   }
@@ -79,8 +97,12 @@ function localCommand(text: string): InteractionVoiceCommand | null {
     return { target: 'contact', action: 'close' }
   }
 
-  // Direct visitor-facing panels take precedence over protected result subviews.
-  // “打开登记信息表” means the writable registration form, never saved contacts.
+  // Meeting booking is handled before every semantic or general-chat route. This
+  // prevents intermittent "feature unavailable" answers when ASR adds filler words.
+  if (isDirectMeetingRequest(clean)) {
+    return { target: 'meeting', action: 'open' }
+  }
+
   if (isDirectContactFormRequest(clean)) {
     return { target: 'contact', action: 'open' }
   }
