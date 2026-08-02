@@ -29,6 +29,10 @@ function hasProtectedResultsContext(clean: string, active: string | null): boole
   return active === 'results' || /结果中心|已登记|登记结果|保存的|已保存|历史|列表|记录库|客户资料库|联系人记录|收集的结果/i.test(clean)
 }
 
+function isGenericPanelCloseRequest(clean: string): boolean {
+  return /^(?:关闭|关掉|退出|收起|取消|close|dismiss|exit)(?:一下)?(?:当前|这个|该)?(?:界面|窗口|面板)?(?:一下)?$/i.test(clean)
+}
+
 function localCommand(text: string): InteractionVoiceCommand | null {
   const clean = text.trim().toLocaleLowerCase()
   if (!clean) return null
@@ -114,7 +118,7 @@ function localCommand(text: string): InteractionVoiceCommand | null {
     if (active === 'transcript') return { target: 'transcript', action: 'refresh' }
   }
 
-  if (close && active) {
+  if (active && isGenericPanelCloseRequest(clean)) {
     if (active === 'contact') return { target: 'contact', action: 'close' }
     if (active === 'recording') return { target: 'recording', action: 'close' }
     if (active === 'transcript') return { target: 'transcript', action: 'close' }
