@@ -211,7 +211,7 @@ export function installRealtimeLivenessPatch(): void {
   }
 
   realtimeAgent.nextContinuousUtterance = async (signal) => {
-    if (signal.aborted) throw new DOMException('Operation aborted.', 'AbortError')
+    if (signal?.aborted) throw new DOMException('Operation aborted.', 'AbortError')
     let timer: number | null = null
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = window.setTimeout(() => {
