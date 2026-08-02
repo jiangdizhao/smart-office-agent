@@ -9,16 +9,29 @@ const TURN_SCOPED_PATHS = [
   '/api/conversation-route',
   '/agent/turn',
   '/agent/office-turn',
-  '/agent/tasks/',
-  '/api/human-recordings/',
 ]
+const RECOVERY_POLL_MS = 50
+const RECOVERY_ATTEMPTS = 20
 
 type ControllerGetter = () => OfficeVoiceController
 
+type RuntimeQueueInternals = {
+  utteranceQueue?: string[]
+}
+
+export class SupersededTurnError extends Error {
+  constructor(message = 'The turn was superseded by a newer visitor command.') {
+    super(message)
+    this.name = 'AbortError'
+  }
+}
+
 function abortError(message: string): Error {
-  const error = new Error(message)
-  error.name = 'AbortError'
-  return error
+  return new SupersededTurnError(message)
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 
 function isTurnScoped(input: RequestInfo | URL): boolean {
@@ -48,8 +61,12 @@ class PreemptiveTurnCoordinator {
   private turnAbort: AbortController | null = null
   private controllerGetter: ControllerGetter | null = null
   private cancelPromise: Promise<void> = Promise.resolve()
+  private recovering: Promise<boolean> | null = null
 
   constructor() {
+    // Only requests that belong to one conversational turn inherit the turn signal.
+    // Task polling, recording upload/summary, and panel data requests keep their own
+    // explicit lifecycle and are never cancelled by an unrelated new utterance.
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const turnSignal = this.turnAbort?.signal
       if (!turnSignal || turnSignal.aborted || !isTurnScoped(input)) {
@@ -70,7 +87,16 @@ class PreemptiveTurnCoordinator {
     }
 
     window.addEventListener('smartoffice:realtime-vad-speech-started', () => {
-      void this.preempt('visitor_barge_in')
+      const controller = this.controllerGetter?.()
+      const hasActiveTurn = Boolean(this.turnAbort && !this.turnAbort.signal.aborted)
+      const shouldPreempt = Boolean(
+        hasActiveTurn
+        || controller?.runtime.outputActive
+        || controller?.panel === 'processing'
+        || controller?.panel === 'speaking'
+        || controller?.active,
+      )
+      if (shouldPreempt) void this.preempt('visitor_barge_in')
     })
     window.addEventListener('smartoffice:visit-activated', () => {
       this.reset('visit_activated')
@@ -106,64 +132,121 @@ class PreemptiveTurnCoordinator {
     this.turnAbort = null
   }
 
-  async preferLatestUtterance(
-    initial: string,
-    visitSignal: AbortSignal,
-  ): Promise<string> {
-    let latest = initial
-    for (let index = 0; index < 4; index += 1) {
-      if (visitSignal.aborted) throw abortError('Visit ended while selecting the latest command.')
-      const probe = new AbortController()
-      const abortFromVisit = () => probe.abort()
-      visitSignal.addEventListener('abort', abortFromVisit, { once: true })
-      const timer = window.setTimeout(() => probe.abort(), 8)
-      try {
-        const next = await realtimeAgent.nextContinuousUtterance(probe.signal)
-        if (next.trim()) latest = next
-      } catch (error) {
-        if (!(error instanceof Error && error.name === 'AbortError')) throw error
-        break
-      } finally {
-        window.clearTimeout(timer)
-        visitSignal.removeEventListener('abort', abortFromVisit)
-      }
-    }
-    return latest
+  takeLatestUtterance(initial: string): string {
+    const internals = realtimeAgent as unknown as RuntimeQueueInternals
+    const queue = internals.utteranceQueue
+    if (!Array.isArray(queue) || queue.length === 0) return initial
+    const latest = String(queue[queue.length - 1] ?? '').trim()
+    queue.splice(0)
+    return latest || initial
   }
 
   async waitForCancellation(): Promise<void> {
     await this.cancelPromise.catch(() => undefined)
   }
 
+  async recoverToReady(reason: string): Promise<boolean> {
+    if (this.recovering) return await this.recovering
+    const operation = this.recoverController(reason)
+    this.recovering = operation
+    try {
+      return await operation
+    } finally {
+      if (this.recovering === operation) this.recovering = null
+    }
+  }
+
+  private async recoverController(reason: string): Promise<boolean> {
+    for (let attempt = 0; attempt < RECOVERY_ATTEMPTS; attempt += 1) {
+      const controller = this.controllerGetter?.()
+      if (!controller) return true
+
+      if (controller.panel === 'error') controller.clearError()
+      if (controller.panel === 'processing' || controller.panel === 'speaking') {
+        await controller.stopSpeaking().catch(() => undefined)
+      }
+
+      const latest = this.controllerGetter?.()
+      if (!latest) return true
+      if (!realtimeAgent.status().connected) {
+        await latest.connect().catch(() => undefined)
+      }
+
+      const after = this.controllerGetter?.()
+      if (
+        after
+        && after.panel === 'idle'
+        && !after.listening
+        && realtimeAgent.status().connected
+      ) {
+        console.info('[PreemptiveTurn] recovery-complete', {
+          reason,
+          attempt: attempt + 1,
+          epoch: this.epoch,
+        })
+        window.dispatchEvent(new CustomEvent('smartoffice:turn-ready', {
+          detail: { reason, epoch: this.epoch },
+        }))
+        return true
+      }
+      await wait(RECOVERY_POLL_MS)
+    }
+
+    const controller = this.controllerGetter?.()
+    console.error('[PreemptiveTurn] recovery-failed', {
+      reason,
+      epoch: this.epoch,
+      panel: controller?.panel ?? 'unavailable',
+      connected: realtimeAgent.status().connected,
+    })
+    return false
+  }
+
   async preempt(reason: string): Promise<void> {
     const previous = this.turnAbort
-    if (previous && !previous.signal.aborted) previous.abort()
-    this.epoch += 1
-
     const controller = this.controllerGetter?.()
     const taskId = controller?.taskId ?? null
     const shouldCancelTask = Boolean(controller?.active && taskId)
+    const hadTurn = Boolean(previous && !previous.signal.aborted)
+
+    if (hadTurn) previous?.abort()
+    this.turnAbort = null
+    this.epoch += 1
+
     console.info('[PreemptiveTurn] preempt', {
       reason,
       epoch: this.epoch,
       taskId,
       shouldCancelTask,
+      hadTurn,
+      panel: controller?.panel ?? null,
     })
 
-    void voiceOutputManager.stop().catch(() => undefined)
-    void realtimeAgent.stopOutput().catch(() => undefined)
-    void realtimeOfficeInterpreter.shutdown().catch(() => undefined)
-    void controller?.stopSpeaking().catch(() => undefined)
+    const interruption = Promise.allSettled([
+      voiceOutputManager.stop(),
+      realtimeAgent.stopOutput(),
+      controller?.stopSpeaking() ?? Promise.resolve(),
+      // An in-flight model-only office decision has no AbortSignal API. Shutdown is
+      // bounded to genuine preemption and the resulting rejection is normalized by
+      // the recovery loop instead of leaving the Controller in error.
+      controller?.panel === 'processing'
+        ? realtimeOfficeInterpreter.shutdown()
+        : Promise.resolve(),
+    ]).then(() => undefined)
 
     if (shouldCancelTask && taskId) {
+      const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '')
+        ?? 'http://127.0.0.1:8000'
       this.cancelPromise = nativeFetch(
-        `${window.location.origin.startsWith('http') ? '' : ''}${
-          import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
-        }/agent/tasks/${encodeURIComponent(taskId)}/cancel`,
+        `${apiBase}/agent/tasks/${encodeURIComponent(taskId)}/cancel`,
         { method: 'POST', keepalive: true },
       ).then(() => undefined).catch(() => undefined)
-      await this.cancelPromise
+    } else {
+      this.cancelPromise = Promise.resolve()
     }
+
+    await interruption
+    await this.recoverToReady(reason)
   }
 
   reset(reason: string): void {
