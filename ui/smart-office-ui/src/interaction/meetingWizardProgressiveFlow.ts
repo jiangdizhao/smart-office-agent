@@ -38,11 +38,14 @@ function installMeetingResponseCapture(): void {
     const response = await nativeFetch(input, init)
     const url = requestUrl(input)
     if (url.includes('/api/visitor-experience/meeting-availability') && response.ok) {
-      void response.clone().json().then((payload: { slots?: TimelineSlot[] }) => {
+      try {
+        const payload = await response.clone().json() as { slots?: TimelineSlot[] }
         latestSlots = Array.isArray(payload.slots) ? payload.slots : []
         selectedSlot = null
         scheduleSynchronise()
-      }).catch(() => undefined)
+      } catch {
+        latestSlots = []
+      }
     }
     return response
   }
