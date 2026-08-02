@@ -123,8 +123,9 @@ function parseInteractionContext(value: string): InteractionContext | null {
 function interactionReply(context: InteractionContext, language: VoiceLanguage): string {
   const labels: Record<InteractionWindowKind, { zh: string; en: string }> = {
     contact: { zh: '登记信息', en: 'contact registration' },
+    meeting: { zh: '会议预约日历', en: 'the meeting-booking calendar' },
     recording: { zh: '实时录音', en: 'live recording' },
-    transcript: { zh: '当前对话记录', en: 'the current conversation transcript' },
+    transcript: { zh: '本 Session 对话总结', en: 'the current Session summary' },
     results: { zh: '结果中心', en: 'the result center' },
   }
   const label = labels[context.kind][language]
