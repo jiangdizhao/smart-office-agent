@@ -10,11 +10,13 @@ import './voice/VoiceDebugPanelPhase2.css'
 import './virtual-host/ProactiveReceptionStage1.css'
 import './interaction/embeddedInteractionBridge'
 import './interaction/interactionPanelCommandBridge'
+import './interaction/sessionSummaryLifecycle'
 import DebugApp from './debug/DebugApp.tsx'
 import InteractionActionRail from './interaction/InteractionActionRail.tsx'
 import InteractionApp from './interaction/InteractionApp.tsx'
 import InteractionPanelHost from './interaction/InteractionPanelHost.tsx'
 import ProtectedResultCenterApp from './interaction/ProtectedResultCenterApp.tsx'
+import VisitorExperienceApp from './interaction/VisitorExperienceApp.tsx'
 import VirtualHostApp from './virtual-host/VirtualHostApp.tsx'
 
 function serialiseDiagnostic(value: unknown): unknown {
@@ -94,6 +96,11 @@ const interactionRoute =
 const resultCenterRoute =
   normalizedPath === '/interaction/results'
   || normalizedPath.startsWith('/interaction/results/')
+const visitorExperienceRoute =
+  normalizedPath === '/interaction/meeting'
+  || normalizedPath.startsWith('/interaction/meeting/')
+  || normalizedPath === '/interaction/transcript'
+  || normalizedPath.startsWith('/interaction/transcript/')
 const embeddedInteraction =
   interactionRoute && new URLSearchParams(window.location.search).get('embedded') === '1'
 document.documentElement.dataset.smartOfficeRoute = debugRoute
@@ -108,6 +115,8 @@ createRoot(appRoot).render(
     <DebugApp />
   ) : resultCenterRoute ? (
     <ProtectedResultCenterApp />
+  ) : visitorExperienceRoute ? (
+    <VisitorExperienceApp />
   ) : interactionRoute ? (
     <InteractionApp />
   ) : (
