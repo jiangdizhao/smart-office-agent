@@ -3,13 +3,40 @@ import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 export type InteractionWindowKind = 'contact' | 'recording' | 'transcript' | 'results'
 
 export const INTERACTION_PANEL_OPEN_EVENT = 'smartoffice:interaction-panel-open'
+export const INTERACTION_PANEL_CLOSE_EVENT = 'smartoffice:interaction-panel-close-request'
+export const INTERACTION_PANEL_COMMAND_EVENT = 'smartoffice:interaction-panel-command'
+export const INTERACTION_PANEL_RESULT_EVENT = 'smartoffice:interaction-panel-result'
 export const INTERACTION_PANEL_CLOSE_MESSAGE = 'smartoffice:interaction-panel-close'
+export const INTERACTION_PANEL_READY_MESSAGE = 'smartoffice:interaction-panel-ready'
+export const INTERACTION_PANEL_COMMAND_MESSAGE = 'smartoffice:interaction-panel-command'
+export const INTERACTION_PANEL_RESULT_MESSAGE = 'smartoffice:interaction-panel-result'
 
 export type InteractionWindowRequest = {
   kind: InteractionWindowKind
   conversationId: string
   visitId?: string | null
   language?: VoiceLanguage
+  panelInstanceId?: string
+}
+
+export type InteractionPanelCommand = {
+  commandId: string
+  panelInstanceId: string
+  visitId: string | null
+  target: InteractionWindowKind
+  action: string
+}
+
+export type InteractionPanelCommandResult = {
+  commandId: string
+  panelInstanceId: string
+  visitId: string | null
+  target: InteractionWindowKind
+  action: string
+  ok: boolean
+  status: 'completed' | 'failed' | 'auth_required' | 'stale'
+  message: string
+  data?: Record<string, unknown>
 }
 
 export type InteractionWindowResult = {
@@ -18,6 +45,31 @@ export type InteractionWindowResult = {
   reused: boolean
   target: 'host-overlay'
   message: string
+  request: InteractionWindowRequest
+}
+
+let activeRequest: InteractionWindowRequest | null = null
+
+function samePanel(
+  left: InteractionWindowRequest | null,
+  right: InteractionWindowRequest,
+): boolean {
+  return Boolean(
+    left
+    && left.kind === right.kind
+    && left.conversationId === right.conversationId
+    && String(left.visitId ?? '') === String(right.visitId ?? ''),
+  )
+}
+
+function resolvedRequest(request: InteractionWindowRequest): InteractionWindowRequest {
+  if (samePanel(activeRequest, request) && activeRequest?.panelInstanceId) {
+    return activeRequest
+  }
+  return {
+    ...request,
+    panelInstanceId: request.panelInstanceId || crypto.randomUUID(),
+  }
 }
 
 export function interactionPanelUrl(request: InteractionWindowRequest): string {
@@ -26,29 +78,56 @@ export function interactionPanelUrl(request: InteractionWindowRequest): string {
   if (request.visitId) url.searchParams.set('visit_id', request.visitId)
   url.searchParams.set('lang', request.language ?? 'zh')
   url.searchParams.set('embedded', '1')
+  url.searchParams.set(
+    'panel_instance_id',
+    request.panelInstanceId || crypto.randomUUID(),
+  )
   return url.toString()
 }
 
 export async function openInteractionWindow(
   request: InteractionWindowRequest,
 ): Promise<InteractionWindowResult> {
+  const next = resolvedRequest(request)
+  const reused = samePanel(activeRequest, next)
+  activeRequest = next
   window.dispatchEvent(
     new CustomEvent<InteractionWindowRequest>(INTERACTION_PANEL_OPEN_EVENT, {
-      detail: request,
+      detail: next,
     }),
   )
   console.info('[InteractionPanel] opened-on-host-display', {
-    kind: request.kind,
-    visitId: request.visitId ?? null,
-    conversationId: request.conversationId,
+    kind: next.kind,
+    visitId: next.visitId ?? null,
+    conversationId: next.conversationId,
+    panelInstanceId: next.panelInstanceId,
+    reused,
   })
   return {
     ok: true,
     blocked: false,
-    reused: true,
+    reused,
     target: 'host-overlay',
     message: 'Interaction panel opened beside Sara on the host display.',
+    request: next,
   }
+}
+
+export function currentInteractionPanel(): InteractionWindowRequest | null {
+  return activeRequest ? { ...activeRequest } : null
+}
+
+export function markInteractionPanelClosed(panelInstanceId?: string): void {
+  if (
+    panelInstanceId
+    && activeRequest?.panelInstanceId
+    && panelInstanceId !== activeRequest.panelInstanceId
+  ) return
+  activeRequest = null
+}
+
+export function closeInteractionPanel(): void {
+  window.dispatchEvent(new CustomEvent(INTERACTION_PANEL_CLOSE_EVENT))
 }
 
 export function matchInteractionWindowIntent(text: string): InteractionWindowKind | null {
