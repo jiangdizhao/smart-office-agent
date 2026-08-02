@@ -81,6 +81,7 @@ function localCommand(text: string): InteractionVoiceCommand | null {
     /(?:下载|保存到本地).{0,8}(?:录音|音频)|(?:download).{0,20}(?:recording|audio)/i.test(clean)
   ) return { target: 'recording', action: 'download' }
 
+  // Explicit close targets must be resolved before the generic active-panel fallback.
   if (close && /(?:录音界面|录音窗口|实时录音)/i.test(clean)) {
     return { target: 'recording', action: 'close' }
   }
@@ -97,6 +98,7 @@ function localCommand(text: string): InteractionVoiceCommand | null {
     return { target: 'contact', action: 'close' }
   }
 
+  // Direct visitor-facing panels take precedence over protected result subviews.
   // Meeting booking is handled before every semantic or general-chat route. This
   // prevents intermittent "feature unavailable" answers when ASR adds filler words.
   if (isDirectMeetingRequest(clean)) {
