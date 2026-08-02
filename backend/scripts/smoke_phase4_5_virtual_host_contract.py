@@ -82,6 +82,7 @@ def main() -> None:
     controller_source = read("ui/smart-office-ui/src/voice/useOfficeVoiceController.ts")
     realtime_source = read("ui/smart-office-ui/src/voice/realtimeAgentRuntime.ts")
     liveness_source = read("ui/smart-office-ui/src/voice/realtimeLivenessPatch.ts")
+    nonblocking_error_css = read("ui/smart-office-ui/src/voice/nonBlockingTurnErrors.css")
     visit_bridge_source = read("ui/smart-office-ui/src/voice/visitRealtimeLeaseBridge.ts")
     command_recovery_source = read("ui/smart-office-ui/src/voice/commandSpeechRecovery.ts")
     proactive_loop_source = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
@@ -188,6 +189,9 @@ def main() -> None:
         "recording",
         "transcript",
         "results",
+        "打开登记信息表",
+        "must never be results",
+        "查看已登记信息",
     )
     assert_contains(
         protected_results_source,
@@ -205,7 +209,18 @@ def main() -> None:
         "export_csv",
         "play_latest_recording",
         "open_directory",
+        "isDirectContactFormRequest",
+        "isDirectTranscriptPanelRequest",
+        "hasProtectedResultsContext",
+        "Direct visitor-facing panels take precedence",
+        "Explicit close targets must be resolved before",
     )
+    assert voice_command_source.index(
+        "if (isDirectContactFormRequest(clean))"
+    ) < voice_command_source.index("const protectedContext")
+    assert voice_command_source.index(
+        "if (close && /(?:录音界面"
+    ) < voice_command_source.index("if (close && active)")
     assert_contains(
         panel_bridge_source,
         "startRecording",
@@ -227,6 +242,16 @@ def main() -> None:
         "takeLatestUtterance",
         "recoverToReady",
         "TURN_SCOPED_PATHS",
+        "PASSIVE_ERROR_RECOVERY_MS",
+        "passive_nonblocking_turn_error",
+        "transient-turn-error-cleared",
+        "nonBlockingTurnErrors.css",
+    )
+    assert_contains(
+        nonblocking_error_css,
+        ".host-error-toast",
+        "display: none !important",
+        ".virtual-host-shell.state-error .virtual-host-status",
     )
     assert_not_contains(
         coordinator_source,
@@ -254,9 +279,9 @@ def main() -> None:
     result_center_admin_contract.main()
 
     print(
-        "PASS: Phase 4-5 includes Visit-scoped result protection, bounded VAD liveness, "
-        "full panel voice actions, latest-command preemption, asynchronous feedback, "
-        "and existing exhibition guarantees."
+        "PASS: Phase 4-5 includes Visit-scoped result protection, registration/result "
+        "disambiguation, nonblocking single-turn recovery, bounded VAD liveness, full "
+        "panel voice actions, latest-command preemption, and asynchronous feedback."
     )
     print(
         "NOTE: Windows Office, Outlook, rightmost-display placement, real microphone "
