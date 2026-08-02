@@ -1,0 +1,11 @@
+/* Exhibition runtime: a failed conversational turn is diagnostic only.
+   It must never ask the visitor to retry or block the next command. */
+.host-error-toast {
+  display: none !important;
+}
+
+/* The coordinator normally clears error state within 250 ms. Suppress the brief
+   “需要重新尝试 / Please try again” status flash during that recovery window. */
+.virtual-host-shell.state-error .virtual-host-status {
+  visibility: hidden !important;
+}
