@@ -56,6 +56,12 @@ function timeoutError(message: string): Error {
   return error
 }
 
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
 let installed = false
 let activeLanguage: VoiceLanguage = 'zh'
 let speechItemId = ''
@@ -70,35 +76,10 @@ function clearMaxSpeechTimer(): void {
 
 function parseEvent(message: MessageEvent<string>): Record<string, unknown> | null {
   try {
-    const value = JSON.parse(message.data) as unknown
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : null
+    return objectValue(JSON.parse(message.data) as unknown)
   } catch {
     return null
   }
-}
-
-function applyBoundedVad(internals: RuntimeInternals): void {
-  internals.safeSend({
-    type: 'session.update',
-    session: {
-      type: 'realtime',
-      audio: {
-        input: {
-          noise_reduction: { type: 'near_field' },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: WATCHDOG_VAD_THRESHOLD,
-            prefix_padding_ms: WATCHDOG_VAD_PREFIX_MS,
-            silence_duration_ms: WATCHDOG_VAD_SILENCE_MS,
-            create_response: false,
-            interrupt_response: false,
-          },
-        },
-      },
-    },
-  })
 }
 
 function forceSpeechBoundary(
@@ -124,12 +105,12 @@ function forceSpeechBoundary(
 
   // Server VAD occasionally remains in speech_started indefinitely in noisy rooms.
   // Commit the bounded audio accumulated so far and feed the existing transcription
-  // path a synthetic endpoint. A later duplicate server speech_stopped event for the
-  // same item is suppressed below.
+  // path a synthetic endpoint. The later duplicate server endpoint is suppressed,
+  // while this synthetic endpoint must continue into the original transcription path.
   try {
     internals.safeSend({ type: 'input_audio_buffer.commit' })
   } catch {
-    // The existing utterance waiter timeout will recover the loop if commit fails.
+    // The utterance waiter watchdog will recover the loop if commit is rejected.
   }
   internals.handleServerEvent(new MessageEvent<string>('message', {
     data: JSON.stringify({
@@ -139,6 +120,28 @@ function forceSpeechBoundary(
       metadata: { source: 'client_endpoint_watchdog' },
     }),
   }))
+}
+
+function applyBoundedVad(internals: RuntimeInternals): void {
+  internals.safeSend({
+    type: 'session.update',
+    session: {
+      type: 'realtime',
+      audio: {
+        input: {
+          noise_reduction: { type: 'near_field' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: WATCHDOG_VAD_THRESHOLD,
+            prefix_padding_ms: WATCHDOG_VAD_PREFIX_MS,
+            silence_duration_ms: WATCHDOG_VAD_SILENCE_MS,
+            create_response: false,
+            interrupt_response: false,
+          },
+        },
+      },
+    },
+  })
 }
 
 export function installRealtimeLivenessPatch(): void {
@@ -171,6 +174,8 @@ export function installRealtimeLivenessPatch(): void {
     const event = parseEvent(message)
     const type = String(event?.type ?? '')
     const itemId = String(event?.item_id ?? '')
+    const metadata = objectValue(event?.metadata)
+    const watchdogSynthetic = metadata?.source === 'client_endpoint_watchdog'
 
     if (type === 'input_audio_buffer.speech_started') {
       clearMaxSpeechTimer()
@@ -185,7 +190,7 @@ export function installRealtimeLivenessPatch(): void {
       clearMaxSpeechTimer()
       speechEpoch += 1
       speechItemId = ''
-      if (itemId && forcedItems.delete(itemId)) {
+      if (!watchdogSynthetic && itemId && forcedItems.delete(itemId)) {
         console.info('[RealtimeDiagnostics] duplicate-server-endpoint-suppressed', {
           itemId,
         })
@@ -212,18 +217,29 @@ export function installRealtimeLivenessPatch(): void {
 
   realtimeAgent.nextContinuousUtterance = async (signal) => {
     if (signal?.aborted) throw new DOMException('Operation aborted.', 'AbortError')
+    const waiterAbort = new AbortController()
+    const abortFromParent = () => waiterAbort.abort()
+    signal?.addEventListener('abort', abortFromParent, { once: true })
     let timer: number | null = null
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = window.setTimeout(() => {
-        reject(timeoutError(
-          `No complete utterance was produced within ${UTTERANCE_WAIT_TIMEOUT_MS} ms.`,
-        ))
-      }, UTTERANCE_WAIT_TIMEOUT_MS)
-    })
+    let timedOut = false
+
     try {
-      return await Promise.race([originalNext(signal), timeout])
+      return await new Promise<string>((resolve, reject) => {
+        timer = window.setTimeout(() => {
+          timedOut = true
+          waiterAbort.abort()
+          reject(timeoutError(
+            `No complete utterance was produced within ${UTTERANCE_WAIT_TIMEOUT_MS} ms.`,
+          ))
+        }, UTTERANCE_WAIT_TIMEOUT_MS)
+
+        void originalNext(waiterAbort.signal).then(resolve).catch((error) => {
+          if (!timedOut) reject(error)
+        })
+      })
     } finally {
       if (timer !== null) window.clearTimeout(timer)
+      signal?.removeEventListener('abort', abortFromParent)
     }
   }
 
