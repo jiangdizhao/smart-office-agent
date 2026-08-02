@@ -1,6 +1,6 @@
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 
-export type InteractionWindowKind = 'contact' | 'recording' | 'transcript' | 'results'
+export type InteractionWindowKind = 'contact' | 'meeting' | 'recording' | 'transcript' | 'results'
 
 export const INTERACTION_PANEL_OPEN_EVENT = 'smartoffice:interaction-panel-open'
 export const INTERACTION_PANEL_CLOSE_EVENT = 'smartoffice:interaction-panel-close-request'
@@ -146,8 +146,20 @@ export function matchInteractionWindowIntent(text: string): InteractionWindowKin
       'contact form',
       'registration form',
     ].includes(clean)
-    || /(打开|显示|调出|进入|填写|登记|注册|留下|我想|我要|希望|帮我|请).{0,10}(登记信息|登记|注册|联系信息|联系方式|个人信息|访客信息|我的资料|我的信息)|(?:登记信息|联系信息|联系方式|个人信息).{0,8}(窗口|表单|页面)|\b(?:open|show|display|fill|register|sign up|leave)\b.{0,30}\b(?:contact form|contact details|my details|registration form)\b/.test(clean)
+    || /(打开|显示|调出|进入|填写|登记|注册|留下|我想|我要|希望|帮我|请).{0,10}(登记信息|登记表|登记|注册|联系信息|联系方式|个人信息|个人信息表|访客信息|我的资料|我的信息)|(?:登记信息|联系信息|联系方式|个人信息).{0,8}(窗口|表单|页面)|\b(?:open|show|display|fill|register|sign up|leave)\b.{0,30}\b(?:contact form|contact details|my details|registration form)\b/.test(clean)
   ) return 'contact'
+
+  if (
+    [
+      '预约会议',
+      '会议预约',
+      '我想预约',
+      '安排会议',
+      'book a meeting',
+      'schedule a meeting',
+    ].includes(clean)
+    || /(打开|显示|调出|进入|我想|我要|希望|请|帮我|安排|预约).{0,12}(预约会议|会议预约|会议日历|预约日历|产品演示|演示会议)|(?:什么时候|哪天|哪个时间).{0,12}(有空|可以见面|能开会)|\b(?:book|schedule|arrange|open|show)\b.{0,28}\b(?:meeting|appointment|demo session|calendar)\b/.test(clean)
+  ) return 'meeting'
 
   if (
     [
@@ -164,13 +176,15 @@ export function matchInteractionWindowIntent(text: string): InteractionWindowKin
   if (
     [
       '对话记录',
+      '对话总结',
+      'session总结',
       '聊天记录',
       '会话记录',
       '刚才我们说了什么',
-      'conversation history',
-      'chat history',
+      'conversation summary',
+      'session summary',
     ].includes(clean)
-    || /(打开|显示|调出|查看|看看|我想|我要|让我|请).{0,10}(对话记录|聊天记录|会话记录|当前对话|刚才的对话|刚才我们说了什么)|(?:对话记录|聊天记录|会话记录).{0,8}(窗口|页面)|\b(?:open|show|display|view|see)\b.{0,24}\b(?:conversation history|chat history|conversation transcript|current transcript|what we said)\b/.test(clean)
+    || /(打开|显示|调出|查看|看看|我想|我要|让我|请).{0,10}(对话记录|对话总结|聊天总结|会话总结|session要点|当前对话|刚才的对话|刚才我们说了什么)|(?:对话记录|对话总结|聊天总结|会话总结).{0,8}(窗口|页面)|\b(?:open|show|display|view|see)\b.{0,24}\b(?:conversation summary|session summary|conversation transcript|current summary|what we discussed)\b/.test(clean)
   ) return 'transcript'
 
   if (
@@ -182,7 +196,7 @@ export function matchInteractionWindowIntent(text: string): InteractionWindowKin
       '查看保存的资料',
       'result center',
     ].includes(clean)
-    || /(打开|显示|调出|进入|查看|看看|我想|我要|让我|请).{0,10}(结果中心|登记结果|已登记信息|联系人列表|录音列表|保存结果|保存的资料|客户资料|收集的结果)|(?:录音|登记资料|客户资料).{0,8}(保存在哪|在哪里|列表|结果)|\b(?:open|show|view|see)\b.{0,24}\b(?:result center|saved results|contact list|recording list|registered visitors)\b/.test(clean)
+    || /(打开|显示|调出|进入|查看|看看|我想|我要|让我|请).{0,10}(结果中心|登记结果|已登记信息|联系人列表|录音列表|保存结果|保存的资料|客户资料|收集的结果|访客档案)|(?:录音|登记资料|客户资料).{0,8}(保存在哪|在哪里|列表|结果)|\b(?:open|show|view|see)\b.{0,24}\b(?:result center|saved results|contact list|recording list|registered visitors|visitor profiles)\b/.test(clean)
   ) return 'results'
 
   return null
