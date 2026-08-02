@@ -28,7 +28,7 @@ const ACTIONS: RailAction[] = [
   { kind: 'meeting', icon: '◇', label: '预约会议', description: '即将开放', disabled: true },
   { kind: 'recording', icon: '●', label: '实时录音', description: '录制现场对话' },
   { kind: 'transcript', icon: '≡', label: '对话记录', description: '仅当前 Session' },
-  { kind: 'results', icon: '▣', label: '结果中心', description: '查看登记与录音' },
+  { kind: 'results', icon: '▣', label: '结果中心', description: '管理员密码验证' },
 ]
 
 export default function InteractionActionRail() {
@@ -41,7 +41,13 @@ export default function InteractionActionRail() {
       visitId: visitLeaseRegistry.current()?.visitId ?? null,
       language: 'zh',
     })
-    setNotice(result.ok ? '已在 Sara 左侧打开' : '面板打开失败，请刷新主界面')
+    setNotice(
+      result.ok
+        ? kind === 'results'
+          ? '请输入管理员密码'
+          : '已在 Sara 左侧打开'
+        : '面板打开失败，请刷新主界面',
+    )
     window.setTimeout(() => setNotice(''), 4_000)
   }
 
