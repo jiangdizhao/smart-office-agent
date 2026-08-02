@@ -41,6 +41,47 @@ async function downloadResponse(response: Response, fallbackName: string): Promi
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
 }
 
+function ProtectedAudio({ record }: { record: RecordingRecord }) {
+  const [source, setSource] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let objectUrl = ''
+    void fetch(`${API_BASE_URL}${record.artifact_url}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`音频读取失败：${response.status}`)
+        return await response.blob()
+      })
+      .then((blob) => {
+        if (controller.signal.aborted) return
+        objectUrl = URL.createObjectURL(blob)
+        setSource(objectUrl)
+      })
+      .catch((value) => {
+        if (!controller.signal.aborted) {
+          setError(value instanceof Error ? value.message : String(value))
+        }
+      })
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [record.artifact_url])
+
+  if (error) return <span className="protected-audio-error">{error}</span>
+  if (!source) return <span className="protected-audio-loading">正在准备安全播放…</span>
+  return (
+    <audio
+      controls
+      preload="metadata"
+      src={source}
+      data-protected-ready="true"
+      data-recording-filename={record.filename}
+    />
+  )
+}
+
 export default function ResultCenterCompatibilityTools() {
   const [recordingsOpen, setRecordingsOpen] = useState(false)
   const [recordings, setRecordings] = useState<RecordingRecord[]>([])
@@ -152,7 +193,7 @@ export default function ResultCenterCompatibilityTools() {
                   <small>{formatDate(record.uploaded_at)} · {formatBytes(record.size_bytes)}</small>
                   <small>{record.audio_path}</small>
                 </div>
-                <audio controls preload="metadata" src={`${API_BASE_URL}${record.artifact_url}`} />
+                <ProtectedAudio record={record} />
                 <button type="button" onClick={() => void downloadRecording(record)}>下载</button>
               </article>
             ))}
