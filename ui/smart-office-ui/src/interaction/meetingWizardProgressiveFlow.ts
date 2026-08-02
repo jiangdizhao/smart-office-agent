@@ -71,6 +71,19 @@ function stepIndex(step: MeetingWizardStep): number {
   return 2
 }
 
+function ensureMeetingCopy(step: MeetingWizardStep): void {
+  const subtitle = document.querySelector<HTMLElement>('.visitor-experience-header p')
+  if (subtitle) {
+    subtitle.textContent = step === 'date'
+      ? '请先选择预约日期，然后在下一页选择会面时间。'
+      : step === 'availability'
+        ? '请选择一个可预约的会面时间。'
+        : step === 'success'
+          ? '预约已经保存，我们会安排公司员工与您联系。'
+          : '正在保存您的预约。'
+  }
+}
+
 function ensureProgress(layout: HTMLElement, step: MeetingWizardStep): void {
   const parent = layout.parentElement
   if (!parent) return
@@ -231,6 +244,7 @@ function synchroniseMeetingWizard(): void {
 
   const step = resolveStep(layout)
   layout.dataset.meetingWizardStep = step
+  ensureMeetingCopy(step)
   ensureProgress(layout, step)
   ensureAvailabilityHeader(layout, step)
   ensureTimelineRows(layout, step)
