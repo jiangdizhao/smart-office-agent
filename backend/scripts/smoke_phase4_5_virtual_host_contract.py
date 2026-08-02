@@ -12,6 +12,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.main import app  # noqa: E402
+import smoke_result_center_admin_contract as result_center_admin_contract  # noqa: E402
 
 
 def read(relative_path: str) -> str:
@@ -83,6 +84,8 @@ def main() -> None:
     visit_bridge_source = read("ui/smart-office-ui/src/voice/visitRealtimeLeaseBridge.ts")
     command_recovery_source = read("ui/smart-office-ui/src/voice/commandSpeechRecovery.ts")
     proactive_loop_source = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
+    semantic_source = read("ui/smart-office-ui/src/interaction/semanticInteractionInterpreter.ts")
+    protected_results_source = read("ui/smart-office-ui/src/interaction/ProtectedResultCenterApp.tsx")
     acceptance = read("PHASE4_5_EXHIBITION_ACCEPTANCE.md")
 
     assert_contains(
@@ -134,9 +137,6 @@ def main() -> None:
     assert_contains(caption_source, "splitLyrics", "lyric-current", "user-live-caption")
     assert_contains(phase4_css, "exhibition-approval-card", "exhibition-operator-drawer")
 
-    # Current voice-runtime protections: persistent WebRTC, output interruption,
-    # capture cleanup, Visit fencing, command-language recovery, and automatic
-    # recovery from a failed turn without requiring the visitor to leave the frame.
     assert_contains(
         realtime_source,
         "class PersistentRealtimeAgent",
@@ -163,6 +163,24 @@ def main() -> None:
         "latest.clearError()",
         "await latest.connect()",
         "controller-turn-recovery-complete",
+        "resolveSemanticInteractionIntent",
+        "semantic_interaction_clarification",
+    )
+    assert_contains(
+        semantic_source,
+        "visitor_service_intent_classification",
+        "我想登记",
+        "contact",
+        "recording",
+        "transcript",
+        "results",
+    )
+    assert_contains(
+        protected_results_source,
+        "管理员验证",
+        "/api/result-center/admin/login",
+        "Authorization",
+        "SMART_OFFICE_ADMIN_PASSWORD",
     )
     assert_contains(controller_source, "await voiceOutputManager.stop()")
     assert_contains(controller_source, "smartoffice_voice_conversation_id")
@@ -181,9 +199,11 @@ def main() -> None:
     ):
         assert scenario in acceptance
 
+    result_center_admin_contract.main()
+
     print(
         "PASS: Phase 4 approval/settings, guide-style reception, persistent voice, "
-        "Chinese command recovery, and post-error listening recovery contracts are present."
+        "semantic visitor services, protected results, and post-error listening recovery are present."
     )
     print(
         "NOTE: Windows Office, Outlook, rightmost-display placement, microphone, and "
