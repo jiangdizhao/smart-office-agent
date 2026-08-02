@@ -212,6 +212,7 @@ def main() -> None:
         "isDirectContactFormRequest",
         "isDirectTranscriptPanelRequest",
         "hasProtectedResultsContext",
+        "isGenericPanelCloseRequest",
         "Direct visitor-facing panels take precedence",
         "Explicit close targets must be resolved before",
     )
@@ -220,7 +221,7 @@ def main() -> None:
     ) < voice_command_source.index("const protectedContext")
     assert voice_command_source.index(
         "if (close && /(?:录音界面"
-    ) < voice_command_source.index("if (close && active)")
+    ) < voice_command_source.index("if (active && isGenericPanelCloseRequest(clean))")
     assert_contains(
         panel_bridge_source,
         "startRecording",
