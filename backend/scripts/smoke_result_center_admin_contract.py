@@ -177,7 +177,7 @@ def main() -> None:
     assert "panel_instance_id: panelInstanceId" in protected_app
     assert "stop_save_summarize" in command_bridge
     assert "play_latest_recording" in command_bridge
-    assert "开始录音" in voice_interpreter
+    assert "action: 'start'" in voice_interpreter
     assert "导出" in voice_interpreter
     assert "smartoffice:realtime-vad-speech-started" in coordinator
     assert "/cancel" in coordinator
