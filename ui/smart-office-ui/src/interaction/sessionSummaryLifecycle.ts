@@ -23,6 +23,7 @@ type VisitBuffer = {
   timer: number | null
   saving: boolean
   dirty: boolean
+  finalRequested: boolean
 }
 
 const buffers = new Map<string, VisitBuffer>()
@@ -54,6 +55,7 @@ function ensureBuffer(event: SessionMessageEvent): VisitBuffer | null {
       timer: null,
       saving: false,
       dirty: false,
+      finalRequested: false,
     }
     buffers.set(key, value)
   }
@@ -63,6 +65,7 @@ function ensureBuffer(event: SessionMessageEvent): VisitBuffer | null {
 async function persist(buffer: VisitBuffer, status: 'draft' | 'final'): Promise<void> {
   if (buffer.saving) {
     buffer.dirty = true
+    if (status === 'final') buffer.finalRequested = true
     return
   }
   buffer.saving = true
@@ -102,11 +105,21 @@ async function persist(buffer: VisitBuffer, status: 'draft' | 'final'): Promise<
     })
   } finally {
     buffer.saving = false
-    if (buffer.dirty && status !== 'final') schedule(buffer)
+    if (status === 'final') {
+      buffers.delete(bufferKey(buffer.conversationId, buffer.visitId))
+      return
+    }
+    if (buffer.finalRequested) {
+      buffer.finalRequested = false
+      void persist(buffer, 'final')
+      return
+    }
+    if (buffer.dirty) schedule(buffer)
   }
 }
 
 function schedule(buffer: VisitBuffer): void {
+  if (buffer.finalRequested) return
   if (buffer.timer !== null) window.clearTimeout(buffer.timer)
   buffer.timer = window.setTimeout(() => {
     buffer.timer = null
@@ -117,7 +130,7 @@ function schedule(buffer: VisitBuffer): void {
 function onMessage(event: SessionMessageEvent): void {
   if (!meaningful(event)) return
   const buffer = ensureBuffer(event)
-  if (!buffer) return
+  if (!buffer || buffer.finalRequested) return
   const duplicate = buffer.messages.some((item) =>
     item.role === event.role
     && item.text === event.text.trim()
@@ -137,15 +150,24 @@ function onMessage(event: SessionMessageEvent): void {
   schedule(buffer)
 }
 
+function finaliseVisitId(visitId: string): void {
+  if (!visitId) return
+  for (const buffer of buffers.values()) {
+    if (buffer.visitId !== visitId) continue
+    if (buffer.timer !== null) window.clearTimeout(buffer.timer)
+    buffer.timer = null
+    buffer.finalRequested = true
+    if (!buffer.saving) {
+      buffer.finalRequested = false
+      void persist(buffer, 'final')
+    }
+  }
+}
+
 function finaliseVisit(event: Event): void {
   const detail = event instanceof CustomEvent ? event.detail : null
   const visitId = String(detail?.visitId ?? detail?.endedVisitId ?? '').trim()
-  for (const [key, buffer] of buffers) {
-    if (visitId && buffer.visitId !== visitId) continue
-    if (buffer.timer !== null) window.clearTimeout(buffer.timer)
-    buffer.timer = null
-    void persist(buffer, 'final').finally(() => buffers.delete(key))
-  }
+  finaliseVisitId(visitId)
 }
 
 export function installSessionSummaryLifecycle(): void {
@@ -156,10 +178,9 @@ export function installSessionSummaryLifecycle(): void {
   window.addEventListener('smartoffice:visit-activated', (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : null
     const activeVisitId = String(detail?.visitId ?? '').trim()
-    for (const [key, buffer] of buffers) {
-      if (activeVisitId && buffer.visitId !== activeVisitId && !buffer.saving) {
-        buffers.delete(key)
-      }
+    const replacedVisitId = String(detail?.replacedVisitId ?? '').trim()
+    if (replacedVisitId && replacedVisitId !== activeVisitId) {
+      finaliseVisitId(replacedVisitId)
     }
   })
 }
