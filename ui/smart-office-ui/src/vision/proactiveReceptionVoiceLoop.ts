@@ -69,32 +69,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function waitWithSignal(milliseconds: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.reject(new DOMException('Operation aborted.', 'AbortError'))
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const finish = (error?: Error) => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timer)
-      signal.removeEventListener('abort', onAbort)
-      if (error) reject(error)
-      else resolve()
-    }
-    const onAbort = () => finish(new DOMException('Operation aborted.', 'AbortError'))
-    const timer = window.setTimeout(() => finish(), milliseconds)
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-}
-
-async function speakDirect(
+function presentReply(
   controller: OfficeVoiceController,
   text: string,
   source: string,
-  signal: AbortSignal,
-): Promise<void> {
+): void {
   const lease = visitLeaseRegistry.current()
   publishSessionMessage({
     conversationId: controller.conversationId,
@@ -106,36 +85,21 @@ async function speakDirect(
   window.dispatchEvent(new CustomEvent('smartoffice:direct-assistant-caption', {
     detail: { text },
   }))
-  await voiceOutputManager.speak(text, controller.language, {
+
+  // Execution has already completed at this point. Voice confirmation is a separate,
+  // interruptible presentation channel and must never hold the command dispatcher.
+  void voiceOutputManager.speak(text, controller.language, {
     lease,
-    signal,
+    signal: lease?.signal,
     allowLocalFallback: false,
+  }).catch((error) => {
+    if (!lease?.signal.aborted && !(error instanceof Error && error.name === 'AbortError')) {
+      console.error('[RealtimeDiagnostics] asynchronous-command-feedback-failed', {
+        source,
+        message: errorText(error),
+      })
+    }
   })
-}
-
-async function recoverTurnState(
-  controller: () => OfficeVoiceController,
-  signal: AbortSignal,
-): Promise<boolean> {
-  let latest = controller()
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    if (signal.aborted) return false
-    if (latest.panel === 'error') break
-    await waitWithSignal(50, signal)
-    latest = controller()
-  }
-  if (latest.panel !== 'error') return true
-
-  latest.clearError()
-  await latest.connect()
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    if (signal.aborted) return false
-    const state = controller()
-    if (state.panel === 'idle' && realtimeAgent.status().connected) return true
-    if (state.panel === 'error' && attempt >= 2) break
-    await waitWithSignal(50, signal)
-  }
-  return false
 }
 
 function desktopActionFor(
@@ -314,7 +278,7 @@ function interactionReply(
   return '结果中心已经刷新。'
 }
 
-async function executeInteractionAndReply(
+async function executeInteractionAndPresent(
   controller: OfficeVoiceController,
   command: InteractionVoiceCommand,
   signal: AbortSignal,
@@ -327,13 +291,11 @@ async function executeInteractionAndReply(
     visitId: lease?.visitId ?? null,
     language: controller.language,
   }, signal)
-  const reply = interactionReply(
-    command,
-    result.status,
-    result.message,
-    controller.language,
+  presentReply(
+    controller,
+    interactionReply(command, result.status, result.message, controller.language),
+    source,
   )
-  await speakDirect(controller, reply, source, signal)
 }
 
 export async function captureAutomaticRealtimeTurn(
@@ -350,10 +312,7 @@ export async function captureAutomaticRealtimeTurn(
     const current = controller()
     await realtimeAgent.startContinuousCapture(current.language, visitSignal)
     const firstTranscript = await realtimeAgent.nextContinuousUtterance(visitSignal)
-    const rawTranscript = await preemptiveTurnCoordinator.preferLatestUtterance(
-      firstTranscript,
-      visitSignal,
-    )
+    const rawTranscript = preemptiveTurnCoordinator.takeLatestUtterance(firstTranscript)
     if (visitSignal.aborted) return { kind: 'aborted' }
 
     const turn = preemptiveTurnCoordinator.beginTurn(visitSignal)
@@ -384,7 +343,7 @@ export async function captureAutomaticRealtimeTurn(
 
     const clarification = commandClarification(recovered)
     if (clarification) {
-      await speakDirect(current, clarification, 'bounded_command_clarification', turnSignal)
+      presentReply(current, clarification, 'bounded_command_clarification')
       return { kind: 'heard', transcript }
     }
 
@@ -396,11 +355,10 @@ export async function captureAutomaticRealtimeTurn(
         turnSignal,
       )
       if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) return { kind: 'aborted' }
-      await speakDirect(
+      presentReply(
         current,
         deterministicReply(recovered.target, action, result, recovered.language),
         'deterministic_desktop_command',
-        turnSignal,
       )
       return { kind: 'heard', transcript }
     }
@@ -408,7 +366,7 @@ export async function captureAutomaticRealtimeTurn(
     const pending = currentPendingInteraction(visitId)
     if (pending && CONFIRM_PATTERN.test(transcript.trim())) {
       pendingInteractionConfirmation = null
-      await executeInteractionAndReply(
+      await executeInteractionAndPresent(
         current,
         pending.command,
         turnSignal,
@@ -418,11 +376,10 @@ export async function captureAutomaticRealtimeTurn(
     }
     if (pending && REJECT_PATTERN.test(transcript.trim())) {
       pendingInteractionConfirmation = null
-      await speakDirect(
+      presentReply(
         current,
         current.language === 'zh' ? '好的，已取消。' : 'Okay, cancelled.',
         'semantic_interaction_cancelled',
-        turnSignal,
       )
       return { kind: 'heard', transcript }
     }
@@ -434,7 +391,7 @@ export async function captureAutomaticRealtimeTurn(
       turnSignal,
     )
     if (interaction.command && interaction.confidence >= 0.78) {
-      await executeInteractionAndReply(
+      await executeInteractionAndPresent(
         current,
         interaction.command,
         turnSignal,
@@ -448,37 +405,42 @@ export async function captureAutomaticRealtimeTurn(
         visitId,
         expiresAt: Date.now() + 20_000,
       }
-      await speakDirect(
+      presentReply(
         current,
         interactionConfirmation(interaction.command, current.language),
         'semantic_interaction_clarification',
-        turnSignal,
       )
       return { kind: 'heard', transcript }
     }
 
+    // Natural conversation still uses the shared Controller, but a barge-in aborts
+    // its turn-scoped HTTP calls and forces the Controller back to idle.
     await preemptiveTurnCoordinator.waitForCancellation()
     if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) return { kind: 'aborted' }
     await current.submit(transcript, 'voice')
     if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) return { kind: 'aborted' }
-    const healthy = await recoverTurnState(controller, turnSignal)
-    if (!healthy) {
-      return {
-        kind: 'error',
-        message: 'The voice turn failed and the controller could not recover automatically.',
-      }
-    }
     return { kind: 'heard', transcript }
   } catch (error) {
     const aborted = error instanceof Error && error.name === 'AbortError'
     if (aborted || turnSignal.aborted || visitSignal.aborted) {
       if (visitSignal.aborted) {
         await realtimeAgent.stopContinuousCapture(true).catch(() => undefined)
+      } else {
+        await preemptiveTurnCoordinator.recoverToReady('superseded_turn')
       }
       return { kind: 'aborted' }
     }
 
-    const recovered = await recoverTurnState(controller, visitSignal).catch(() => false)
+    const livenessTimeout = error instanceof Error && error.name === 'UtteranceLivenessError'
+    if (livenessTimeout) {
+      await preemptiveTurnCoordinator.recoverToReady('utterance_liveness_timeout')
+      return {
+        kind: 'error',
+        message: 'The current speech segment did not end cleanly; listening has been recovered.',
+      }
+    }
+
+    const recovered = await preemptiveTurnCoordinator.recoverToReady('turn_error')
     return {
       kind: 'error',
       message: recovered
