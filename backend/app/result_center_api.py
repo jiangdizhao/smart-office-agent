@@ -4,12 +4,13 @@ import csv
 import io
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Annotated
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, Response
 
 from app.contact_record_api import _connect, _database_path, _initialise
 from app.human_recording_api import (
@@ -18,8 +19,10 @@ from app.human_recording_api import (
     _SUMMARY_PREFIX,
     _output_directory,
 )
+from app.result_center_auth import AdminSession, require_result_center_admin
 
 router = APIRouter(prefix="/api/result-center", tags=["exhibition-result-center"])
+AdminDependency = Annotated[AdminSession, Depends(require_result_center_admin)]
 
 
 def _safe_limit(value: int) -> int:
@@ -51,8 +54,7 @@ def _contact_row(row: Any) -> dict[str, Any]:
     }
 
 
-@router.get("/contacts")
-def list_contacts(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
+def _contacts_payload(limit: int) -> dict[str, Any]:
     _initialise()
     with _connect() as connection:
         rows = connection.execute(
@@ -76,9 +78,17 @@ def list_contacts(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, A
     }
 
 
+@router.get("/contacts")
+def list_contacts(
+    _admin: AdminDependency,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict[str, Any]:
+    return _contacts_payload(limit)
+
+
 @router.get("/contacts.csv")
-def export_contacts_csv() -> Response:
-    payload = list_contacts(limit=1000)
+def export_contacts_csv(_admin: AdminDependency) -> Response:
+    payload = _contacts_payload(limit=1000)
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(
@@ -138,7 +148,7 @@ def _recording_metadata(path: Path) -> dict[str, Any]:
     return {
         "filename": path.name,
         "audio_path": str(path.resolve()),
-        "artifact_url": f"/api/human-recordings/artifacts/{path.name}",
+        "artifact_url": f"/api/result-center/artifacts/{path.name}",
         "conversation_id": str(metadata.get("conversation_id") or ""),
         "language": str(metadata.get("language") or ""),
         "content_type": str(metadata.get("content_type") or ""),
@@ -153,6 +163,7 @@ def _recording_metadata(path: Path) -> dict[str, Any]:
 
 @router.get("/recordings")
 def list_recordings(
+    _admin: AdminDependency,
     limit: int = Query(default=200, ge=1, le=1000),
     conversation_id: str | None = Query(default=None, max_length=160),
 ) -> dict[str, Any]:
@@ -188,7 +199,7 @@ def list_recordings(
             {
                 "filename": path.name,
                 "path": str(path.resolve()),
-                "artifact_url": f"/api/human-recordings/artifacts/{path.name}",
+                "artifact_url": f"/api/result-center/artifacts/{path.name}",
                 "updated_at": datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
             }
             for path in summaries
@@ -196,8 +207,40 @@ def list_recordings(
     }
 
 
+@router.get("/artifacts/{filename}")
+def result_center_artifact(filename: str, _admin: AdminDependency):
+    safe_name = Path(filename).name
+    if safe_name != filename:
+        raise HTTPException(status_code=400, detail="Invalid artifact filename.")
+    if not safe_name.startswith((_AUDIO_PREFIX, _SUMMARY_PREFIX)):
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", safe_name):
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+
+    output_directory = _output_directory()
+    path = (output_directory / safe_name).resolve()
+    if output_directory not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+
+    media_types = {
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".json": "application/json",
+        ".txt": "text/plain",
+        ".webm": "audio/webm",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".ogg": "audio/ogg",
+    }
+    media_type = media_types.get(path.suffix.casefold())
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
 @router.post("/open-output-directory")
-def open_output_directory() -> dict[str, Any]:
+def open_output_directory(_admin: AdminDependency) -> dict[str, Any]:
     directory = _output_directory()
     if os.name != "nt":
         raise HTTPException(status_code=501, detail="Opening Explorer is only supported on Windows.")
