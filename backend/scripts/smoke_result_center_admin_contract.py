@@ -167,6 +167,14 @@ def main() -> None:
         / "voice"
         / "preemptiveTurnCoordinator.ts"
     ).read_text(encoding="utf-8")
+    liveness = (
+        REPO_ROOT
+        / "ui"
+        / "smart-office-ui"
+        / "src"
+        / "voice"
+        / "realtimeLivenessPatch.ts"
+    ).read_text(encoding="utf-8")
 
     assert "panelInstanceId" in manager
     assert "我想登记" in manager
@@ -181,12 +189,16 @@ def main() -> None:
     assert "导出" in voice_interpreter
     assert "smartoffice:realtime-vad-speech-started" in coordinator
     assert "/cancel" in coordinator
-    assert "preferLatestUtterance" in coordinator
+    assert "takeLatestUtterance" in coordinator
+    assert "recoverToReady" in coordinator
+    assert "preferLatestUtterance" not in coordinator
+    assert "utteranceQueue.splice(0)" in liveness
+    assert "vad-max-utterance-forced-boundary" in liveness
 
     print(
         "PASS: result-center authorization is Visit/panel scoped; new Visits require a "
-        "fresh password; recording/results panel voice actions and latest-command "
-        "preemption contracts are present."
+        "fresh password; recording/results panel voice actions, bounded VAD liveness, "
+        "and capacity-one latest-command preemption contracts are present."
     )
 
 
