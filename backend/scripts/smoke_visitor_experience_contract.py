@@ -81,13 +81,15 @@ def main() -> None:
         os.environ["SMART_OFFICE_CONTACT_DB"] = str(Path(temp_dir) / "visitor_profiles.sqlite3")
 
         client = TestClient(app)
-        conversation_a = "visitor-experience-conversation-a"
+        # The exhibition browser intentionally reuses one conversation_id. Isolation
+        # must therefore be guaranteed by visit_id, not by conversation_id.
+        shared_conversation = "visitor-experience-shared-conversation"
+        conversation_a = shared_conversation
+        conversation_b = shared_conversation
         visit_a = "visitor-experience-visit-a"
         panel_a = "visitor-experience-panel-a"
-        conversation_b = "visitor-experience-conversation-b"
         visit_b = "visitor-experience-visit-b"
 
-        # Current-session summaries are structured bullet points, not a verbatim chat log.
         summary_response = client.put(
             "/api/visitor-experience/session-summaries",
             json={
@@ -123,7 +125,6 @@ def main() -> None:
         assert "PowerPoint 语音控制" in summary["interests"]
         assert any("后续" in item or "建议" in item for item in summary["bullet_points"])
 
-        # Availability is deterministic for a date and seed, not re-randomised on refresh.
         selected_date = (
             datetime.now(ZoneInfo("Australia/Sydney")).date() + timedelta(days=7)
         ).isoformat()
@@ -144,7 +145,6 @@ def main() -> None:
         assert len(available_slots) >= 2
         selected_slot = available_slots[0]
 
-        # Booking can happen before registration and is initially Visit-linked only.
         booking_response = client.post(
             "/api/visitor-experience/meeting-bookings",
             json={
@@ -161,7 +161,8 @@ def main() -> None:
         assert booking["status"] == "confirmed"
         assert booking["staff_name"]
 
-        # A second visitor without an appointment provides the ordering control.
+        # Visit B registers first while Visit A's summary and booking are unbound.
+        # Shared conversation_id must not cause those records to attach to Visitor B.
         contact_b = create_contact(
             client,
             conversation_id=conversation_b,
@@ -171,7 +172,6 @@ def main() -> None:
         )
         assert contact_b
 
-        # Registration after booking automatically binds booking and summary to contact_id.
         contact_a = create_contact(
             client,
             conversation_id=conversation_a,
@@ -200,6 +200,8 @@ def main() -> None:
         assert profiles[0]["session_summary_count"] == 1
         assert profiles[1]["contact_id"] == contact_b
         assert profiles[1]["has_upcoming_appointment"] is False
+        assert profiles[1]["appointment_count"] == 0
+        assert profiles[1]["session_summary_count"] == 0
 
         detail_response = client.get(
             f"/api/result-center/visitor-profiles/{contact_a}",
@@ -215,7 +217,15 @@ def main() -> None:
         assert linked_summary["contact_id"] == contact_a
         assert linked_summary["bullet_points"]
 
-        # The selected simulated slot becomes unavailable after booking.
+        other_detail_response = client.get(
+            f"/api/result-center/visitor-profiles/{contact_b}",
+            headers=headers,
+        )
+        other_detail_response.raise_for_status()
+        other_detail = other_detail_response.json()
+        assert other_detail["appointments"] == []
+        assert other_detail["session_summaries"] == []
+
         post_booking_availability = client.get(
             "/api/visitor-experience/meeting-availability",
             params={"date": selected_date},
@@ -260,6 +270,20 @@ def main() -> None:
             / "interaction"
             / "semanticInteractionInterpreter.ts"
         ).read_text(encoding="utf-8")
+        result_tools = (
+            REPO_ROOT
+            / "ui"
+            / "smart-office-ui"
+            / "src"
+            / "interaction"
+            / "ResultCenterCompatibilityTools.tsx"
+        ).read_text(encoding="utf-8")
+        linking_fence = (
+            REPO_ROOT
+            / "backend"
+            / "app"
+            / "visitor_context_linking_patch.py"
+        ).read_text(encoding="utf-8")
 
         assert "本 Session 要点" in frontend
         assert "绿色表示可预约" in frontend
@@ -271,11 +295,16 @@ def main() -> None:
         assert "disabled: true" not in rail
         assert "kind: 'meeting'" in rail
         assert '"intent":"contact|meeting|recording|transcript|results|none"' in semantic
+        assert "ProtectedAudio" in result_tools
+        assert "导出 CSV" in result_tools
+        assert "录音文件" in result_tools
+        assert "if clean_visit:" in linking_fence
+        assert "return" in linking_fence
 
         print(
             "PASS: deterministic simulated meeting availability, pre-registration booking, "
-            "automatic contact linking, appointment-first profile sorting, Visit-scoped "
-            "bullet summaries, and protected visitor-profile details are operational."
+            "Visit-only profile linking under a shared conversation, appointment-first sorting, "
+            "bullet summaries, protected recordings, CSV export, and visitor details are operational."
         )
 
 
