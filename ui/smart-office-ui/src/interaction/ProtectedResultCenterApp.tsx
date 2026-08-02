@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { INTERACTION_PANEL_CLOSE_MESSAGE } from '../display/multiScreenWindowManager'
+import ResultCenterCompatibilityTools from './ResultCenterCompatibilityTools'
 import VisitorExperienceApp from './VisitorExperienceApp'
 import './ProtectedResultCenterApp.css'
 
@@ -189,7 +190,14 @@ export default function ProtectedResultCenterApp() {
     }
   }
 
-  if (token && authorizedFetchReady) return <VisitorExperienceApp />
+  if (token && authorizedFetchReady) {
+    return (
+      <>
+        <ResultCenterCompatibilityTools />
+        <VisitorExperienceApp />
+      </>
+    )
+  }
 
   return (
     <main className="protected-result-center">
@@ -197,7 +205,7 @@ export default function ProtectedResultCenterApp() {
         <header>
           <span>Smart Office · Protected Results</span>
           <h1>管理员验证</h1>
-          <p>结果中心包含访客联系方式、预约信息和 Session 对话总结。</p>
+          <p>结果中心包含访客联系方式、预约信息、Session 对话总结和录音文件。</p>
         </header>
         {checking ? <div className="protected-status">正在检查管理员配置…</div> : null}
         {!checking && !visitId ? (
