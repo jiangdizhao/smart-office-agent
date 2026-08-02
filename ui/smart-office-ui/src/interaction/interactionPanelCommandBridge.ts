@@ -17,7 +17,7 @@ const panelInstanceId = params.get('panel_instance_id')?.trim() ?? ''
 const visitId = params.get('visit_id')?.trim() || null
 const conversationId = params.get('conversation_id')?.trim() ?? ''
 const language = params.get('lang') === 'en' ? 'en' : 'zh'
-const routeMatch = window.location.pathname.match(/\/interaction\/(contact|recording|transcript|results)/)
+const routeMatch = window.location.pathname.match(/\/interaction\/(contact|meeting|recording|transcript|results)/)
 const target = (routeMatch?.[1] ?? 'contact') as InteractionWindowKind
 const processed = new Set<string>()
 const API_BASE_URL =
@@ -124,13 +124,24 @@ function resultCenterAuthenticated(): boolean {
   return document.documentElement.dataset.resultCenterAuthenticated === 'true'
 }
 
+async function showResultRecordings(): Promise<void> {
+  if (!clickControl(/^录音文件$/)) throw new Error('未找到录音文件入口。')
+  const ready = await waitFor(
+    () => Boolean(document.querySelector('.result-center-recordings-drawer')),
+    5_000,
+  )
+  if (!ready) throw new Error('录音文件视图没有及时打开。')
+}
+
 async function execute(command: InteractionPanelCommand): Promise<Record<string, unknown>> {
   if (command.action === 'close') {
     window.close()
     return { closed: true }
   }
 
-  if (command.target === 'contact') return { opened: true }
+  if (command.target === 'contact' || command.target === 'meeting') {
+    return { opened: true }
+  }
 
   if (command.target === 'recording') {
     if (command.action === 'start') return await startRecording()
@@ -151,7 +162,8 @@ async function execute(command: InteractionPanelCommand): Promise<Record<string,
 
   if (command.target === 'transcript') {
     if (command.action === 'refresh') {
-      return { refreshed: true, note: 'The transcript already refreshes automatically.' }
+      window.dispatchEvent(new CustomEvent('smartoffice:session-summary-updated'))
+      return { refreshed: true, note: 'The Session summary refreshes automatically.' }
     }
     return { opened: true }
   }
@@ -163,19 +175,19 @@ async function execute(command: InteractionPanelCommand): Promise<Record<string,
   }
 
   if (command.action === 'show_contacts') {
-    if (!clickControl(/^登记信息/)) throw new Error('未找到登记信息标签。')
-    return { selected_tab: 'contacts' }
+    if (!clickControl(/^访客档案$/)) throw new Error('未找到访客档案入口。')
+    return { selected_view: 'visitor_profiles' }
   }
   if (command.action === 'show_recordings') {
-    if (!clickControl(/^录音文件/)) throw new Error('未找到录音文件标签。')
-    return { selected_tab: 'recordings' }
+    await showResultRecordings()
+    return { selected_view: 'recordings' }
   }
   if (command.action === 'show_transcript') {
-    if (!clickControl(/^当前对话$/)) throw new Error('未找到当前对话标签。')
-    return { selected_tab: 'transcript' }
+    if (!clickControl(/^Session 总结$/)) throw new Error('未找到 Session 总结入口。')
+    return { selected_view: 'session_summaries' }
   }
   if (command.action === 'refresh') {
-    if (!clickControl(/^刷新$/)) throw new Error('当前结果标签没有刷新按钮。')
+    window.dispatchEvent(new CustomEvent('smartoffice:result-center-refresh-request'))
     return { refreshed: true }
   }
   if (command.action === 'export_csv') {
@@ -183,10 +195,18 @@ async function execute(command: InteractionPanelCommand): Promise<Record<string,
     return { export_started: true }
   }
   if (command.action === 'open_directory') {
+    if (!controlByText(/在资源管理器中打开/)) await showResultRecordings()
     if (!clickControl(/在资源管理器中打开/)) throw new Error('未找到打开录音目录操作。')
     return { explorer_open_requested: true }
   }
   if (command.action === 'play_latest_recording') {
+    if (!document.querySelector<HTMLAudioElement>('audio')) await showResultRecordings()
+    const ready = await waitFor(
+      () => Boolean(document.querySelector<HTMLAudioElement>('audio')),
+      10_000,
+      200,
+    )
+    if (!ready) throw new Error('结果中心没有可播放的录音。')
     const audio = document.querySelector<HTMLAudioElement>('audio')
     if (!audio) throw new Error('结果中心没有可播放的录音。')
     await audio.play()
