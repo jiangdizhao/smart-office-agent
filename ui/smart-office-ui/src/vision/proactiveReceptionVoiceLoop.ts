@@ -217,13 +217,15 @@ function interactionConfirmation(
 ): string {
   if (language === 'en') {
     if (command.target === 'contact') return 'Would you like me to open visitor registration?'
+    if (command.target === 'meeting') return 'Would you like me to open the meeting-booking calendar?'
     if (command.target === 'recording') return 'Would you like me to open live recording?'
-    if (command.target === 'transcript') return 'Would you like me to show the current transcript?'
+    if (command.target === 'transcript') return 'Would you like me to show the current Session summary?'
     return 'Would you like me to open the administrator verification screen?'
   }
   if (command.target === 'contact') return '您是想打开访客登记信息表吗？'
+  if (command.target === 'meeting') return '您是想打开会议预约日历吗？'
   if (command.target === 'recording') return '您是想打开实时录音吗？'
-  if (command.target === 'transcript') return '您是想查看当前对话记录吗？'
+  if (command.target === 'transcript') return '您是想查看本 Session 的对话总结吗？'
   return '您是想打开结果中心的管理员验证界面吗？'
 }
 
@@ -247,10 +249,13 @@ function interactionReply(
   if (language === 'en') {
     if (command.action === 'close') return 'The panel is closed.'
     if (command.target === 'contact') return 'Visitor registration is open beside Sara.'
+    if (command.target === 'meeting') {
+      return 'The meeting-booking calendar is open beside Sara. Select a date and then choose a green available time slot.'
+    }
     if (command.target === 'transcript') {
       return command.action === 'refresh'
-        ? 'The current transcript has been refreshed.'
-        : 'The current transcript is open beside Sara.'
+        ? 'The current Session summary has been refreshed.'
+        : 'The current Session summary is open beside Sara.'
     }
     if (command.target === 'recording') {
       if (command.action === 'start') return 'Recording has started.'
@@ -260,9 +265,9 @@ function interactionReply(
       return 'Live recording is open beside Sara.'
     }
     if (command.action === 'open') return 'The administrator verification screen is open.'
-    if (command.action === 'show_contacts') return 'The contact records tab is open.'
-    if (command.action === 'show_recordings') return 'The recordings tab is open.'
-    if (command.action === 'show_transcript') return 'The current-conversation tab is open.'
+    if (command.action === 'show_contacts') return 'The visitor-profile list is open.'
+    if (command.action === 'show_recordings') return 'The recordings view is open.'
+    if (command.action === 'show_transcript') return 'The Session summaries are open.'
     if (command.action === 'export_csv') return 'The contact CSV export has started.'
     if (command.action === 'play_latest_recording') return 'The latest recording is playing.'
     if (command.action === 'open_directory') return 'The recording output folder has been requested.'
@@ -271,10 +276,13 @@ function interactionReply(
 
   if (command.action === 'close') return '界面已经关闭。'
   if (command.target === 'contact') return '我已经在 Sara 左侧打开登记信息表。'
+  if (command.target === 'meeting') {
+    return '我已经在 Sara 左侧打开会议预约日历。请选择日期，再点击绿色的可用时间段。'
+  }
   if (command.target === 'transcript') {
     return command.action === 'refresh'
-      ? '当前对话记录已经刷新。'
-      : '我已经在 Sara 左侧打开当前对话记录。'
+      ? '本 Session 的对话总结已经刷新。'
+      : '我已经在 Sara 左侧打开本 Session 的对话总结。'
   }
   if (command.target === 'recording') {
     if (command.action === 'start') return '录音已经开始。'
@@ -284,9 +292,9 @@ function interactionReply(
     return '我已经在 Sara 左侧打开实时录音界面。'
   }
   if (command.action === 'open') return '我已经打开管理员验证界面，请在屏幕上输入管理员密码。'
-  if (command.action === 'show_contacts') return '结果中心已经切换到登记信息。'
-  if (command.action === 'show_recordings') return '结果中心已经切换到录音文件。'
-  if (command.action === 'show_transcript') return '结果中心已经切换到当前对话。'
+  if (command.action === 'show_contacts') return '结果中心已经显示访客档案列表。'
+  if (command.action === 'show_recordings') return '结果中心已经显示录音文件。'
+  if (command.action === 'show_transcript') return '结果中心已经显示 Session 对话总结。'
   if (command.action === 'export_csv') return '联系人 CSV 已经开始导出。'
   if (command.action === 'play_latest_recording') return '最新录音已经开始播放。'
   if (command.action === 'open_directory') return '已经请求打开录音保存目录。'
