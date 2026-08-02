@@ -5,12 +5,11 @@ type TimelineSlot = {
   slot_id: string
   start_label: string
   end_label: string
-  staff_name?: string
-  staff_role?: string
+  start_at?: string
+  end_at?: string
+  contact_address?: string
   staff_address?: string
-  staff_email?: string
-  staff_phone?: string
-  slot_state?: 'available' | 'unavailable' | 'booked' | 'past'
+  slot_state?: 'available' | 'booked' | 'past'
   available?: boolean
 }
 
@@ -22,6 +21,8 @@ const nativeFetch = window.fetch.bind(window)
 
 let latestSlots: TimelineSlot[] = []
 let selectedSlot: TimelineSlot | null = null
+let autoConfirmPending = false
+let autoConfirmStarted = false
 
 function isMeetingRoute(): boolean {
   const path = window.location.pathname.replace(/\/+$/, '')
@@ -42,6 +43,8 @@ function installMeetingResponseCapture(): void {
         const payload = await response.clone().json() as { slots?: TimelineSlot[] }
         latestSlots = Array.isArray(payload.slots) ? payload.slots : []
         selectedSlot = null
+        autoConfirmPending = false
+        autoConfirmStarted = false
         scheduleSynchronise()
       } catch {
         latestSlots = []
@@ -79,7 +82,7 @@ function ensureProgress(layout: HTMLElement, step: MeetingWizardStep): void {
     progress.innerHTML = [
       ['1', '选择日期'],
       ['2', '选择时间'],
-      ['3', '确认预约'],
+      ['3', '预约成功'],
     ].map(([number, label]) => (
       `<div><b>${number}</b><span>${label}</span></div>`
     )).join('')
@@ -100,7 +103,7 @@ function restartAtDateSelection(): void {
   window.location.reload()
 }
 
-function ensureAvailabilityBackButton(layout: HTMLElement, step: MeetingWizardStep): void {
+function ensureAvailabilityHeader(layout: HTMLElement, step: MeetingWizardStep): void {
   const header = layout.querySelector<HTMLElement>('.availability-card > header')
   if (!header) return
   let button = header.querySelector<HTMLButtonElement>(`.${BACK_DATE_CLASS}`)
@@ -116,30 +119,14 @@ function ensureAvailabilityBackButton(layout: HTMLElement, step: MeetingWizardSt
 
   const hint = header.querySelector<HTMLElement>('span')
   if (step === 'availability' && hint) {
-    hint.textContent = '09:00–18:00 · 绿色表示员工可预约'
+    hint.textContent = '请选择会面时间'
   }
 }
 
 function stateLabel(slot: TimelineSlot): string {
-  if (slot.available) return '可预约'
   if (slot.slot_state === 'past') return '已过时间'
   if (slot.slot_state === 'booked') return '已预约'
-  return '暂无员工可预约'
-}
-
-function ensureAddressNode(button: HTMLButtonElement, slot: TimelineSlot): void {
-  let address = button.querySelector<HTMLElement>('.meeting-hour-address')
-  if (!slot.staff_address) {
-    address?.remove()
-    return
-  }
-  if (!address) {
-    address = document.createElement('small')
-    address.className = 'meeting-hour-address'
-    const status = button.querySelector('em')
-    button.insertBefore(address, status)
-  }
-  address.textContent = slot.staff_address
+  return '选择'
 }
 
 function ensureTimelineRows(layout: HTMLElement, step: MeetingWizardStep): void {
@@ -147,77 +134,83 @@ function ensureTimelineRows(layout: HTMLElement, step: MeetingWizardStep): void 
   const buttons = Array.from(
     layout.querySelectorAll<HTMLButtonElement>('.availability-list > button'),
   )
+
   buttons.forEach((button, index) => {
     const slot = latestSlots[index]
     if (!slot) return
     button.classList.add('meeting-hour-row')
-    button.dataset.slotState = slot.slot_state ?? (slot.available ? 'available' : 'unavailable')
+    button.dataset.slotState = slot.slot_state ?? (slot.available ? 'available' : 'booked')
     button.dataset.slotId = slot.slot_id
 
     const time = button.querySelector<HTMLElement>('strong')
     const name = button.querySelector<HTMLElement>('span')
-    const role = button.querySelector<HTMLElement>('small:not(.meeting-hour-address)')
+    const role = button.querySelector<HTMLElement>('small')
     const status = button.querySelector<HTMLElement>('em')
     if (time) time.textContent = `${slot.start_label}–${slot.end_label}`
-    if (name) {
-      name.textContent = slot.available
-        ? slot.staff_name || '可预约员工'
-        : slot.slot_state === 'booked' && slot.staff_name
-          ? `${slot.staff_name}（已预约）`
-          : '—'
-    }
-    if (role) role.textContent = slot.available ? slot.staff_role || '' : ''
+    if (name) name.textContent = ''
+    if (role) role.textContent = ''
     if (status) status.textContent = stateLabel(slot)
-    ensureAddressNode(button, slot)
+
+    Array.from(button.querySelectorAll('.meeting-hour-address')).forEach((node) => node.remove())
 
     if (!button.dataset.timelineSelectionBound) {
       button.dataset.timelineSelectionBound = 'true'
       button.addEventListener('click', () => {
         const slotId = button.dataset.slotId
-        selectedSlot = latestSlots.find((item) => item.slot_id === slotId) ?? null
+        const current = latestSlots.find((item) => item.slot_id === slotId) ?? null
+        if (!current?.available) return
+        selectedSlot = current
+        autoConfirmPending = true
+        autoConfirmStarted = false
       }, { capture: true })
     }
   })
 }
 
-function ensureConfirmationAddress(layout: HTMLElement, step: MeetingWizardStep): void {
-  if (step !== 'confirm') return
-  const back = layout.querySelector<HTMLButtonElement>('.booking-confirmation .secondary')
-  if (back) back.textContent = '← 返回时间表'
-
-  const details = layout.querySelector<HTMLDListElement>('.booking-confirmation dl')
-  if (!details) return
-  let row = details.querySelector<HTMLElement>('.meeting-confirm-address')
-  if (!selectedSlot?.staff_address) {
-    row?.remove()
-    return
-  }
-  if (!row) {
-    row = document.createElement('div')
-    row.className = 'meeting-confirm-address'
-    row.innerHTML = '<dt>地址</dt><dd></dd>'
-    const topic = details.lastElementChild
-    if (topic) details.insertBefore(row, topic)
-    else details.appendChild(row)
-  }
-  const value = row.querySelector<HTMLElement>('dd')
-  if (value) value.textContent = selectedSlot.staff_address
+function autoSubmitConfirmation(layout: HTMLElement, step: MeetingWizardStep): void {
+  if (step !== 'confirm' || !autoConfirmPending || autoConfirmStarted) return
+  const button = layout.querySelector<HTMLButtonElement>(
+    '.booking-confirmation button.primary, .booking-confirmation .primary',
+  )
+  if (!button || button.disabled) return
+  autoConfirmStarted = true
+  window.requestAnimationFrame(() => button.click())
 }
 
-function ensureSuccessRestart(layout: HTMLElement, step: MeetingWizardStep): void {
+function ensureSuccessContent(layout: HTMLElement, step: MeetingWizardStep): void {
   const success = layout.querySelector<HTMLElement>('.booking-success')
   if (!success || step !== 'success') return
-  if (selectedSlot?.staff_address) {
-    let address = success.querySelector<HTMLElement>('.meeting-success-address')
-    if (!address) {
-      address = document.createElement('p')
-      address.className = 'meeting-success-address'
-      const bookingId = success.querySelector('small')
-      if (bookingId) success.insertBefore(address, bookingId)
-      else success.appendChild(address)
-    }
-    address.textContent = `会议地址：${selectedSlot.staff_address}`
+
+  const heading = success.querySelector<HTMLElement>('strong')
+  if (heading) heading.textContent = '已经预约成功'
+
+  let message = success.querySelector<HTMLElement>('.meeting-success-message')
+  if (!message) {
+    message = document.createElement('p')
+    message.className = 'meeting-success-message'
+    success.insertBefore(message, success.querySelector('small'))
   }
+  message.textContent = '我们会安排公司员工与您联系。'
+
+  const addressValue = selectedSlot?.contact_address || selectedSlot?.staff_address || ''
+  let details = success.querySelector<HTMLElement>('.meeting-success-details')
+  if (!details) {
+    details = document.createElement('div')
+    details.className = 'meeting-success-details'
+    success.insertBefore(details, success.querySelector('small'))
+  }
+  details.innerHTML = ''
+
+  const timeRow = document.createElement('p')
+  timeRow.textContent = selectedSlot
+    ? `会面时间：${selectedSlot.start_label}–${selectedSlot.end_label}`
+    : '会面时间：已确认'
+  details.appendChild(timeRow)
+
+  const addressRow = document.createElement('p')
+  addressRow.textContent = `联系地址：${addressValue || '公司员工联系您时确认'}`
+  details.appendChild(addressRow)
+
   let button = success.querySelector<HTMLButtonElement>(`.${RESTART_CLASS}`)
   if (!button) {
     button = document.createElement('button')
@@ -237,14 +230,12 @@ function synchroniseMeetingWizard(): void {
   if (!layout) return
 
   const step = resolveStep(layout)
-  if (layout.dataset.meetingWizardStep !== step) {
-    layout.dataset.meetingWizardStep = step
-  }
+  layout.dataset.meetingWizardStep = step
   ensureProgress(layout, step)
-  ensureAvailabilityBackButton(layout, step)
+  ensureAvailabilityHeader(layout, step)
   ensureTimelineRows(layout, step)
-  ensureConfirmationAddress(layout, step)
-  ensureSuccessRestart(layout, step)
+  autoSubmitConfirmation(layout, step)
+  ensureSuccessContent(layout, step)
   document.documentElement.dataset.meetingWizardEnhanced = 'true'
 
   if (previousStep !== step) {
@@ -277,6 +268,6 @@ if (isMeetingRoute()) {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['class', 'hidden'],
+    attributeFilter: ['class', 'hidden', 'disabled'],
   })
 }
