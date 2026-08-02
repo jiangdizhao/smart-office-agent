@@ -267,7 +267,7 @@ def main() -> None:
         assert "has_upcoming_appointment" in frontend
         assert "Session 对话总结" in frontend
         assert "session-summary-updated" in summary_lifecycle
-        assert "status: 'final'" in summary_lifecycle
+        assert "persist(buffer, 'final')" in summary_lifecycle
         assert "disabled: true" not in rail
         assert "kind: 'meeting'" in rail
         assert '"intent":"contact|meeting|recording|transcript|results|none"' in semantic
