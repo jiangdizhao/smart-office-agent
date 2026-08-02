@@ -14,6 +14,7 @@ export type SemanticInteractionDecision = {
 
 const INTENTS = new Set<SemanticInteractionIntent>([
   'contact',
+  'meeting',
   'recording',
   'transcript',
   'results',
@@ -32,19 +33,25 @@ function localSemanticDecision(text: string): SemanticInteractionDecision | null
   }
 
   if (
+    /(?:我想|我要|希望|请|帮我|能否|能不能|可以).{0,14}(预约会议|安排会议|约个时间|预约演示|安排演示|看看什么时候有空)|(?:什么时候|哪天|哪个时间).{0,12}(rico|tom|员工|顾问|你们).{0,8}(有空|可以见面|能开会)|\b(?:book|schedule|arrange)\b.{0,30}\b(?:meeting|appointment|demo session)\b/i.test(clean)
+  ) {
+    return { intent: 'meeting', confidence: 0.97, source: 'local_semantic' }
+  }
+
+  if (
     /(帮|请|可以|能否|能不能|我想|我要).{0,10}(录一下|录下来|开始录音|录制|记录.{0,5}对话)|(?:把|将).{0,8}(接下来的|我们的|这段|现场).{0,8}(谈话|对话).{0,8}(录下来|录制|记录)|\b(?:record this|record our conversation|start recording|capture this conversation)\b/i.test(clean)
   ) {
     return { intent: 'recording', confidence: 0.96, source: 'local_semantic' }
   }
 
   if (
-    /(刚才|之前|前面|这次|当前).{0,10}(我们说了什么|谈话|对话|聊天|会话).{0,10}(看看|查看|显示|打开|内容|记录)?|(?:让我|我想|我要|请|帮我).{0,8}(看看|查看|显示).{0,8}(刚才|当前|这次).{0,8}(对话|聊天|会话|谈话)|\b(?:show|view|see)\b.{0,35}\b(?:what we said|current conversation|chat transcript|conversation transcript)\b/i.test(clean)
+    /(刚才|之前|前面|这次|当前|本次|本session).{0,10}(我们说了什么|谈话|对话|聊天|会话|内容).{0,10}(总结|要点|看看|查看|显示|打开|内容|记录)?|(?:让我|我想|我要|请|帮我).{0,8}(看看|查看|显示|总结).{0,8}(刚才|当前|这次|本次).{0,8}(对话|聊天|会话|谈话|要点)|\b(?:show|view|see|summarize)\b.{0,35}\b(?:what we discussed|current conversation summary|session summary|conversation summary)\b/i.test(clean)
   ) {
-    return { intent: 'transcript', confidence: 0.94, source: 'local_semantic' }
+    return { intent: 'transcript', confidence: 0.95, source: 'local_semantic' }
   }
 
   if (
-    /(我想|我要|请|帮我|让我|可以|能否).{0,10}(查看|看看|打开|显示).{0,10}(保存的资料|登记结果|已登记|联系人列表|联系人记录|录音文件|录音列表|收集的结果|结果中心)|(?:录音|登记资料|客户资料).{0,8}(保存在哪|在哪里|列表|结果)|\b(?:show|view|open|see)\b.{0,35}\b(?:saved results|registered visitors|contact records|recording files|result center)\b/i.test(clean)
+    /(我想|我要|请|帮我|让我|可以|能否).{0,10}(查看|看看|打开|显示).{0,10}(保存的资料|登记结果|已登记|联系人列表|联系人记录|录音文件|录音列表|收集的结果|结果中心|访客档案)|(?:录音|登记资料|客户资料).{0,8}(保存在哪|在哪里|列表|结果)|\b(?:show|view|open|see)\b.{0,35}\b(?:saved results|registered visitors|contact records|recording files|result center|visitor profiles)\b/i.test(clean)
   ) {
     return { intent: 'results', confidence: 0.96, source: 'local_semantic' }
   }
@@ -55,7 +62,7 @@ function localSemanticDecision(text: string): SemanticInteractionDecision | null
 function mayBeVisitorServiceRequest(text: string): boolean {
   const clean = text.trim().toLocaleLowerCase()
   if (!clean || clean.length > 240) return false
-  return /登记|注册|报名|名单|资料|个人信息|联系|联系方式|电话|邮箱|录音|录制|录下来|谈话|对话|聊天|会话|刚才说|说了什么|转写|记录|结果|保存|客户|访客|register|registration|sign up|details|contact|phone|email|record|recording|conversation|chat|transcript|result|saved|visitor|customer/i.test(clean)
+  return /登记|注册|报名|名单|资料|个人信息|联系|联系方式|电话|邮箱|预约|会议|日历|有空|演示时间|录音|录制|录下来|谈话|对话|聊天|会话|总结|要点|刚才说|说了什么|转写|记录|结果|保存|客户|访客|register|registration|sign up|details|contact|phone|email|appointment|meeting|calendar|schedule|record|recording|conversation|chat|summary|transcript|result|saved|visitor|customer/i.test(clean)
 }
 
 function parseDecision(value: string): SemanticInteractionDecision | null {
@@ -85,22 +92,24 @@ function classifierInstructions(text: string, language: VoiceLanguage): string {
 You are a bounded intent classifier for the Smart Office visitor-service panel.
 Classify whether the user is asking the application to open one interface now.
 Return exactly one JSON object with two keys:
-{"intent":"contact|recording|transcript|results|none","confidence":0.0}
+{"intent":"contact|meeting|recording|transcript|results|none","confidence":0.0}
 
 Definitions:
-- contact: the user wants to open or fill the writable visitor registration/contact form, register, sign up, or leave personal/contact details.
-- recording: the user wants to start or open live recording of the people in the room.
-- transcript: the user wants to view the current conversation/session transcript.
-- results: the user explicitly wants saved or historical contact records, saved recordings, registered-visitor lists, collected data, or the result center. This opens an administrator-password screen, never the data directly.
+- contact: open or fill the writable visitor registration/contact form, register, sign up, or leave personal/contact details.
+- meeting: open the meeting-booking calendar, arrange a product demonstration, choose a date, or ask when staff are available.
+- recording: start or open live recording of the people in the room.
+- transcript: view the current Session's concise bullet-point conversation summary. It does not show a verbatim transcript.
+- results: explicitly view saved/historical visitor profiles, contact records, appointments, saved recordings, collected data, or the protected result center.
 - none: ordinary conversation, questions about what a feature means, Office application control, or any request not clearly asking to open one of these interfaces.
 
 Hard disambiguation rules:
 - “打开登记信息表”, “打开个人信息表”, “打开登记表”, “我想登记”, and “填写联系方式” are always contact.
 - A phrase containing 登记信息表, 个人信息表, 登记表, registration form, contact form, or personal information form must never be results.
-- “查看已登记信息”, “查看联系人列表”, “查看保存的客户资料”, “查看录音文件”, and “打开结果中心” are results.
-- “打开对话记录” means the current transcript, unless the user explicitly says 结果中心、已保存、历史 or saved results.
+- “我想预约会议”, “帮我安排一次演示”, “看看什么时候有人有空”, and “打开预约日历” are meeting.
+- “查看已登记信息”, “查看联系人列表”, “查看保存的客户资料”, “查看录音文件”, “访客档案”, and “打开结果中心” are results.
+- “打开对话记录”, “对话总结”, and “刚才我们讨论了什么” mean the current Session summary unless the user explicitly says 结果中心、已保存、历史 or saved results.
 - Infer meaning rather than requiring exact keywords.
-- Classify an action request, not a mere mention. “登记信息是什么” is none.
+- Classify an action request, not a mere mention. “预约会议功能是什么” is none.
 - Do not invent an action when the utterance is ambiguous.
 - Product names and mixed Chinese-English speech do not change these definitions.
 - The active visitor language is ${language === 'zh' ? 'Chinese' : 'English'}.
