@@ -115,10 +115,6 @@ function Resolve-PortableProjectPath {
     }
     elseif ([System.IO.Path]::IsPathRooted($configured)) {
         $candidate = $configured
-
-        # A persistent environment variable from another computer can still point to
-        # F:\smart-office-agent or another unavailable drive. In that case, fall back
-        # to this checkout instead of making every new machine recreate path variables.
         $pathRoot = [System.IO.Path]::GetPathRoot($candidate)
         if ($pathRoot -and -not (Test-Path -LiteralPath $pathRoot)) {
             Write-Warning "$EnvironmentVariable points to unavailable root '$pathRoot'. Using this repository checkout instead."
@@ -147,6 +143,36 @@ function Resolve-PortableProjectPath {
     }
 
     return $fullPath
+}
+
+function Invoke-OptionalPythonProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Python,
+        [Parameter(Mandatory = $true)][string]$Code
+    )
+
+    $previousPreference = $ErrorActionPreference
+    try {
+        # Python writes tracebacks to stderr. Under ErrorActionPreference=Stop,
+        # Windows PowerShell converts that expected diagnostic stream into a
+        # terminating NativeCommandError before this script can inspect it.
+        $ErrorActionPreference = "Continue"
+        $output = & $Python -c $Code 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        $output = @($_.Exception.Message)
+        $exitCode = 1
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output = @($output)
+        Text = (@($output) | ForEach-Object { [string]$_ }) -join "`n"
+    }
 }
 
 $backendDirectory = Split-Path -Parent $PSScriptRoot
@@ -182,7 +208,6 @@ if (-not $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL) {
     $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL = "jiangdizhao1@outlook.com"
 }
 
-$usingDefaultRecipientFile = -not $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
 $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = Resolve-PortableProjectPath `
     -EnvironmentVariable "SMART_OFFICE_EMAIL_RECIPIENTS_FILE" `
     -DefaultRelativePath "config\email_recipients.json" `
@@ -190,30 +215,53 @@ $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE = Resolve-PortableProjectPath `
 
 $recipientTemplate = Join-Path $repoRoot "config\email_recipients.example.json"
 if (-not (Test-Path -LiteralPath $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE -PathType Leaf)) {
-    if (-not (Test-Path -LiteralPath $recipientTemplate -PathType Leaf)) {
-        throw "Recipient template was not found: $recipientTemplate"
+    if (Test-Path -LiteralPath $recipientTemplate -PathType Leaf) {
+        $recipientParent = Split-Path -Parent $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+        New-Item -ItemType Directory -Path $recipientParent -Force | Out-Null
+        Copy-Item -LiteralPath $recipientTemplate -Destination $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+        Write-Host "Created local recipient file from template: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE" -ForegroundColor Yellow
     }
-    $recipientParent = Split-Path -Parent $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
-    New-Item -ItemType Directory -Path $recipientParent -Force | Out-Null
-    Copy-Item -LiteralPath $recipientTemplate -Destination $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
-    Write-Host "Created local recipient file from template: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE" -ForegroundColor Yellow
+    else {
+        Write-Warning "Outlook recipient template was not found: $recipientTemplate. Outlook recipient actions will remain unavailable, but Backend startup will continue."
+    }
 }
 
+$recipientInfo = $null
+$recipientProbeError = $null
 Push-Location $backendDirectory
 try {
-    $recipientProbe = & $resolvedPython -c "import json; from app.presentation_config import presentation_config as c; d=c.recipient_directory(); print(json.dumps({'config_path': str(d.config_path), 'default_key': d.default_recipient_key, 'recipients': d.public_catalog()}, ensure_ascii=False))" 2>&1
-    if ($LASTEXITCODE -ne 0 -or -not $recipientProbe) {
-        throw "Smart Office recipient file is missing or invalid.`nFile: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE`nDetails: $recipientProbe"
+    $probeCode = "import json; from app.presentation_config import presentation_config as c; d=c.recipient_directory(); print(json.dumps({'config_path': str(d.config_path), 'default_key': d.default_recipient_key, 'recipients': d.public_catalog()}, ensure_ascii=False))"
+    $probe = Invoke-OptionalPythonProbe -Python $resolvedPython -Code $probeCode
+    if ($probe.ExitCode -eq 0 -and $probe.Output.Count -gt 0) {
+        try {
+            $recipientInfo = ($probe.Output | Select-Object -Last 1) | ConvertFrom-Json
+        }
+        catch {
+            $recipientProbeError = "Recipient probe returned invalid JSON.`n$($probe.Text)"
+        }
     }
-    $recipientInfo = ($recipientProbe | Select-Object -Last 1) | ConvertFrom-Json
+    else {
+        $recipientProbeError = $probe.Text
+    }
 }
 finally {
     Pop-Location
 }
 
-foreach ($recipient in $recipientInfo.recipients) {
-    if ($env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL -ieq [string]$recipient.email) {
-        throw "Outlook sender and configured recipient '$($recipient.key)' must be different addresses."
+if (-not $recipientInfo) {
+    Write-Warning @"
+Outlook recipient configuration is unavailable. Backend startup will continue.
+Only Outlook draft/send actions are affected.
+File: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE
+Details:
+$recipientProbeError
+"@
+}
+else {
+    foreach ($recipient in $recipientInfo.recipients) {
+        if ($env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL -ieq [string]$recipient.email) {
+            Write-Warning "Outlook sender and configured recipient '$($recipient.key)' use the same address. Outlook actions for this recipient will fail validation, but Backend startup will continue."
+        }
     }
 }
 
@@ -249,11 +297,17 @@ Write-Host "Configured PPT: $env:SMART_OFFICE_DEMO_PPT"
 Write-Host "Output directory: $env:SMART_OFFICE_OUTPUT_DIR"
 Write-Host "Presentation monitor: $env:SMART_OFFICE_PRESENTATION_MONITOR_DEVICE"
 Write-Host "Outlook sender: $env:SMART_OFFICE_OUTLOOK_SENDER_EMAIL"
-Write-Host "Recipient file: $($recipientInfo.config_path)"
-Write-Host "Default recipient key: $($recipientInfo.default_key)"
-Write-Host "Configured Outlook recipients:"
-foreach ($recipient in $recipientInfo.recipients) {
-    Write-Host "  - $($recipient.name) [$($recipient.key)] <$($recipient.email)>"
+Write-Host "Recipient file: $env:SMART_OFFICE_EMAIL_RECIPIENTS_FILE"
+if ($recipientInfo) {
+    Write-Host "Outlook recipient directory: available" -ForegroundColor Green
+    Write-Host "Default recipient key: $($recipientInfo.default_key)"
+    Write-Host "Configured Outlook recipients:"
+    foreach ($recipient in $recipientInfo.recipients) {
+        Write-Host "  - $($recipient.name) [$($recipient.key)] <$($recipient.email)>"
+    }
+}
+else {
+    Write-Host "Outlook recipient directory: unavailable (non-blocking)" -ForegroundColor Yellow
 }
 Write-Host "Recipient file reload: enabled before status, draft, and send actions"
 Write-Host "Backend: http://${HostAddress}:$Port"
@@ -263,8 +317,6 @@ Write-Host "Uvicorn reload: disabled for stable Office COM activation"
 
 Push-Location $backendDirectory
 try {
-    # Office desktop COM servers are unreliable when started from Uvicorn's
-    # Windows reload/spawn child. Run a single interactive backend process.
     & $resolvedPython -m uvicorn app.main:app --host $HostAddress --port $Port
 }
 finally {
