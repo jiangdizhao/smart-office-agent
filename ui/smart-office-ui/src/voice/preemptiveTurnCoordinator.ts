@@ -12,6 +12,7 @@ const TURN_SCOPED_PATHS = [
 ]
 const RECOVERY_POLL_MS = 50
 const RECOVERY_ATTEMPTS = 20
+const PASSIVE_ERROR_RECOVERY_MS = 250
 
 type ControllerGetter = () => OfficeVoiceController
 
@@ -100,10 +101,23 @@ class PreemptiveTurnCoordinator {
     window.addEventListener('smartoffice:visit-revoked', () => {
       this.reset('visit_revoked')
     })
+
+    // A failed conversational turn must never become a user-facing gate. The
+    // Controller still records diagnostics internally, but the runtime clears the
+    // transient error state and returns to idle without asking the visitor to retry.
+    window.setInterval(() => {
+      const controller = this.controllerGetter?.()
+      if (controller?.panel === 'error') {
+        void this.recoverToReady('passive_nonblocking_turn_error')
+      }
+    }, PASSIVE_ERROR_RECOVERY_MS)
   }
 
   attachController(getter: ControllerGetter): void {
     this.controllerGetter = getter
+    if (getter().panel === 'error') {
+      void this.recoverToReady('controller_attached_with_error')
+    }
   }
 
   beginTurn(visitSignal: AbortSignal): { epoch: number; signal: AbortSignal } {
@@ -157,8 +171,15 @@ class PreemptiveTurnCoordinator {
       const controller = this.controllerGetter?.()
       if (!controller) return true
 
-      if (controller.panel === 'error') controller.clearError()
-      if (controller.panel === 'processing' || controller.panel === 'speaking') {
+      if (controller.panel === 'error') {
+        console.warn('[PreemptiveTurn] transient-turn-error-cleared', {
+          reason,
+          diagnostic: controller.error,
+          epoch: this.epoch,
+        })
+        controller.clearError()
+        await controller.stopSpeaking().catch(() => undefined)
+      } else if (controller.panel === 'processing' || controller.panel === 'speaking') {
         await controller.stopSpeaking().catch(() => undefined)
       }
 
@@ -222,9 +243,6 @@ class PreemptiveTurnCoordinator {
       voiceOutputManager.stop(),
       realtimeAgent.stopOutput(),
       controller?.stopSpeaking() ?? Promise.resolve(),
-      // An in-flight model-only office decision has no AbortSignal API. Shutdown is
-      // bounded to genuine preemption and the resulting rejection is normalized by
-      // the recovery loop instead of leaving the Controller in error.
       controller?.panel === 'processing'
         ? realtimeOfficeInterpreter.shutdown()
         : Promise.resolve(),
