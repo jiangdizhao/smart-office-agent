@@ -16,6 +16,7 @@ os.environ.pop("SMART_OFFICE_ADMIN_PASSWORD_HASH", None)
 
 from app.main import app  # noqa: E402
 from app.result_center_auth import reset_result_center_auth_for_tests  # noqa: E402
+import smoke_visitor_experience_contract as visitor_experience_contract  # noqa: E402
 
 
 def context_headers(token: str, visit_id: str, panel_id: str) -> dict[str, str]:
@@ -178,7 +179,9 @@ def main() -> None:
 
     assert "panelInstanceId" in manager
     assert "我想登记" in manager
+    assert "预约会议" in manager
     assert "visitor_service_intent_classification" in semantic
+    assert "contact|meeting|recording|transcript|results|none" in semantic
     assert "管理员密码" in protected_app
     assert "sessionStorage" not in protected_app
     assert "visit_id: visitId" in protected_app
@@ -186,6 +189,7 @@ def main() -> None:
     assert "stop_save_summarize" in command_bridge
     assert "play_latest_recording" in command_bridge
     assert "action: 'start'" in voice_interpreter
+    assert "target: 'meeting'" in voice_interpreter
     assert "导出" in voice_interpreter
     assert "smartoffice:realtime-vad-speech-started" in coordinator
     assert "/cancel" in coordinator
@@ -195,10 +199,13 @@ def main() -> None:
     assert "utteranceQueue.splice(0)" in liveness
     assert "vad-max-utterance-forced-boundary" in liveness
 
+    visitor_experience_contract.main()
+
     print(
         "PASS: result-center authorization is Visit/panel scoped; new Visits require a "
-        "fresh password; recording/results panel voice actions, bounded VAD liveness, "
-        "and capacity-one latest-command preemption contracts are present."
+        "fresh password; recording/results/meeting panel voice actions, bounded VAD "
+        "liveness, capacity-one latest-command preemption, Session summaries, and "
+        "visitor-profile aggregation contracts are present."
     )
 
 
