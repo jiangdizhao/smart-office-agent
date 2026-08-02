@@ -37,6 +37,7 @@ type RuntimeInternals = {
   safeSend: (event: Record<string, unknown>) => void
   utteranceQueue: string[]
   continuousCaptureActive: boolean
+  vadSpeechDetected: boolean
 }
 
 function boundedEnv(
@@ -87,7 +88,11 @@ function forceSpeechBoundary(
   itemId: string,
   epoch: number,
 ): void {
-  if (!internals.continuousCaptureActive || epoch !== speechEpoch) return
+  if (
+    !internals.continuousCaptureActive
+    || !internals.vadSpeechDetected
+    || epoch !== speechEpoch
+  ) return
   const resolvedItemId = itemId || `watchdog-${Date.now()}`
   forcedItems.add(resolvedItemId)
   console.warn('[RealtimeDiagnostics] vad-max-utterance-forced-boundary', {
@@ -178,15 +183,24 @@ export function installRealtimeLivenessPatch(): void {
     const watchdogSynthetic = metadata?.source === 'client_endpoint_watchdog'
 
     if (type === 'input_audio_buffer.speech_started') {
-      clearMaxSpeechTimer()
-      speechEpoch += 1
-      const epoch = speechEpoch
-      speechItemId = itemId
-      maxSpeechTimer = window.setTimeout(
-        () => forceSpeechBoundary(internals, speechItemId, epoch),
-        MAX_UTTERANCE_MS,
-      )
-    } else if (type === 'input_audio_buffer.speech_stopped') {
+      // Let the original runtime apply barge-in grace and echo suppression first.
+      // Only an accepted visitor segment sets vadSpeechDetected=true and receives a
+      // maximum-duration watchdog.
+      originalHandle(message)
+      if (internals.vadSpeechDetected) {
+        clearMaxSpeechTimer()
+        speechEpoch += 1
+        const epoch = speechEpoch
+        speechItemId = itemId
+        maxSpeechTimer = window.setTimeout(
+          () => forceSpeechBoundary(internals, speechItemId, epoch),
+          MAX_UTTERANCE_MS,
+        )
+      }
+      return
+    }
+
+    if (type === 'input_audio_buffer.speech_stopped') {
       clearMaxSpeechTimer()
       speechEpoch += 1
       speechItemId = ''
@@ -196,6 +210,8 @@ export function installRealtimeLivenessPatch(): void {
         })
         return
       }
+      originalHandle(message)
+      return
     }
 
     originalHandle(message)
@@ -225,13 +241,22 @@ export function installRealtimeLivenessPatch(): void {
 
     try {
       return await new Promise<string>((resolve, reject) => {
-        timer = window.setTimeout(() => {
-          timedOut = true
-          waiterAbort.abort()
-          reject(timeoutError(
-            `No complete utterance was produced within ${UTTERANCE_WAIT_TIMEOUT_MS} ms.`,
-          ))
-        }, UTTERANCE_WAIT_TIMEOUT_MS)
+        const armWatchdog = () => {
+          timer = window.setTimeout(() => {
+            if (!realtimeAgent.status().speechDetected) {
+              // Normal silence is not an error. Keep the one active waiter alive and
+              // re-arm until a speech segment begins or the Visit is revoked.
+              armWatchdog()
+              return
+            }
+            timedOut = true
+            waiterAbort.abort()
+            reject(timeoutError(
+              `No complete utterance was produced within ${UTTERANCE_WAIT_TIMEOUT_MS} ms.`,
+            ))
+          }, UTTERANCE_WAIT_TIMEOUT_MS)
+        }
+        armWatchdog()
 
         void originalNext(waiterAbort.signal).then(resolve).catch((error) => {
           if (!timedOut) reject(error)
