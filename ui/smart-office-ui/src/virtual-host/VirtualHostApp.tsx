@@ -65,8 +65,8 @@ function controllerVisualState(
 
 function welcomeText(language: VoiceLanguage): string {
   return language === 'zh'
-    ? '您好，我是您的 Smart Office 虚拟助手。访客靠近后，手持麦克风会自动进入对话状态。'
-    : 'Hello, I am your Smart Office virtual assistant. The handheld microphone becomes active when a visitor approaches.'
+    ? '您好，我是 Sara，Smart Office 数字管理员与企业解决方案顾问。访客靠近后，手持麦克风会自动进入对话状态。'
+    : 'Hello, I am Sara, your Smart Office Digital Manager and Enterprise Solution Consultant. The handheld microphone activates when a visitor approaches.'
 }
 
 function publicError(message: string, language: VoiceLanguage): string {
@@ -215,7 +215,7 @@ export default function VirtualHostApp() {
       <header className="virtual-host-header">
         <div className="virtual-host-brand">
           <span className="brand-symbol" aria-hidden="true">SO</span>
-          <div><strong>Smart Office</strong><span>Virtual Host</span></div>
+          <div><strong>Smart Office</strong><span>{controller.language === 'zh' ? '数字管理员 · 解决方案顾问' : 'Digital Manager · Solution Consultant'}</span></div>
         </div>
         <div className="virtual-host-header-actions">
           <span className={`system-ready ${controller.runtime.connected ? 'connected' : ''}`}>
