@@ -26,12 +26,10 @@ class SalesConfigBundle:
 
 
 class SalesConfigService:
-    """Lazy, reloadable source of approved sales configuration.
+    """Lazy, hot-reloadable source of approved Phase 1 sales configuration.
 
-    The Phase 0 feature flags default to disabled, so an invalid sales file must not
-    prevent the existing Smart Office runtime from starting. The status endpoint and
-    contract test expose configuration errors clearly; Phase 1 will refuse to enable
-    the sales agent while this service is invalid.
+    Invalid configuration is reported through status APIs and blocks only the sales
+    runtime. Existing deterministic Office control remains available.
     """
 
     def __init__(self, config_root: Path | None = None) -> None:
@@ -92,7 +90,7 @@ class SalesConfigService:
                     if not path.exists():
                         raise FileNotFoundError(f"Configuration file does not exist: {path}")
                     parsed[name] = model_types[name].model_validate(self._read_json(path))
-                except Exception as exc:  # Configuration status must report all files.
+                except Exception as exc:
                     self._errors[name] = f"{type(exc).__name__}: {exc}"
 
             if self._errors:
@@ -143,7 +141,7 @@ class SalesConfigService:
         configured = {name: path.exists() for name, path in paths.items()}
         result: dict[str, Any] = {
             "ok": bundle is not None,
-            "phase": "phase0_sales_foundation",
+            "phase": "phase1_sales_runtime",
             "configured": configured,
             "paths": {name: str(path) for name, path in paths.items()},
             "errors": dict(self._errors),
@@ -161,6 +159,13 @@ class SalesConfigService:
                     "capability_count": len(bundle.capabilities.capabilities),
                     "capability_status_counts": status_counts,
                     "humour_theme_count": len(bundle.claims.humour_themes),
+                    "appointment_first_default": (
+                        bundle.capabilities.default_status == "appointment_demo"
+                    ),
+                    "quality_baseline": bundle.persona.model_policy.get(
+                        "initial_quality_baseline",
+                        "gpt-realtime-2.1",
+                    ),
                 }
             )
         return result
