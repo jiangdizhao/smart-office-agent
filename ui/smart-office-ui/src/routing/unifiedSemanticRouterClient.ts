@@ -4,6 +4,13 @@ import type { VisitLease } from '../vision/visitLeaseRegistry'
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 const ROUTER_TIMEOUT_MS = 15_000
+const SUPPORTED_SALES_PROFILE_FIELDS = new Set([
+  'industry',
+  'role',
+  'company_type',
+  'office_pain_points',
+  'interested_capabilities',
+])
 
 export type SemanticDomain =
   | 'office'
@@ -202,14 +209,20 @@ export async function setSemanticPendingIntent(input: {
 export function flattenSemanticProfile(
   extraction: SemanticProfileExtraction,
 ): Record<string, unknown> {
+  const explicitFacts = Object.fromEntries(
+    Object.entries(extraction.explicit_facts)
+      .filter(([key]) => SUPPORTED_SALES_PROFILE_FIELDS.has(key))
+      .map(([key, item]) => [key, item.value]),
+  )
+  const declinedFields = extraction.declined_fields.filter((field) =>
+    SUPPORTED_SALES_PROFILE_FIELDS.has(field),
+  )
   return {
-    explicit_facts: Object.fromEntries(
-      Object.entries(extraction.explicit_facts).map(([key, item]) => [key, item.value]),
-    ),
+    explicit_facts: explicitFacts,
     pain_points: extraction.pain_points.map((item) => item.value),
     interested_capabilities: extraction.interested_capabilities.map((item) => item.value),
     objections: extraction.objections.map((item) => item.value),
-    declined_fields: extraction.declined_fields,
+    declined_fields: declinedFields,
     demo_capability_id: extraction.demo_capability_id,
     explicit_demo_request: extraction.explicit_demo_request,
     booking_intent: extraction.booking_intent,
