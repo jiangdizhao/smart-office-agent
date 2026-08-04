@@ -91,7 +91,9 @@ def health_check():
         "status": "ok",
         "service": "smart-office-agent-backend",
         "version": "1.0.0",
-        "phase": "phase1_sales_runtime_with_preemptive_visit_orchestration",
+        # Root phase is intentionally stable for legacy launchers and contracts.
+        # Newer runtime features are advertised through explicit capabilities.
+        "phase": "preemptive_visit_orchestration",
         "capabilities": {
             "task_runtime": True,
             "visit_scoped_task_ownership": True,
@@ -165,6 +167,12 @@ def health_check():
             "general_office_execution_via_turn": False,
             "sales_phase0_foundation": True,
             "sales_phase1_runtime": sales_flags.agent_enabled,
+            "sales_phase1_experience": sales_flags.agent_enabled,
+            "sales_experience_opening_plan": sales_flags.agent_enabled,
+            "sales_experience_output_lifecycle": sales_flags.agent_enabled,
+            "sales_experience_sequential_nudges": sales_flags.proactive_enabled,
+            "sales_controlled_voice_delivery": sales_flags.agent_enabled,
+            "sales_opening_humour": sales_flags.humour_enabled,
             "sales_configuration_valid": bool(sales_configuration.get("ok")),
             "sales_agent_enabled": sales_flags.agent_enabled,
             "sales_proactive_enabled": sales_flags.proactive_enabled,
