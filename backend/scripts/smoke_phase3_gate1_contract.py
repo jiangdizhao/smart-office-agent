@@ -64,7 +64,10 @@ def main() -> None:
         "/api/office/system/volume",
         json={"percent": 101},
     )
-    assert invalid_volume.status_code == 422
+    assert invalid_volume.status_code == 422, (
+        invalid_volume.status_code,
+        invalid_volume.text,
+    )
 
     blocked_turn = client.post(
         "/agent/turn",
