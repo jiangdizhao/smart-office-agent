@@ -1,6 +1,11 @@
 import { realtimeAgent, type VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import type { VisitLease } from '../vision/visitLeaseRegistry'
 import type { SalesReplyPlan } from './salesConversationClient'
+import {
+  registerVoiceOutputContext,
+  type VoiceDeliveryPlan,
+  type VoiceOutputContext,
+} from './voiceDelivery'
 
 export type SalesUiResult = {
   attempted: boolean
@@ -11,6 +16,63 @@ export type SalesUiResult = {
 
 function cleanFallback(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
+}
+
+function deliveryForPlan(plan: SalesReplyPlan): VoiceOutputContext {
+  const sensitive = /privacy|failure|rejected|booking_failed|contact_failed/i.test(plan.goal)
+  const success = /success|verified|opened/i.test(plan.goal)
+  const hasHumour = Boolean(plan.humour.allowed && plan.humour.text)
+  let delivery: VoiceDeliveryPlan
+  if (sensitive) {
+    delivery = {
+      schema_version: 'voice-delivery-v1',
+      style: 'calm_reassuring',
+      pace: 'measured',
+      energy: 'low',
+      question_tone: 'none',
+      emphasis_terms: [],
+      humour_delivery: 'none',
+      pause_before_question: false,
+    }
+  } else if (success) {
+    delivery = {
+      schema_version: 'voice-delivery-v1',
+      style: 'verified_success',
+      pace: 'natural',
+      energy: 'medium_high',
+      question_tone: plan.suggested_question ? 'inviting' : 'none',
+      emphasis_terms: [],
+      humour_delivery: hasHumour ? 'light_smile' : 'none',
+      pause_before_question: Boolean(plan.suggested_question),
+    }
+  } else {
+    delivery = {
+      schema_version: 'voice-delivery-v1',
+      style: hasHumour
+        ? 'light_playful'
+        : plan.suggested_question
+          ? 'curious_discovery'
+          : 'confident_recommendation',
+      pace: 'natural',
+      energy: 'medium',
+      question_tone: plan.suggested_question ? 'curious' : 'none',
+      emphasis_terms: [],
+      humour_delivery: hasHumour ? 'light_smile' : 'none',
+      pause_before_question: Boolean(plan.suggested_question),
+    }
+  }
+  return {
+    delivery,
+    purpose: plan.reply_mode === 'proactive_sales' ? 'sales_proactive' : 'sales_reply',
+    replyMode: plan.reply_mode,
+    expectUserResponse: Boolean(plan.suggested_question),
+    questionField: plan.suggested_question ? 'sales_discovery' : null,
+  }
+}
+
+function register(text: string, plan: SalesReplyPlan | null): string {
+  if (text && plan) registerVoiceOutputContext(text, deliveryForPlan(plan))
+  return text
 }
 
 function salesInstructions(input: {
@@ -112,7 +174,7 @@ export async function renderSalesReply(input: {
         input.lease?.signal,
       )
     ).replace(/\s+/g, ' ').trim()
-    if (answer) return answer
+    if (answer) return register(answer, input.plan)
   } catch (error) {
     if (input.lease?.signal.aborted) throw error
     console.error('[SalesRuntime] realtime-sales-render-failed', {
@@ -123,5 +185,5 @@ export async function renderSalesReply(input: {
     })
   }
   if (!fallback) throw new Error('GPT Realtime returned no sales answer and no fallback text is available.')
-  return fallback
+  return register(fallback, input.plan)
 }
