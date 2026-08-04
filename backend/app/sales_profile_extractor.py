@@ -241,9 +241,10 @@ class SalesProfileExtractor:
         cost_question = bool(_COST.search(clean))
         privacy_question = bool(_PRIVACY.search(clean))
         ordinary_chatbot_objection = bool(_CHATBOT.search(clean))
-        disengaged = bool(_DISENGAGED.search(clean)) or (
-            brief_rejection and not booking_in_context and not contact_in_context
-        )
+        disengaged = (
+            bool(_DISENGAGED.search(clean))
+            or (brief_rejection and not booking_in_context and not contact_in_context)
+        ) and booking_intent == "none" and contact_intent == "none"
 
         direct_operational_command = bool(
             _DIRECT_OPERATION_PATTERN.search(clean)
