@@ -38,7 +38,7 @@ def _route_body(text: str) -> dict[str, Any]:
     return {
         "conversation_id": "semantic-live-acceptance",
         "visit_id": None,
-        "language": "zh",
+        "language": "zh" if any("\u3400" <= char <= "\u9fff" for char in text) else "en",
         "actor_type": "visitor",
         "text": text,
         "recent_turns": [],
@@ -66,7 +66,7 @@ def _print_json(value: Any) -> None:
 
 
 def run_offline_contract() -> None:
-    from app.semantic_deterministic_grammar import classify_deterministic
+    from app.semantic_deterministic_router import classify_deterministic
     from app.semantic_route_models import SemanticRouteRequest
     from app.semantic_route_policy import semantic_route_policy
     from app.semantic_route_validator import validate_semantic_action_evidence
@@ -79,12 +79,15 @@ def run_offline_contract() -> None:
         ("打开 Teams", "application_action", "execute"),
         ("请帮我启动微软团队", "application_action", "execute"),
         ("Could you open Teams?", "application_action", "execute"),
+        ("能不能帮我打开 OneNote？", "application_action", "execute"),
         ("停止音乐", "system_action", "execute"),
         ("音量设置为30%", "system_action", "execute"),
         ("先不要打开 Teams，介绍一下它能做什么", "capability_explanation", "answer_only"),
         ("Teams 为什么总是打不开", "capability_explanation", "answer_only"),
         ("如果打开 Teams 会发生什么", "general_question", "answer_only"),
         ("我不是要预约，只是想了解会议预约功能", "capability_explanation", "answer_only"),
+        ("我想了解登记表会保存什么", "capability_explanation", "answer_only"),
+        ("他说打开 Teams 是什么意思", "capability_explanation", "answer_only"),
     ]
     results: list[dict[str, Any]] = []
     for index, (text, expected_intent, expected_decision) in enumerate(cases):
@@ -141,12 +144,14 @@ def run_live(base_url: str, skip_model_cases: bool) -> None:
         ("Teams command", "打开 Teams", "application_action", "execute"),
         ("Polite Teams command", "请帮我启动微软团队", "application_action", "execute"),
         ("English polite command", "Could you open Teams?", "application_action", "execute"),
+        ("Chinese polite OneNote", "能不能帮我打开 OneNote？", "application_action", "execute"),
         ("Stop music", "停止音乐", "system_action", "execute"),
         ("Bounded volume", "音量设置为30%", "system_action", "execute"),
         ("Negated Teams explanation", "先不要打开 Teams，介绍一下它能做什么", "capability_explanation", "answer_only"),
         ("Teams troubleshooting", "Teams 为什么总是打不开", "capability_explanation", "answer_only"),
         ("Hypothetical Teams", "如果打开 Teams 会发生什么", "general_question", "answer_only"),
         ("Booking explanation", "我不是要预约，只是想了解会议预约功能", "capability_explanation", "answer_only"),
+        ("Registration explanation", "我想了解登记表会保存什么", "capability_explanation", "answer_only"),
     ]
 
     print("\n=== Deterministic grammar cases (route preview only) ===")
