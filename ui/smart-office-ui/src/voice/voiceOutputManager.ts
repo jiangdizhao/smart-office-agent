@@ -1,17 +1,38 @@
-import {
-  realtimeAgent,
-  RealtimeSpeechError,
-  type VoiceLanguage,
-} from './realtimeAgentRuntime'
+import { realtimeAgent, RealtimeSpeechError, type VoiceLanguage } from './realtimeAgentRuntime'
 import { visitLeaseRegistry, type VisitLease } from '../vision/visitLeaseRegistry'
+import {
+  consumeVoiceOutputContext,
+  type VoiceDeliveryPlan,
+  type VoiceOutputContext,
+} from '../sales/voiceDelivery'
+import { speakExpressiveExact } from './expressiveRealtimeSpeech'
 
 export type VoiceOutputProvider = 'realtime' | 'none'
+export type AssistantOutputResult = 'started' | 'completed' | 'interrupted' | 'failed'
 
 export type VoiceSpeakOptions = {
   lease?: VisitLease | null
   signal?: AbortSignal
   fixedLocal?: boolean
   allowLocalFallback?: boolean
+  delivery?: VoiceDeliveryPlan
+  purpose?: string
+  replyMode?: string
+  expectUserResponse?: boolean
+  questionField?: string | null
+}
+
+export type AssistantOutputLifecycleDetail = {
+  outputId: string
+  visitId: string | null
+  purpose: string
+  replyMode: string
+  expectUserResponse: boolean
+  questionField: string | null
+  deliveryStyle: string
+  result: AssistantOutputResult
+  text: string
+  error?: string
 }
 
 const STORAGE_KEY = 'smartoffice_voice_output_provider'
@@ -62,6 +83,9 @@ function speechChunks(text: string, language: VoiceLanguage): string[] {
   const maxChars = language === 'zh' ? MAX_CHINESE_CHUNK_CHARS : MAX_ENGLISH_CHUNK_CHARS
   if (clean.length <= maxChars) return [clean]
 
+  // Sentence boundaries preserve the opening/value/humour/question cadence better
+  // than raw character splitting. The final question remains its own chunk when
+  // possible so its delivery can retain a natural inviting intonation.
   const sentenceParts = clean.match(/[^。！？!?\n]+[。！？!?]?/g) ?? [clean]
   const chunks: string[] = []
   let current = ''
@@ -73,6 +97,12 @@ function speechChunks(text: string, language: VoiceLanguage): string[] {
   for (const part of sentenceParts) {
     const sentence = part.trim()
     if (!sentence) continue
+    const isQuestion = /[？?]$/.test(sentence)
+    if (isQuestion) {
+      flush()
+      chunks.push(...hardSplit(sentence, maxChars))
+      continue
+    }
     if (!current) {
       current = sentence
       continue
@@ -86,6 +116,27 @@ function speechChunks(text: string, language: VoiceLanguage): string[] {
   }
   flush()
   return chunks.length ? chunks : hardSplit(clean, maxChars)
+}
+
+function lifecycleEventName(result: AssistantOutputResult): string {
+  return `smartoffice:assistant-output-${result}`
+}
+
+function outputContext(
+  text: string,
+  language: VoiceLanguage,
+  options: VoiceSpeakOptions,
+): VoiceOutputContext {
+  const registered = consumeVoiceOutputContext(text, language)
+  return {
+    delivery: options.delivery ?? registered.delivery,
+    purpose: options.purpose ?? registered.purpose,
+    replyMode: options.replyMode ?? registered.replyMode,
+    expectUserResponse: options.expectUserResponse ?? registered.expectUserResponse,
+    questionField: options.questionField === undefined
+      ? registered.questionField
+      : options.questionField,
+  }
 }
 
 export class VoiceOutputManager {
@@ -106,6 +157,15 @@ export class VoiceOutputManager {
     )
   }
 
+  private dispatchLifecycle(
+    result: AssistantOutputResult,
+    detail: Omit<AssistantOutputLifecycleDetail, 'result'>,
+  ): void {
+    window.dispatchEvent(new CustomEvent(lifecycleEventName(result), {
+      detail: { ...detail, result } satisfies AssistantOutputLifecycleDetail,
+    }))
+  }
+
   async speak(
     text: string,
     language: VoiceLanguage,
@@ -120,53 +180,81 @@ export class VoiceOutputManager {
       throw abortError('Speech belongs to a stale visit.')
     }
 
+    const context = outputContext(clean, language, options)
+    const outputId = crypto.randomUUID()
+    const lifecycleBase = {
+      outputId,
+      visitId: lease?.visitId ?? null,
+      purpose: context.purpose,
+      replyMode: context.replyMode,
+      expectUserResponse: context.expectUserResponse,
+      questionField: context.questionField,
+      deliveryStyle: context.delivery.style,
+      text: clean,
+    }
     const generation = ++this.speechGeneration
     await this.stopInternal(true)
     const chunks = speechChunks(clean, detectedSpeechLanguage(clean, language))
     console.info('[RealtimeDiagnostics] speech-chunk-plan', {
       generation,
+      outputId,
+      purpose: context.purpose,
+      deliveryStyle: context.delivery.style,
       totalCharacters: clean.length,
       chunkCount: chunks.length,
       chunkLengths: chunks.map((chunk) => chunk.length),
     })
+    this.dispatchLifecycle('started', lifecycleBase)
 
-    for (let index = 0; index < chunks.length; index += 1) {
-      const chunk = chunks[index]
-      this.assertSpeechCurrent(generation, lease, signal)
-      const chunkLanguage = detectedSpeechLanguage(chunk, language)
-      window.dispatchEvent(new CustomEvent('smartoffice:voice-chunk-start', {
-        detail: { index, count: chunks.length, text: chunk },
-      }))
-      if (options.fixedLocal) {
-        await this.speakLocal(chunk, chunkLanguage, generation, signal)
-        continue
-      }
-      try {
-        await realtimeAgent.speakExact(chunk, chunkLanguage, signal)
+    try {
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index]
         this.assertSpeechCurrent(generation, lease, signal)
-      } catch (error) {
-        const audioStarted = error instanceof RealtimeSpeechError && error.audioStarted
-        const aborted = error instanceof Error && error.name === 'AbortError'
-        const runtime = realtimeAgent.status()
-        const visitorBargeIn = Boolean(
-          aborted &&
-          !signal?.aborted &&
-          generation === this.speechGeneration &&
-          runtime.continuousListening &&
-          runtime.speechDetected
-        )
-        if (visitorBargeIn) {
-          console.info('[RealtimeDiagnostics] speech-chunks-cancelled-by-visitor', {
-            generation,
-            interruptedChunkIndex: index,
-            chunkCount: chunks.length,
-          })
-          return
+        const chunkLanguage = detectedSpeechLanguage(chunk, language)
+        window.dispatchEvent(new CustomEvent('smartoffice:voice-chunk-start', {
+          detail: { index, count: chunks.length, text: chunk, outputId },
+        }))
+        if (options.fixedLocal) {
+          await this.speakLocal(chunk, chunkLanguage, generation, signal)
+          continue
         }
-        if (aborted || signal?.aborted || generation !== this.speechGeneration) throw error
-        if (audioStarted || options.allowLocalFallback === false) throw error
-        await this.speakLocal(chunk, chunkLanguage, generation, signal)
+        try {
+          await speakExpressiveExact(chunk, chunkLanguage, context.delivery, signal)
+          this.assertSpeechCurrent(generation, lease, signal)
+        } catch (error) {
+          const audioStarted = error instanceof RealtimeSpeechError && error.audioStarted
+          const aborted = error instanceof Error && error.name === 'AbortError'
+          const runtime = realtimeAgent.status()
+          const visitorBargeIn = Boolean(
+            aborted &&
+            !signal?.aborted &&
+            generation === this.speechGeneration &&
+            runtime.continuousListening &&
+            runtime.speechDetected
+          )
+          if (visitorBargeIn) {
+            console.info('[RealtimeDiagnostics] speech-chunks-cancelled-by-visitor', {
+              generation,
+              outputId,
+              interruptedChunkIndex: index,
+              chunkCount: chunks.length,
+            })
+            this.dispatchLifecycle('interrupted', lifecycleBase)
+            return
+          }
+          if (aborted || signal?.aborted || generation !== this.speechGeneration) throw error
+          if (audioStarted || options.allowLocalFallback === false) throw error
+          await this.speakLocal(chunk, chunkLanguage, generation, signal)
+        }
       }
+      this.dispatchLifecycle('completed', lifecycleBase)
+    } catch (error) {
+      const aborted = error instanceof Error && error.name === 'AbortError'
+      this.dispatchLifecycle(aborted ? 'interrupted' : 'failed', {
+        ...lifecycleBase,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
     }
   }
 
@@ -181,6 +269,9 @@ export class VoiceOutputManager {
       signal,
       fixedLocal: true,
       allowLocalFallback: false,
+      purpose: 'fixed_local_output',
+      replyMode: 'exact_operational',
+      expectUserResponse: false,
     })
   }
 
