@@ -322,6 +322,7 @@ class SalesTurnRequest(BaseModel):
     language: Language = "zh"
     actor_type: Literal["visitor", "employee", "operator"] = "visitor"
     recent_context: str = Field(default="", max_length=20_000)
+    semantic_extraction: SalesProfileExtraction | None = None
 
 
 class SalesTurnResponse(BaseModel):
