@@ -12,7 +12,7 @@ from app.conversation_store import conversation_store
 from app.sales_api import _maybe_offer_contact
 from app.sales_models import SalesTurnRequest, SalesTurnResponse
 from app.sales_reply_planner import sales_reply_planner
-from app.semantic_deterministic_grammar import classify_deterministic
+from app.semantic_deterministic_router import classify_deterministic
 from app.semantic_pending_store import semantic_pending_intents
 from app.semantic_route_models import (
     PendingIntentRequest,
@@ -163,13 +163,6 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
 
 @router.post("/sales-turn", response_model=SalesTurnResponse)
 def semantic_sales_turn(request: SalesTurnRequest) -> SalesTurnResponse:
-    """Run the existing deterministic sales policy with validated semantic facts.
-
-    The semantic router supplies open-domain language understanding. The sales
-    planner still owns invitation limits, capability claims, consent, stage changes
-    and UI actions. Regex extraction remains only a fallback on the legacy endpoint.
-    """
-
     extraction = request.semantic_extraction
     if extraction is None:
         raise HTTPException(status_code=400, detail="semantic_extraction_required")
@@ -254,8 +247,10 @@ async def semantic_route_self_test() -> dict[str, Any]:
         ("你是谁", "self_introduction", "answer_only"),
         ("你的角色是什么", "self_introduction", "answer_only"),
         ("你在这个展台主要负责什么", "self_introduction", "answer_only"),
+        ("What is your role here?", "self_introduction", "answer_only"),
         ("打开 Teams", "application_action", "execute"),
         ("请帮我启动微软团队", "application_action", "execute"),
+        ("Could you open Teams?", "application_action", "execute"),
         ("先不要打开 Teams，介绍一下它能做什么", "capability_explanation", "answer_only"),
         ("Teams 为什么总是打不开", "capability_explanation", "answer_only"),
         ("如果打开 Teams 会发生什么", "general_question", "answer_only"),
@@ -269,7 +264,7 @@ async def semantic_route_self_test() -> dict[str, Any]:
             conversation_id=f"semantic-self-test-{index}",
             visit_id=None,
             text=text,
-            language="zh",
+            language="zh" if any("\u3400" <= char <= "\u9fff" for char in text) else "en",
             actor_type="visitor",
         )
         route, _, _ = await _classify_with_layers(request)
