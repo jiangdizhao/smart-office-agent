@@ -115,7 +115,9 @@ export async function captureAutomaticRealtimeTurn(
     // No desktop, interaction or sales action is allowed before this call. The
     // shared Controller owns the single route through Unified Semantic Router,
     // deterministic policy, the domain planner and the idempotent executor.
-    await controller().submit(transcript, 'voice')
+    // Capture one current snapshot so the turn cannot mix controller instances.
+    const current = controller()
+    await current.submit(transcript, 'voice')
     if (!preemptiveTurnCoordinator.isCurrent(turnEpoch)) {
       return await continueAfterSupersededTurn(
         transcript,
