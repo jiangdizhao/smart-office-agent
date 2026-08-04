@@ -28,29 +28,36 @@ def _exercise(
     global_name: str,
     fake: Callable[..., ToolResult],
     command_id: str,
+    args: dict | None = None,
 ) -> None:
     original = getattr(tool_registry, global_name)
     calls = {"count": 0}
 
-    def counted(*args, **kwargs):
+    def counted(*call_args, **call_kwargs):
         calls["count"] += 1
-        return fake(*args, **kwargs)
+        return fake(*call_args, **call_kwargs)
 
     setattr(tool_registry, global_name, counted)
     try:
         with tool_registry._CACHE_LOCK:
             tool_registry._ACTIVATION_CACHE.clear()
             tool_registry._COMMAND_CACHE.clear()
-        results = [
-            tool_registry.run_tool(tool_name, {"_command_id": command_id})
-            for _ in range(4)
-        ]
+        payload = {**(args or {}), "_command_id": command_id}
+        results = [tool_registry.run_tool(tool_name, payload) for _ in range(4)]
         assert calls["count"] == 1, (tool_name, calls)
         assert results[0].data["idempotent_replay"] is False
-        assert all(result.data["activation_policy"] == "single_immediate_activation" for result in results)
-        assert all(result.data["delayed_reactivation_allowed"] is False for result in results)
+        assert all(
+            result.data["activation_policy"] == "single_immediate_activation"
+            for result in results
+        )
+        assert all(
+            result.data["delayed_reactivation_allowed"] is False
+            for result in results
+        )
         assert all(result.data["command_id"] == command_id for result in results)
-        assert all(result.data["idempotent_replay"] is True for result in results[1:])
+        assert all(
+            result.data["idempotent_replay"] is True for result in results[1:]
+        )
     finally:
         setattr(tool_registry, global_name, original)
         with tool_registry._CACHE_LOCK:
@@ -78,31 +85,61 @@ def main() -> None:
         command_id="visit-1:turn-3:powerpoint-open",
     )
     _exercise(
+        tool_name="presentation_start_slideshow",
+        global_name="start_configured_slideshow_on_content_display",
+        fake=lambda: _fake_result("presentation_start_slideshow", "powerpoint-slideshow"),
+        command_id="visit-1:turn-4:powerpoint-slideshow",
+    )
+    _exercise(
         tool_name="system_music_play_random",
         global_name="play_random_music_on_content_display",
         fake=lambda: _fake_result("system_music_play_random", "media-player"),
-        command_id="visit-1:turn-4:music-play",
+        command_id="visit-1:turn-5:music-play",
     )
     _exercise(
         tool_name="open_word",
         global_name="open_word",
         fake=lambda: _fake_result("open_word", "word"),
-        command_id="visit-1:turn-5:word-open",
+        command_id="visit-1:turn-6:word-open",
+    )
+    _exercise(
+        tool_name="open_excel",
+        global_name="open_excel",
+        fake=lambda: _fake_result("open_excel", "excel"),
+        command_id="visit-1:turn-7:excel-open",
+    )
+    _exercise(
+        tool_name="open_edge",
+        global_name="open_edge",
+        fake=lambda **_kwargs: _fake_result("open_edge", "edge"),
+        command_id="visit-1:turn-8:edge-open",
+        args={"url": "http://localhost:5173"},
+    )
+    _exercise(
+        tool_name="open_zoom",
+        global_name="open_zoom",
+        fake=lambda: _fake_result("open_zoom", "zoom"),
+        command_id="visit-1:turn-9:zoom-open",
     )
 
     managed = (
         BACKEND_DIR / "app" / "tools" / "managed_desktop_actions.py"
     ).read_text(encoding="utf-8")
-    assert "single immediate protocol activation" in managed
+    managed_folded = managed.casefold()
+    assert "one immediate protocol activation" in managed_folded
     assert "second_reactivation" not in managed
     assert "time.sleep(0.6)" not in managed
     assert "time.sleep(0.8)" not in managed
     assert '"delayed_reactivation_allowed": False' in managed
     assert '"activation_attempt_count"' in managed
 
-    outlook_drafts = (BACKEND_DIR / "app" / "outlook_drafts.py").read_text(encoding="utf-8")
+    outlook_drafts = (
+        BACKEND_DIR / "app" / "outlook_drafts.py"
+    ).read_text(encoding="utf-8")
     assert outlook_drafts.count("saved.Display(False)") == 1
-    outlook_send = (BACKEND_DIR / "app" / "outlook_send.py").read_text(encoding="utf-8")
+    outlook_send = (
+        BACKEND_DIR / "app" / "outlook_send.py"
+    ).read_text(encoding="utf-8")
     assert outlook_send.count("explorer.Display()") == 1
 
     voice_loop = (
@@ -122,9 +159,10 @@ def main() -> None:
 
     print(
         "PASS: continuous voice has one Unified Router owner; duplicate transcripts "
-        "are suppressed; Teams, OneNote, PowerPoint, Media Player and Word activation "
-        "calls are idempotent; managed applications never perform delayed reactivation; "
-        "and Outlook uses one visible Display call per draft/send path."
+        "are suppressed; Teams, OneNote, PowerPoint edit/slideshow, Media Player, "
+        "Word, Excel, Edge and Zoom activation calls are idempotent; managed apps "
+        "never perform delayed reactivation; and Outlook uses one visible Display "
+        "call per draft/send path."
     )
 
 
