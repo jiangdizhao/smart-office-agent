@@ -7,8 +7,10 @@ from fastapi import APIRouter
 
 from app.office_actions import execute_office_tool_call
 from app.office_api import SystemVolumeRequest
+from app.sales_phase2a import router as sales_phase2a_router
 
 router = APIRouter(tags=["office-compatibility"])
+router.include_router(sales_phase2a_router)
 
 
 @router.post("/api/office/system/volume")
