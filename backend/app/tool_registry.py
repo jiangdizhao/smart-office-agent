@@ -137,26 +137,39 @@ def _activation_key(tool_name: str, args: dict[str, Any]) -> str:
     return f"{tool_name}:{json.dumps(public_args, ensure_ascii=False, sort_keys=True, default=str)}"
 
 
+def _command_key(tool_name: str, command_id: str | None) -> str | None:
+    if not command_id:
+        return None
+    return f"{command_id}:{tool_name}"
+
+
 def _cached_result(
     *,
+    tool_name: str,
     activation_key: str,
     command_id: str | None,
     target: str,
     now: float,
 ) -> ToolResult | None:
     with _CACHE_LOCK:
-        if command_id:
-            cached = _COMMAND_CACHE.get(command_id)
+        command_key = _command_key(tool_name, command_id)
+        if command_key:
+            cached = _COMMAND_CACHE.get(command_key)
             if cached and now - cached[0] <= COMMAND_RESULT_SECONDS:
-                return _cache_copy(cached[1], target=target, command_id=command_id, replay=True)
+                return _cache_copy(
+                    cached[1], target=target, command_id=command_id, replay=True
+                )
         cached = _ACTIVATION_CACHE.get(activation_key)
         if cached and now - cached[0] <= ACTIVATION_REPLAY_SECONDS:
-            return _cache_copy(cached[1], target=target, command_id=command_id, replay=True)
+            return _cache_copy(
+                cached[1], target=target, command_id=command_id, replay=True
+            )
     return None
 
 
 def _store_activation_result(
     *,
+    tool_name: str,
     activation_key: str,
     command_id: str | None,
     result: ToolResult,
@@ -164,8 +177,9 @@ def _store_activation_result(
     now = time.monotonic()
     with _CACHE_LOCK:
         _ACTIVATION_CACHE[activation_key] = (now, result.model_copy(deep=True))
-        if command_id:
-            _COMMAND_CACHE[command_id] = (now, result.model_copy(deep=True))
+        command_key = _command_key(tool_name, command_id)
+        if command_key:
+            _COMMAND_CACHE[command_key] = (now, result.model_copy(deep=True))
 
 
 def _execute_registered_tool(
@@ -174,7 +188,9 @@ def _execute_registered_tool(
     timeout_seconds: float,
 ) -> ToolResult:
     registry: dict[str, Callable[[], ToolResult | tuple[bool, str]]] = {
-        "open_edge": lambda: open_edge(**{key: value for key, value in args.items() if not key.startswith("_")}),
+        "open_edge": lambda: open_edge(
+            **{key: value for key, value in args.items() if not key.startswith("_")}
+        ),
         "open_zoom": lambda: open_zoom(),
         "open_word": lambda: open_word(),
         "open_excel": lambda: open_excel(),
@@ -204,7 +220,11 @@ def _execute_registered_tool(
             tool_name=tool_name,
             ok=False,
             message=f"Unknown tool: {tool_name}",
-            data={"args": {key: value for key, value in args.items() if not key.startswith("_")}},
+            data={
+                "args": {
+                    key: value for key, value in args.items() if not key.startswith("_")
+                }
+            },
         )
 
     executor = ThreadPoolExecutor(max_workers=1)
@@ -219,7 +239,9 @@ def _execute_registered_tool(
             ok=False,
             message=f"Tool timed out after {timeout_seconds:.1f} seconds.",
             data={
-                "args": {key: value for key, value in args.items() if not key.startswith("_")},
+                "args": {
+                    key: value for key, value in args.items() if not key.startswith("_")
+                },
                 "timeout_seconds": timeout_seconds,
                 "timed_out": True,
             },
@@ -230,7 +252,9 @@ def _execute_registered_tool(
             ok=False,
             message=f"Tool failed: {exc}",
             data={
-                "args": {key: value for key, value in args.items() if not key.startswith("_")},
+                "args": {
+                    key: value for key, value in args.items() if not key.startswith("_")
+                },
                 "timeout_seconds": timeout_seconds,
                 "error": str(exc),
             },
@@ -272,6 +296,7 @@ def run_tool(
         now = time.monotonic()
         _purge_cache(now)
         cached = _cached_result(
+            tool_name=tool_name,
             activation_key=activation_key,
             command_id=command_id,
             target=target,
@@ -288,6 +313,7 @@ def run_tool(
             replay=False,
         )
         _store_activation_result(
+            tool_name=tool_name,
             activation_key=activation_key,
             command_id=command_id,
             result=annotated,
