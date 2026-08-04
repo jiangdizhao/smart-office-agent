@@ -31,6 +31,7 @@ jobs:
       - name: Compile backend
         run: |
           python -m compileall backend/app \
+            backend/scripts/smoke_backend_env_config_contract.py \
             backend/scripts/smoke_sales_phase0_contract.py \
             backend/scripts/smoke_sales_phase1_runtime_contract.py \
             backend/scripts/smoke_sales_experience_phase1_contract.py \
@@ -54,6 +55,8 @@ jobs:
             backend/scripts/test_phase5_remote_vision_lan.py \
             backend/scripts/smoke_portable_paths_contract.py \
             backend/scripts/setup_gmail_oauth.py
+      - name: Run Backend env configuration contract
+        run: python backend/scripts/smoke_backend_env_config_contract.py
       - name: Run portable path contract
         run: python backend/scripts/smoke_portable_paths_contract.py
       - name: Run Phase 0 sales compatibility contract
