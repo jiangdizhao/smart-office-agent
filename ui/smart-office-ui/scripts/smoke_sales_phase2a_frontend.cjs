@@ -28,8 +28,9 @@ if (scheduler.includes('if (!detail.expectUserResponse)')) {
 requireText(client, '/api/sales/phase2a/proactive', 'Phase 2A proactive endpoint')
 requireText(client, '/api/sales/phase2a/output-result', 'Phase 2A output lifecycle endpoint')
 requireText(client, '/api/sales/phase2a/self-introduction', 'Canonical self-introduction endpoint')
-requireText(router, 'phase2a_canonical_self_introduction', 'Deterministic self-introduction route')
+requireText(router, 'semantic_canonical_self_introduction', 'Semantic deterministic self-introduction route')
+requireText(router, "semantic?.primary_intent === 'self_introduction'", 'Unified identity intent gate')
 requireText(router, "purpose: 'sales_self_introduction'", 'Self-introduction voice context')
 requireText(router, "replyMode: 'pure_sales'", 'Self-introduction sales continuation mode')
 
-console.log('PASS: Phase 2A installs a single continuity scheduler, continues after no-question sales replies, stops after the second episode nudge, and routes self-introduction through the canonical persona endpoint.')
+console.log('PASS: Phase 2A retains a single continuity scheduler and canonical persona while identity recognition is supplied by the unified semantic router.')
