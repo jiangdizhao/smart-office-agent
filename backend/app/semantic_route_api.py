@@ -12,6 +12,7 @@ from app.conversation_store import conversation_store
 from app.sales_api import _maybe_offer_contact
 from app.sales_models import SalesTurnRequest, SalesTurnResponse
 from app.sales_reply_planner import sales_reply_planner
+from app.semantic_deterministic_grammar import classify_deterministic
 from app.semantic_pending_store import semantic_pending_intents
 from app.semantic_route_models import (
     PendingIntentRequest,
@@ -69,18 +70,18 @@ def _legacy_comparison(request: SemanticRouteRequest) -> dict[str, Any]:
 def _semantic_timeout_seconds() -> float:
     try:
         configured = unified_semantic_router.config().get("model", {}).get(
-            "timeout_seconds", 12
+            "timeout_seconds", 4
         )
-        return max(3.0, min(30.0, float(configured)))
+        return max(3.0, min(15.0, float(configured)))
     except (TypeError, ValueError):
-        return 12.0
+        return 4.0
 
 
 def _timeout_route(language: str) -> SemanticRoute:
     text = (
-        "语义理解暂时超时。请用一句更明确的话告诉我是要执行操作，还是只想了解功能。"
+        "这句话需要更明确的目标或动作。请用一句话说明要我执行什么，或者说明您只是想了解功能。"
         if language == "zh"
-        else "Semantic understanding timed out. Please state in one clear sentence whether you want an action performed or only an explanation."
+        else "This request needs a clearer target or action. Please state what to perform, or say that you only want an explanation."
     )
     return SemanticRoute(
         primary_intent="unknown",
@@ -96,6 +97,22 @@ def _timeout_route(language: str) -> SemanticRoute:
         complexity="not_applicable",
         answer_engine="backend",
     )
+
+
+async def _classify_with_layers(
+    request: SemanticRouteRequest,
+) -> tuple[SemanticRoute, str | None, str | None]:
+    deterministic = classify_deterministic(request)
+    if deterministic is not None:
+        return deterministic, None, None
+    try:
+        return await asyncio.wait_for(
+            unified_semantic_router.classify(request),
+            timeout=_semantic_timeout_seconds(),
+        )
+    except TimeoutError:
+        model = os.getenv("OPENAI_SEMANTIC_ROUTER_MODEL", "").strip() or None
+        return _timeout_route(request.language), model, None
 
 
 @router.post("", response_model=SemanticRouteResponse)
@@ -114,15 +131,7 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
     mode = semantic_route_policy.mode(
         os.getenv("SMART_OFFICE_SEMANTIC_ROUTER_MODE")
     )
-    try:
-        route, model, pending_used = await asyncio.wait_for(
-            unified_semantic_router.classify(request),
-            timeout=_semantic_timeout_seconds(),
-        )
-    except TimeoutError:
-        route = _timeout_route(request.language)
-        model = os.getenv("OPENAI_SEMANTIC_ROUTER_MODEL", "").strip() or None
-        pending_used = None
+    route, model, pending_used = await _classify_with_layers(request)
     route = validate_semantic_action_evidence(route, request.text)
     route, final_decision, policy_reasons = semantic_route_policy.apply(route)
     legacy = _legacy_comparison(request) if mode in {"legacy", "shadow"} else None
@@ -225,13 +234,13 @@ def semantic_route_contracts() -> dict[str, Any]:
         "configuration_schema": "semantic-router-config-v1",
         "pipeline": [
             "input_normalizer",
-            "high_precision_fast_path",
-            "structured_semantic_model",
+            "broad_deterministic_grammar",
+            "structured_terra_semantic_model",
             "action_evidence_validator",
             "profile_evidence_validator",
             "deterministic_policy_engine",
             "domain_planner",
-            "executor_and_verifier",
+            "idempotent_executor_and_verifier",
             "response_renderer",
         ],
         "execution_rule": "No model-proposed tool name is accepted. Only evidence-backed, allowlisted structured actions may reach a domain executor.",
@@ -243,7 +252,13 @@ def semantic_route_contracts() -> dict[str, Any]:
 async def semantic_route_self_test() -> dict[str, Any]:
     cases = [
         ("你是谁", "self_introduction", "answer_only"),
+        ("你的角色是什么", "self_introduction", "answer_only"),
+        ("你在这个展台主要负责什么", "self_introduction", "answer_only"),
         ("打开 Teams", "application_action", "execute"),
+        ("请帮我启动微软团队", "application_action", "execute"),
+        ("先不要打开 Teams，介绍一下它能做什么", "capability_explanation", "answer_only"),
+        ("Teams 为什么总是打不开", "capability_explanation", "answer_only"),
+        ("如果打开 Teams 会发生什么", "general_question", "answer_only"),
         ("停止音乐", "system_action", "execute"),
         ("音量设置为30%", "system_action", "execute"),
         ("打开预约日历", "open_meeting_booking", "execute"),
@@ -257,7 +272,7 @@ async def semantic_route_self_test() -> dict[str, Any]:
             language="zh",
             actor_type="visitor",
         )
-        route, _, _ = await unified_semantic_router.classify(request)
+        route, _, _ = await _classify_with_layers(request)
         route = validate_semantic_action_evidence(route, request.text)
         route, final, _ = semantic_route_policy.apply(route)
         passed = route.primary_intent == expected_intent and final == expected_mode
@@ -268,6 +283,7 @@ async def semantic_route_self_test() -> dict[str, Any]:
                 "actual_intent": route.primary_intent,
                 "expected_decision": expected_mode,
                 "actual_decision": final,
+                "source": route.source,
                 "passed": passed,
             }
         )
