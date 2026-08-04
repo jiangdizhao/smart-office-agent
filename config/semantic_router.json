@@ -1,0 +1,53 @@
+{
+  "schema_version": "semantic-router-config-v1",
+  "default_mode": "unified",
+  "model": {
+    "environment_variable": "OPENAI_SEMANTIC_ROUTER_MODEL",
+    "timeout_seconds": 12,
+    "maximum_output_tokens": 1800
+  },
+  "thresholds": {
+    "answer_only": 0.55,
+    "delegate": 0.72,
+    "execute_low_risk": 0.90,
+    "business_state": 0.94
+  },
+  "pending_intent": {
+    "maximum_user_turns": 1,
+    "maximum_age_seconds": 180
+  },
+  "diagnostics": {
+    "maximum_recent_decisions": 100,
+    "store_raw_text": false
+  },
+  "risk_by_target": {
+    "self_introduction": "none",
+    "capability_explanation": "none",
+    "teams": "low",
+    "onenote": "low",
+    "music": "low",
+    "powerpoint": "low",
+    "system_volume": "low",
+    "contact_registration": "business_state",
+    "meeting_booking": "business_state",
+    "recording": "business_state",
+    "transcript": "low",
+    "result_center": "low",
+    "email_draft": "business_state",
+    "email_send": "external_effect"
+  },
+  "allowed_actions": {
+    "application_action": ["teams", "onenote"],
+    "system_action": ["music", "system_volume"],
+    "presentation_action": ["powerpoint"],
+    "interaction_action": [
+      "contact_registration",
+      "meeting_booking",
+      "recording",
+      "transcript",
+      "result_center"
+    ],
+    "identity_action": ["self_introduction"],
+    "explanation_action": ["capability_explanation"]
+  }
+}
