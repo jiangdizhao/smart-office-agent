@@ -37,5 +37,7 @@ requireText(client, '/api/semantic-route', 'Unified router endpoint')
 requireText(client, '/api/semantic-route/pending', 'Pending intent endpoint')
 requireText(client, '__SMART_OFFICE_SEMANTIC_ROUTE__', 'Operator diagnostics')
 requireText(client, 'flattenSemanticProfile', 'Profile evidence bridge')
+requireText(client, 'SUPPORTED_SALES_PROFILE_FIELDS', 'Deterministic profile field allowlist')
+requireText(client, '.filter(([key]) => SUPPORTED_SALES_PROFILE_FIELDS.has(key))', 'Unsupported profile filtering')
 
-console.log('PASS: frontend uses one semantic route, policy-gated structured actions, canonical execution commands, structured pending intent and the canonical Digital Manager persona.')
+console.log('PASS: frontend uses one semantic route, policy-gated structured actions, canonical execution commands, structured pending intent, supported sales profile fields and the canonical Digital Manager persona.')
