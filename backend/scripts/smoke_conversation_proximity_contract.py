@@ -328,17 +328,27 @@ def main() -> None:
     assert "proactive-reception-farewell" in proximity_hook
 
     # The proactive ingress delegates microphone ownership to the persistent Realtime
-    # agent. It executes the newest completed utterance, recovers preempted turns, and
-    # presents command acknowledgements asynchronously.
+    # agent, suppresses duplicate transcripts and sends the newest complete utterance
+    # through the shared Controller and the single Unified Semantic Router. It must
+    # not present or execute desktop/interaction actions locally.
     for needle in (
         "realtimeAgent.startContinuousCapture",
         "realtimeAgent.nextContinuousUtterance",
+        "const current = controller()",
         "current.submit(transcript, 'voice')",
         "takeLatestUtterance",
         "preemptiveTurnCoordinator.recoverToReady",
-        "presentReply",
+        "duplicate-transcript-suppressed",
+        "routeOwner: 'unified_semantic_router'",
     ):
         assert needle in proactive_loop, f"Missing voice-ingress contract: {needle}"
+    for forbidden in (
+        "presentReply",
+        "executeDeterministicDesktopCommand",
+        "resolveInteractionVoiceCommand",
+        "/api/desktop-command",
+    ):
+        assert forbidden not in proactive_loop, f"Legacy voice-ingress owner remains: {forbidden}"
     assert "navigator.mediaDevices.getUserMedia" not in proactive_loop
 
     for needle in (
@@ -356,6 +366,7 @@ def main() -> None:
         "takeLatestUtterance",
         "preempt('visitor_barge_in')",
         "TURN_SCOPED_PATHS",
+        "'/api/semantic-route'",
     ):
         assert needle in coordinator, f"Missing preemptive-turn contract: {needle}"
     assert "'/agent/tasks/'" not in coordinator
@@ -427,7 +438,8 @@ def main() -> None:
     print(
         "PASS: new Visits preempt old Visits; stale results are fenced; Visit-end is "
         "nonblocking; registered memory is queued; owned tasks are cancelled; Realtime "
-        "owns one microphone stream; VAD liveness and latest-command recovery are present."
+        "owns one microphone stream; Unified Router owns voice ingress; VAD liveness "
+        "and latest-command recovery are present."
     )
     print(
         "NOTE: Real LAN ordering, browser audio permission, Windows COM worker termination, "
