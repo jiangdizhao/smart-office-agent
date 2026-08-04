@@ -3,6 +3,10 @@ import {
   INTERACTION_PANEL_OPEN_EVENT,
 } from '../display/multiScreenWindowManager'
 import { publishSessionMessage } from '../interaction/sessionEventBus'
+import {
+  clearSemanticPendingIntent,
+  setSemanticPendingIntent,
+} from '../routing/unifiedSemanticRouterClient'
 import { realtimeAgent, type VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import {
   voiceOutputManager,
@@ -70,6 +74,7 @@ class SalesPhase2AProactiveScheduler {
   private lastBackendReason: string | null = null
   private episodeNudgeCount: number | null = null
   private totalNudgeCount: number | null = null
+  private pendingOfferVisitId: string | null = null
   private state: Phase2ASalesCoordinatorStatus['state'] = 'inactive'
 
   install(): void {
@@ -105,6 +110,27 @@ class SalesPhase2AProactiveScheduler {
   private clearTimer(): void {
     if (this.timer !== null) window.clearTimeout(this.timer)
     this.timer = null
+  }
+
+  private clearPendingOffer(
+    reason: string,
+    visitId = this.pendingOfferVisitId,
+    lease: VisitLease | null = null,
+  ): void {
+    const conversationId = this.conversationId()
+    if (!visitId || !conversationId) return
+    this.pendingOfferVisitId = null
+    void clearSemanticPendingIntent({
+      conversationId,
+      visitId,
+      lease,
+    }).catch((error) => {
+      console.error('[SemanticRoute] proactive-pending-intent-clear-failed', {
+        reason,
+        visitId,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    })
   }
 
   private publishStatus(): void {
@@ -239,6 +265,22 @@ class SalesPhase2AProactiveScheduler {
         this.cancel('empty_phase2a_reply')
         return
       }
+
+      if (response.reason === 'contextual_booking_offer' && reply.expect_user_response) {
+        await setSemanticPendingIntent({
+          conversationId: active.conversationId,
+          visitId: active.visitId,
+          intentType: 'booking_offer',
+          sourceTurnId: reply.purpose,
+          metadata: {
+            source: 'phase2a_proactive',
+            episode_nudge_count: response.continuity.episode_nudge_count,
+          },
+          lease: active.lease,
+        })
+        this.pendingOfferVisitId = active.visitId
+      }
+
       publishSessionMessage({
         conversationId: active.conversationId,
         visitId: active.visitId,
@@ -302,6 +344,7 @@ class SalesPhase2AProactiveScheduler {
     const replacedVisitId = String(detail?.replacedVisitId ?? '').trim()
     const conversationId = this.conversationId()
     if (replacedVisitId && conversationId) {
+      this.clearPendingOffer('visit_replaced', replacedVisitId, null)
       void endSalesVisit({ conversationId, visitId: replacedVisitId })
     }
     this.userSpeaking = false
@@ -321,6 +364,7 @@ class SalesPhase2AProactiveScheduler {
     ).trim()
     const conversationId = this.active?.conversationId || this.conversationId()
     if (revokedVisitId && conversationId) {
+      this.clearPendingOffer('visit_revoked', revokedVisitId, null)
       void endSalesVisit({ conversationId, visitId: revokedVisitId })
     }
     this.userSpeaking = false
@@ -383,6 +427,12 @@ class SalesPhase2AProactiveScheduler {
     if (!detail) return
     this.lastOutputResult = 'interrupted'
     this.reportOutput(detail)
+    if (
+      detail.purpose === 'sales_phase2a_proactive_second'
+      && this.pendingOfferVisitId === detail.visitId
+    ) {
+      this.clearPendingOffer('proactive_offer_interrupted', detail.visitId, null)
+    }
     this.cancel(`assistant_output_interrupted:${detail.purpose}`)
   }
 
@@ -393,6 +443,12 @@ class SalesPhase2AProactiveScheduler {
     if (!detail) return
     this.lastOutputResult = 'failed'
     this.reportOutput(detail)
+    if (
+      detail.purpose === 'sales_phase2a_proactive_second'
+      && this.pendingOfferVisitId === detail.visitId
+    ) {
+      this.clearPendingOffer('proactive_offer_failed', detail.visitId, null)
+    }
     this.cancel(`assistant_output_failed:${detail.purpose}`)
   }
 
