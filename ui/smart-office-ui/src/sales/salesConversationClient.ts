@@ -157,8 +157,9 @@ export async function previewSalesTurn(input: {
   semanticExtraction?: Record<string, unknown> | null
   lease: VisitLease | null
 }): Promise<SalesTurnResponse> {
+  const semantic = input.semanticExtraction ?? null
   return await postJson<SalesTurnResponse>(
-    '/api/sales/turn',
+    semantic ? '/api/semantic-route/sales-turn' : '/api/sales/turn',
     {
       conversation_id: input.conversationId,
       visit_id: input.visitId,
@@ -166,7 +167,7 @@ export async function previewSalesTurn(input: {
       language: input.language,
       actor_type: input.actor,
       recent_context: input.recentContext,
-      semantic_extraction: input.semanticExtraction ?? null,
+      semantic_extraction: semantic,
     },
     input.lease,
   )
