@@ -206,6 +206,23 @@ export async function setSemanticPendingIntent(input: {
   }
 }
 
+export async function clearSemanticPendingIntent(input: {
+  conversationId: string
+  visitId: string
+  lease: VisitLease | null
+}): Promise<void> {
+  const path = `/api/semantic-route/pending/${encodeURIComponent(input.conversationId)}/${encodeURIComponent(input.visitId)}`
+  const response = await fetchWithTimeout(
+    path,
+    { method: 'DELETE' },
+    input.lease,
+    5_000,
+  )
+  if (!response.ok) {
+    throw new Error(`Pending semantic intent cancellation failed: ${response.status} ${await response.text()}`)
+  }
+}
+
 export function flattenSemanticProfile(
   extraction: SemanticProfileExtraction,
 ): Record<string, unknown> {
