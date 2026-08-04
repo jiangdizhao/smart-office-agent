@@ -19,12 +19,27 @@ os.environ["SMART_OFFICE_SALES_PROFILE_PERSISTENCE_ENABLED"] = "true"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
+from app.sales_models import SalesTurnRequest  # noqa: E402
 from app.sales_policy import sales_runtime_policy  # noqa: E402
 from app.sales_profile_extractor import sales_profile_extractor  # noqa: E402
+from app.sales_reply_planner import sales_reply_planner  # noqa: E402
+from app.sales_session_store import sales_session_store  # noqa: E402
 
 text = "我们公司是做建筑行业，我负责运营管理，最大的问题是会议后没人跟进，也需要会议总结。"
 print("FLAGS", json.dumps(sales_runtime_policy.feature_flags().model_dump(), ensure_ascii=False))
 print("EXTRACTION", json.dumps(sales_profile_extractor.extract(text, language="zh").model_dump(), ensure_ascii=False))
+request_model = SalesTurnRequest(
+    conversation_id="direct-probe-conversation",
+    visit_id="direct-probe-visit",
+    text=text,
+    language="zh",
+    actor_type="visitor",
+    recent_context="",
+)
+print("MODEL_ACTOR", repr(request_model.actor_type), type(request_model.actor_type).__name__)
+print("MODEL_DUMP", json.dumps(request_model.model_dump(), ensure_ascii=False))
+print("DIRECT_RESPONSE", json.dumps(sales_reply_planner.handle_turn(request_model).model_dump(), ensure_ascii=False))
+sales_session_store.clear()
 with TestClient(app) as client:
     response = client.post(
         "/api/sales/turn",
