@@ -2,10 +2,7 @@ import {
   openInteractionWindow,
   type InteractionWindowKind,
 } from '../display/multiScreenWindowManager'
-import {
-  flattenSemanticProfile,
-  setSemanticPendingIntent,
-} from '../routing/unifiedSemanticRouterClient'
+import { flattenSemanticProfile } from '../routing/unifiedSemanticRouterClient'
 import {
   generateSimpleRealtimeAnswer as generateBaseRealtimeAnswer,
   previewConversationRoute as previewBaseConversationRoute,
@@ -159,37 +156,6 @@ function uiFailureFallback(
     : `The ${label} did not open. Please refresh the main display and try again.`
 }
 
-async function updatePendingIntent(
-  turn: SalesTurnResponse,
-  request: RouteRequest,
-): Promise<void> {
-  if (!request.visitId || !turn.reply_plan?.suggested_question) return
-  const action = turn.reply_plan.recommended_action
-  const intentType = action === 'offer_booking'
-    ? 'booking_offer'
-    : action === 'offer_contact'
-      ? 'contact_offer'
-      : null
-  if (!intentType) return
-  await setSemanticPendingIntent({
-    conversationId: request.conversationId,
-    visitId: request.visitId,
-    intentType,
-    sourceTurnId: turn.reply_plan.created_at,
-    metadata: {
-      sales_stage: turn.session.stage,
-      recommended_action: action,
-    },
-    lease: request.lease,
-  }).catch((error) => {
-    console.error('[SemanticRoute] pending-intent-write-failed', {
-      intentType,
-      message: error instanceof Error ? error.message : String(error),
-      visitId: request.visitId,
-    })
-  })
-}
-
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<SalesAwareConversationRoute> {
@@ -258,7 +224,6 @@ export async function previewConversationRoute(
 
     if (!turn.handled) return base
 
-    await updatePendingIntent(turn, request)
     const uiResult = await executeSalesUiAction(turn, request)
     console.info('[SalesRuntime] semantic-sales-turn-routed', {
       reason: turn.reason,
