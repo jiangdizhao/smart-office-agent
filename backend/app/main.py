@@ -89,7 +89,7 @@ def health_check():
         "status": "ok",
         "service": "smart-office-agent-backend",
         "version": "1.0.0",
-        "phase": "preemptive_visit_orchestration",
+        "phase": "phase1_sales_runtime_with_preemptive_visit_orchestration",
         "capabilities": {
             "task_runtime": True,
             "visit_scoped_task_ownership": True,
@@ -162,6 +162,7 @@ def health_check():
             "unrestricted_email_send_enabled": False,
             "general_office_execution_via_turn": False,
             "sales_phase0_foundation": True,
+            "sales_phase1_runtime": sales_flags.agent_enabled,
             "sales_configuration_valid": bool(sales_configuration.get("ok")),
             "sales_agent_enabled": sales_flags.agent_enabled,
             "sales_proactive_enabled": sales_flags.proactive_enabled,
@@ -169,6 +170,13 @@ def health_check():
             "sales_profile_persistence_enabled": (
                 sales_flags.profile_persistence_enabled
             ),
+            "sales_explicit_only_profile_extraction": sales_flags.agent_enabled,
+            "sales_appointment_first_runtime": sales_flags.agent_enabled,
+            "sales_single_contact_offer": sales_flags.agent_enabled,
+            "sales_verified_conversion_panel_outcomes": sales_flags.agent_enabled,
+            "sales_anonymous_visit_state_deletion": sales_flags.agent_enabled,
+            "sales_repeated_demo_allowlist": sales_flags.agent_enabled,
+            "sales_quality_baseline": "gpt-realtime-2.1",
             "sales_runtime_default_unchanged": not sales_flags.agent_enabled,
         },
     }
