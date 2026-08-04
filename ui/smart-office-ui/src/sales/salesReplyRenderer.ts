@@ -18,6 +18,13 @@ function cleanFallback(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
 
+function questionFieldForPlan(plan: SalesReplyPlan): string | null {
+  if (!plan.suggested_question) return null
+  if (plan.recommended_action === 'offer_booking') return 'booking'
+  if (plan.recommended_action === 'offer_contact') return 'contact'
+  return 'sales_discovery'
+}
+
 function deliveryForPlan(plan: SalesReplyPlan): VoiceOutputContext {
   const sensitive = /privacy|failure|rejected|booking_failed|contact_failed/i.test(plan.goal)
   const success = /success|verified|opened/i.test(plan.goal)
@@ -66,7 +73,7 @@ function deliveryForPlan(plan: SalesReplyPlan): VoiceOutputContext {
     purpose: plan.reply_mode === 'proactive_sales' ? 'sales_proactive' : 'sales_reply',
     replyMode: plan.reply_mode,
     expectUserResponse: Boolean(plan.suggested_question),
-    questionField: plan.suggested_question ? 'sales_discovery' : null,
+    questionField: questionFieldForPlan(plan),
   }
 }
 
