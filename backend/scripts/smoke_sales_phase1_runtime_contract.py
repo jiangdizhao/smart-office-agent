@@ -103,8 +103,6 @@ def main() -> None:
         assert "运营" in profile["session"]["explicit_facts"]["role"]
         assert profile["session"]["pain_points"]
         assert "meeting_summary" in profile["session"]["interested_capabilities"]
-        # All four discovery targets were already explicit, so Sara must not ask a
-        # redundant profile question merely to keep the funnel moving.
         assert profile["reply_plan"]["suggested_question"] is None
         assert profile["reply_plan"]["maximum_sentences"] <= 4
         assert profile["reply_plan"]["humour"]["allowed"] is True
@@ -398,7 +396,10 @@ def main() -> None:
     assert "queueSalesOfficeDelegate" in router_source
     assert "humour.text exactly once" in renderer_source
     assert "FIRST_NUDGE_MS = 7_000" in scheduler_source
-    assert "SECOND_NUDGE_MS = 15_000" in scheduler_source
+    assert "SECOND_NUDGE_DELAY_MS = 8_000" in scheduler_source
+    assert "smartoffice:assistant-output-completed" in scheduler_source
+    assert "detail.purpose === 'sales_proactive_first'" in scheduler_source
+    assert "smartoffice:realtime-speaking-stop" not in scheduler_source
     assert "endSalesVisit" in scheduler_source
     assert "DELEGATE_TTL_MS = 8_000" in delegate_source
     assert "salesConversationRouter" in facade_source
@@ -406,14 +407,11 @@ def main() -> None:
     print(
         "PASS: Phase 1 performs explicit-only discovery, preserves Office commands, "
         "enforces appointment-first and repeated-demo delegation, verifies conversion "
-        "panel outcomes, bounds cost claims and humour, runs two Visit-scoped proactive "
-        "nudges, offers contact once after value, persists only after contact consent, "
-        "and deletes anonymous Visit state."
+        "panel outcomes, bounds cost claims and humour, runs two Visit-scoped sequential "
+        "proactive nudges after completed outputs, offers contact once after value, "
+        "persists only after contact consent, and deletes anonymous Visit state."
     )
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        _TEMP_DIR.cleanup()
+    main()
