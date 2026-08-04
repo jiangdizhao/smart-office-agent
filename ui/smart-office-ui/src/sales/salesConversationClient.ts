@@ -154,6 +154,7 @@ export async function previewSalesTurn(input: {
   language: VoiceLanguage
   actor: 'visitor' | 'employee' | 'operator'
   recentContext: string
+  semanticExtraction?: Record<string, unknown> | null
   lease: VisitLease | null
 }): Promise<SalesTurnResponse> {
   return await postJson<SalesTurnResponse>(
@@ -165,6 +166,7 @@ export async function previewSalesTurn(input: {
       language: input.language,
       actor_type: input.actor,
       recent_context: input.recentContext,
+      semantic_extraction: input.semanticExtraction ?? null,
     },
     input.lease,
   )
