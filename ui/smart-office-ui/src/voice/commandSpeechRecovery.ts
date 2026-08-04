@@ -25,18 +25,24 @@ const APP_REMOVE_PATTERNS: Record<keyof typeof APP_PATTERNS, RegExp> = {
 export type CommandTarget = keyof typeof APP_PATTERNS
 export type CommandAction = 'open' | 'close' | 'play' | 'stop' | null
 
-const OPEN_PATTERN = /(?:打开|开启|启动|运行|open|launch|start|turn\s*on)/i
-const CLOSE_PATTERN = /(?:关闭|关掉|退出|结束|close|quit|exit|turn\s*off)/i
-const PLAY_PATTERN = /(?:播放|放一首|放点|来一首|play|start)/i
-const STOP_PATTERN = /(?:停止|别放了|不要播放|stop|close|turn\s*off)/i
+const OPEN_PATTERN = /(?:打开|开启|启动|运行|\bopen\b|\blaunch\b|\bstart\b|turn\s*on)/i
+const CLOSE_PATTERN = /(?:关闭|关掉|退出|结束|\bclose\b|\bquit\b|\bexit\b|turn\s*off)/i
+const PLAY_PATTERN = /(?:播放|放一首|放点|来一首|\bplay\b|\bstart\b)/i
+const STOP_PATTERN = /(?:停止|别放了|不要播放|\bstop\b|\bclose\b|turn\s*off)/i
+const OPEN_REMOVE_PATTERN = /(?:打开|开启|启动|运行|\bopen\b|\blaunch\b|\bstart\b|turn\s*on)/gi
+const CLOSE_REMOVE_PATTERN = /(?:关闭|关掉|退出|结束|\bclose\b|\bquit\b|\bexit\b|turn\s*off)/gi
+const PLAY_REMOVE_PATTERN = /(?:播放|放一首|放点|来一首|\bplay\b|\bstart\b)/gi
+const STOP_REMOVE_PATTERN = /(?:停止|别放了|不要播放|\bstop\b|\bclose\b|turn\s*off)/gi
 const EXPLICIT_ZH_ACTION = /(?:打开|开启|启动|运行|关闭|关掉|退出|结束|播放|放一首|放点|来一首|停止|别放了|不要播放)/i
 const EXPLICIT_EN_ACTION = /(?:\bopen\b|\blaunch\b|\bstart\b|\bclose\b|\bquit\b|\bexit\b|\bplay\b|\bstop\b|turn\s+on|turn\s+off)/i
 
 // Known phonetic failures observed on the exhibition microphone. These mappings
-// are deliberately narrow: they only apply when a supported application name is
-// also present, so ordinary English conversation is not rewritten.
+// are deliberately narrow and are applied only to a bounded single-application
+// command. They must never erase a second action, recipient, number, or purpose.
 const PHONETIC_CLOSE_PATTERN = /(?:\bone\s*b(?:ee)?\b|\b1\s*b\b|\bwan\s*bi\b|\bguan\s*bi\b|\bkwan\s*bee\b|\b关\s*闭\b)/i
 const PHONETIC_OPEN_PATTERN = /(?:\bda\s*kai\b|\bdakai\b|\bta\s*kai\b|\bthe\s*guy\b|\b打\s*开\b)/i
+const PHONETIC_CLOSE_REMOVE_PATTERN = /(?:\bone\s*b(?:ee)?\b|\b1\s*b\b|\bwan\s*bi\b|\bguan\s*bi\b|\bkwan\s*bee\b|\b关\s*闭\b)/gi
+const PHONETIC_OPEN_REMOVE_PATTERN = /(?:\bda\s*kai\b|\bdakai\b|\bta\s*kai\b|\bthe\s*guy\b|\b打\s*开\b)/gi
 const NON_COMMAND_CONTEXT = /(?:是什么|什么是|怎么|如何|为什么|介绍|功能|用途|能做什么|有什么用|what\s+is|what\s+does|why|how\s+do|how\s+does|tell\s+me|explain|describe)/i
 const BOUNDED_FILLER = /(?:请|帮我|麻烦|给我|现在|一下|好吗|可以吗|能否|能不能|命令|操作|please|could\s+you|would\s+you|can\s+you|for\s+me|now|uh|um|erm|hmm|xx+|x|嗯|呃|啊|那个)/gi
 
@@ -48,24 +54,27 @@ function cleanTranscript(value: string): string {
     .trim()
 }
 
-function targetFromTranscript(text: string): CommandTarget | null {
-  for (const [target, pattern] of Object.entries(APP_PATTERNS) as Array<
-    [CommandTarget, RegExp]
-  >) {
-    if (pattern.test(text)) return target
+function targetsFromTranscript(text: string): CommandTarget[] {
+  return (Object.entries(APP_PATTERNS) as Array<[CommandTarget, RegExp]>)
+    .filter(([, pattern]) => pattern.test(text))
+    .map(([target]) => target)
+}
+
+function actionKindsFromTranscript(text: string, target: CommandTarget): CommandAction[] {
+  const actions: CommandAction[] = []
+  if (target === 'music') {
+    if (PLAY_PATTERN.test(text) || PHONETIC_OPEN_PATTERN.test(text)) actions.push('play')
+    if (STOP_PATTERN.test(text) || PHONETIC_CLOSE_PATTERN.test(text)) actions.push('stop')
+  } else {
+    if (OPEN_PATTERN.test(text) || PHONETIC_OPEN_PATTERN.test(text)) actions.push('open')
+    if (CLOSE_PATTERN.test(text) || PHONETIC_CLOSE_PATTERN.test(text)) actions.push('close')
   }
-  return null
+  return [...new Set(actions)]
 }
 
 function actionFromTranscript(text: string, target: CommandTarget): CommandAction {
-  if (target === 'music') {
-    if (STOP_PATTERN.test(text) || PHONETIC_CLOSE_PATTERN.test(text)) return 'stop'
-    if (PLAY_PATTERN.test(text) || PHONETIC_OPEN_PATTERN.test(text)) return 'play'
-    return null
-  }
-  if (CLOSE_PATTERN.test(text) || PHONETIC_CLOSE_PATTERN.test(text)) return 'close'
-  if (OPEN_PATTERN.test(text) || PHONETIC_OPEN_PATTERN.test(text)) return 'open'
-  return null
+  const actions = actionKindsFromTranscript(text, target)
+  return actions.length === 1 ? actions[0] : null
 }
 
 function commandLanguage(text: string, fallback: VoiceLanguage): VoiceLanguage {
@@ -73,24 +82,54 @@ function commandLanguage(text: string, fallback: VoiceLanguage): VoiceLanguage {
   const hasEnglishAction = EXPLICIT_EN_ACTION.test(text)
   if (hasChineseAction && !hasEnglishAction) return 'zh'
   if (hasEnglishAction && !hasChineseAction) return 'en'
-  // Phonetic recovery such as "one B Teams" is not a genuine English action.
-  // Keep the active Visit language rather than allowing the product name or ASR
-  // debris to switch the conversation to English.
   return fallback
 }
 
-function isBoundedCommandFragment(text: string, target: CommandTarget): boolean {
-  if (NON_COMMAND_CONTEXT.test(text)) return false
-  const remainder = text
+function removeSelectedAction(text: string, target: CommandTarget, action: CommandAction): string {
+  let result = text
+  if (target === 'music' && action === 'play') {
+    result = result.replace(PLAY_REMOVE_PATTERN, ' ').replace(PHONETIC_OPEN_REMOVE_PATTERN, ' ')
+  } else if (target === 'music' && action === 'stop') {
+    result = result.replace(STOP_REMOVE_PATTERN, ' ').replace(PHONETIC_CLOSE_REMOVE_PATTERN, ' ')
+  } else if (action === 'open') {
+    result = result.replace(OPEN_REMOVE_PATTERN, ' ').replace(PHONETIC_OPEN_REMOVE_PATTERN, ' ')
+  } else if (action === 'close') {
+    result = result.replace(CLOSE_REMOVE_PATTERN, ' ').replace(PHONETIC_CLOSE_REMOVE_PATTERN, ' ')
+  }
+  return result
+}
+
+function semanticRemainder(
+  text: string,
+  target: CommandTarget,
+  action: CommandAction,
+): string {
+  return removeSelectedAction(text.replace(APP_REMOVE_PATTERNS[target], ' '), target, action)
+    .replace(BOUNDED_FILLER, ' ')
+    .replace(/[^\p{L}\p{N}@%]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isSafeSingleActionCommand(
+  text: string,
+  targets: CommandTarget[],
+  target: CommandTarget,
+  action: CommandAction,
+): boolean {
+  if (!action || targets.length !== 1 || NON_COMMAND_CONTEXT.test(text)) return false
+  if (actionKindsFromTranscript(text, target).length !== 1) return false
+  return semanticRemainder(text, target, action).length === 0
+}
+
+function isBareTargetFragment(text: string, targets: CommandTarget[], target: CommandTarget): boolean {
+  if (targets.length !== 1 || NON_COMMAND_CONTEXT.test(text)) return false
+  return text
     .replace(APP_REMOVE_PATTERNS[target], ' ')
     .replace(BOUNDED_FILLER, ' ')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-  // A bare product name or a product name surrounded only by short filler/ASR
-  // debris is a bounded command fragment. Longer semantic content remains normal
-  // conversation and must not be rewritten into an open/close prompt.
-  return remainder.length === 0 || remainder.replace(/\s+/g, '').length <= 3
+    .trim().length === 0
 }
 
 function canonicalTarget(target: CommandTarget): string {
@@ -118,8 +157,6 @@ function canonicalCommand(
   if (target === 'music' && action === 'stop') return '关闭音乐'
   if (action === 'open') return `打开 ${app}`
   if (action === 'close') return `关闭 ${app}`
-  // Keep a Chinese marker so a Chinese Visit cannot be switched to English merely
-  // because the ASR returned only an English product name.
   return target === 'music' ? '音乐命令' : `${app} 命令`
 }
 
@@ -139,7 +176,9 @@ export function recoverCommandTranscript(
 ): RecoveredCommandTranscript {
   const raw = value.trim()
   const clean = cleanTranscript(raw)
-  const target = targetFromTranscript(clean)
+  const targets = targetsFromTranscript(clean)
+  const target = targets.length === 1 ? targets[0] : null
+
   if (!target) {
     return {
       raw,
@@ -152,40 +191,55 @@ export function recoverCommandTranscript(
     }
   }
 
-  const action = actionFromTranscript(clean, target)
-  if (action === null && !isBoundedCommandFragment(clean, target)) {
-    return {
-      raw,
-      normalized: raw,
-      target: null,
-      action: null,
-      ambiguous: false,
-      language,
-      recovered: false,
-    }
-  }
-
   const resolvedLanguage = commandLanguage(clean, language)
-  const normalized = canonicalCommand(target, action, resolvedLanguage)
-  const recovered = normalized.toLocaleLowerCase() !== raw.toLocaleLowerCase()
-  if (recovered) {
-    console.info('[RealtimeDiagnostics] command-transcript-recovered', {
+  const action = actionFromTranscript(clean, target)
+  if (isSafeSingleActionCommand(clean, targets, target, action)) {
+    const normalized = canonicalCommand(target, action, resolvedLanguage)
+    const recovered = normalized.toLocaleLowerCase() !== raw.toLocaleLowerCase()
+    if (recovered) {
+      console.info('[RealtimeDiagnostics] bounded-command-transcript-recovered', {
+        raw,
+        normalized,
+        target,
+        action,
+        visitLanguage: language,
+        commandLanguage: resolvedLanguage,
+      })
+    }
+    return {
       raw,
       normalized,
       target,
       action,
-      visitLanguage: language,
-      commandLanguage: resolvedLanguage,
-    })
+      ambiguous: false,
+      language: resolvedLanguage,
+      recovered,
+    }
   }
+
+  if (action === null && isBareTargetFragment(clean, targets, target)) {
+    return {
+      raw,
+      normalized: canonicalCommand(target, null, resolvedLanguage),
+      target,
+      action: null,
+      ambiguous: true,
+      language: resolvedLanguage,
+      recovered: false,
+    }
+  }
+
+  // Preserve every semantically richer utterance intact. This includes compound
+  // actions, multiple applications, recipients, percentages, page numbers,
+  // scheduling details, and capability or demonstration requests.
   return {
     raw,
-    normalized,
-    target,
-    action,
-    ambiguous: action === null,
+    normalized: raw,
+    target: null,
+    action: null,
+    ambiguous: false,
     language: resolvedLanguage,
-    recovered,
+    recovered: false,
   }
 }
 
@@ -211,17 +265,20 @@ You are a multilingual speech transcription and command-correction layer, not a 
 Return only the user's final intended utterance as normalized plain text. Do not answer the user.
 ${languageRule}
 Preserve genuine Chinese-English code-switching and keep Microsoft product names in their conventional form.
+Preserve every requested action in its original order. Never simplify a compound request into one action.
+Never omit application names, slide numbers, percentages, dates, times, people, recipients, approval wording, or the user's stated purpose.
+For example, “打开并演示 PPT” must remain a compound open-and-demonstrate request; it must not become only “打开 PowerPoint”.
 Use the active visitor language as the response-language prior; do not infer a language switch from a product name alone.
 Later explicit corrections override earlier uncertain words.
 Relevant commands include:
 打开 Teams / 关闭 Teams / open Teams / close Teams
 打开 OneNote / 关闭 OneNote / open OneNote / close OneNote
 打开 PowerPoint / 关闭 PowerPoint / open PowerPoint / close PowerPoint
+打开并演示 PowerPoint / 开始幻灯片放映 / 下一页 / 上一页
 打开 Outlook / 关闭 Outlook / open Outlook / close Outlook
 播放音乐 / 关闭音乐 / play music / stop music
 Relevant terms also include meeting, presentation, mute, camera, next slide, previous slide, and screen sharing.
-Never invent a request. When the application name is clear but the action is genuinely unclear, return only the application name so the application can ask a bounded clarification.
-If the complete utterance is genuinely unintelligible, output exactly __UNCLEAR__.
+Never invent a request. If the complete utterance is genuinely unintelligible, output exactly __UNCLEAR__.
 Output only normalized plain text without labels, JSON, Markdown, quotation marks, explanations, or translations.
 `.trim()
 }
