@@ -284,8 +284,11 @@ class SalesSessionStore:
                 conversation_id=key[0],
                 visit_id=key[1],
             )
-            state.booking_opened = True
-            state.last_sales_action = "booking_opened"
+            if state.last_sales_action == "booking_requested":
+                state.last_sales_action = "booking_panel_requested"
+            else:
+                state.booking_opened = True
+                state.last_sales_action = "booking_opened"
             return self._update(state)
 
     def offer_contact(
@@ -337,8 +340,11 @@ class SalesSessionStore:
                 conversation_id=key[0],
                 visit_id=key[1],
             )
-            state.contact_opened = True
-            state.last_sales_action = "contact_opened"
+            if state.last_sales_action == "contact_registration_requested":
+                state.last_sales_action = "contact_panel_requested"
+            else:
+                state.contact_opened = True
+                state.last_sales_action = "contact_opened"
             return self._update(state)
 
     def mark_value_delivered(
