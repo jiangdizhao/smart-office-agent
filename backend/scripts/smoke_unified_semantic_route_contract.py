@@ -246,6 +246,12 @@ def source_architecture_contract() -> None:
     sales_router = (
         ROOT / "ui" / "smart-office-ui" / "src" / "sales" / "salesConversationRouter.ts"
     ).read_text(encoding="utf-8")
+    sales_renderer = (
+        ROOT / "ui" / "smart-office-ui" / "src" / "sales" / "salesReplyRenderer.ts"
+    ).read_text(encoding="utf-8")
+    sales_scheduler = (
+        ROOT / "ui" / "smart-office-ui" / "src" / "sales" / "salesPhase2AProactiveScheduler.ts"
+    ).read_text(encoding="utf-8")
     semantic_client = (
         ROOT / "ui" / "smart-office-ui" / "src" / "routing" / "unifiedSemanticRouterClient.ts"
     ).read_text(encoding="utf-8")
@@ -258,7 +264,14 @@ def source_architecture_contract() -> None:
     require("canonicalSystemCommand" in frontend, "Execution adapter does not use canonical commands.")
     require("matchesSelfIntroduction" not in sales_router, "Identity regex still owns self-introduction routing.")
     require("semantic_decision" in sales_router, "Sales router is not consuming the unified decision.")
-    require("setSemanticPendingIntent" in sales_router, "Sales conversion questions do not create structured pending intents.")
+    require("setSemanticPendingIntent" not in sales_router, "Sales preview must not write pending intent before speech completes.")
+    require("questionFieldForPlan" in sales_renderer, "Sales renderer does not label conversion questions.")
+    require("recommended_action === 'offer_booking'" in sales_renderer, "Booking question lifecycle metadata is missing.")
+    require("recommended_action === 'offer_contact'" in sales_renderer, "Contact question lifecycle metadata is missing.")
+    require("syncPendingIntentAfterCompletedOutput" in sales_scheduler, "Completed-output pending lifecycle is missing.")
+    require("void this.syncPendingIntentAfterCompletedOutput(detail)" in sales_scheduler, "Pending lifecycle is not bound to output completion.")
+    require("detail.questionField === 'booking'" in sales_scheduler, "Completed booking question is not structured.")
+    require("detail.questionField === 'contact'" in sales_scheduler, "Completed contact question is not structured.")
     require(
         "SUPPORTED_SALES_PROFILE_FIELDS" in semantic_client,
         "Frontend does not filter semantic facts to the deterministic sales schema.",
@@ -267,6 +280,9 @@ def source_architecture_contract() -> None:
         "validate_semantic_action_evidence(route, request.text)" in semantic_api,
         "API does not validate action evidence before policy execution.",
     )
+    require("asyncio.wait_for" in semantic_api, "Semantic routing has no dedicated timeout.")
+    require("semantic_model_timeout_fail_closed" in semantic_api, "Semantic timeout does not fail closed.")
+    require("_normalise_input_text" in semantic_api, "Semantic input normalization is missing.")
 
 
 async def main() -> None:
@@ -277,7 +293,7 @@ async def main() -> None:
     source_architecture_contract()
     print(
         "PASS: unified semantic routing uses a narrow fast path, schema-validated model decisions, "
-        "action and profile evidence validation, structured pending intent and deterministic policy-gated execution."
+        "action and profile evidence validation, completion-bound pending intent and deterministic policy-gated execution."
     )
 
 
