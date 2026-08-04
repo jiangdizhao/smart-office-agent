@@ -73,6 +73,7 @@ def _capture(patterns: Iterable[re.Pattern[str]], text: str) -> str | None:
 
 _INDUSTRY_PATTERNS = (
     re.compile(rf"(?:我们(?:公司)?|本公司)(?:主要)?(?:是做|做|从事|属于)\s*(?P<value>[^，。！？；;,.!?]{{2,40}}?){_CLAUSE_END}", re.I),
+    re.compile(r"我们(?:公司)?(?:在|属于)\s*(?P<value>[^，。！？；;,.!?]{2,30}?)(?:行业|领域)", re.I),
     re.compile(r"我(?:在|属于)\s*(?P<value>[^，。！？；;,.!?]{2,30}?)(?:行业|领域)", re.I),
     re.compile(rf"(?:our\s+company|we)(?:\s+mainly)?\s+(?:works?|operates?|is)\s+(?:in|within)\s+(?P<value>[^,.!?;]{{2,60}}?){_CLAUSE_END}", re.I),
     re.compile(rf"I\s+work\s+in\s+(?P<value>[^,.!?;]{{2,60}}?){_CLAUSE_END}", re.I),
