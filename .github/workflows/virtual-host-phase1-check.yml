@@ -31,6 +31,8 @@ jobs:
       - name: Compile backend
         run: |
           python -m compileall backend/app \
+            backend/scripts/test_unified_semantic_router_live.py \
+            backend/scripts/smoke_single_activation_contract.py \
             backend/scripts/smoke_backend_env_config_contract.py \
             backend/scripts/smoke_sales_phase0_contract.py \
             backend/scripts/smoke_sales_phase1_runtime_contract.py \
@@ -61,6 +63,10 @@ jobs:
         run: python backend/scripts/smoke_backend_env_config_contract.py
       - name: Run portable path contract
         run: python backend/scripts/smoke_portable_paths_contract.py
+      - name: Run encoding-safe deterministic semantic contract
+        run: python backend/scripts/test_unified_semantic_router_live.py --offline-contract
+      - name: Run single activation and unified voice contract
+        run: python backend/scripts/smoke_single_activation_contract.py
       - name: Run Phase 0 sales compatibility contract
         run: python backend/scripts/smoke_sales_phase0_contract.py
       - name: Run Phase 1 sales runtime contract
@@ -101,6 +107,23 @@ jobs:
         run: python backend/scripts/smoke_human_recording_general_chat_contract.py
       - name: Run Phase 5 remote vision contract
         run: python backend/scripts/smoke_phase5_remote_vision_contract.py
+
+  windows-powershell-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deterministic routing dependency
+        shell: powershell
+        run: python -m pip install pydantic
+      - name: Parse ASCII wrapper in Windows PowerShell and run UTF-8 Chinese cases
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File .\backend\scripts\test_unified_semantic_router_live.ps1 `
+            -OfflineContract
 
   frontend-build:
     runs-on: ubuntu-latest
