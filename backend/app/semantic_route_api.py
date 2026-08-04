@@ -18,6 +18,7 @@ from app.semantic_route_models import (
     SemanticRouteResponse,
 )
 from app.semantic_route_policy import semantic_route_policy
+from app.semantic_route_validator import validate_semantic_action_evidence
 from app.semantic_sales_bridge import use_semantic_sales_extraction
 from app.turn_router import classify_turn
 from app.unified_semantic_router import unified_semantic_router
@@ -69,6 +70,7 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
         os.getenv("SMART_OFFICE_SEMANTIC_ROUTER_MODE")
     )
     route, model, pending_used = await unified_semantic_router.classify(request)
+    route = validate_semantic_action_evidence(route, request.text)
     route, final_decision, policy_reasons = semantic_route_policy.apply(route)
     legacy = _legacy_comparison(request) if mode in {"legacy", "shadow"} else None
     decision_id = unified_semantic_router.new_decision_id()
@@ -172,13 +174,14 @@ def semantic_route_contracts() -> dict[str, Any]:
             "input_normalizer",
             "high_precision_fast_path",
             "structured_semantic_model",
-            "evidence_validator",
+            "action_evidence_validator",
+            "profile_evidence_validator",
             "deterministic_policy_engine",
             "domain_planner",
             "executor_and_verifier",
             "response_renderer",
         ],
-        "execution_rule": "No model-proposed tool name is accepted. Only allowlisted structured actions may reach a domain executor.",
+        "execution_rule": "No model-proposed tool name is accepted. Only evidence-backed, allowlisted structured actions may reach a domain executor.",
     }
 
 
@@ -201,6 +204,7 @@ async def semantic_route_self_test() -> dict[str, Any]:
             actor_type="visitor",
         )
         route, _, _ = await unified_semantic_router.classify(request)
+        route = validate_semantic_action_evidence(route, request.text)
         route, final, _ = semantic_route_policy.apply(route)
         passed = route.primary_intent == expected_intent and final == expected_mode
         results.append(
