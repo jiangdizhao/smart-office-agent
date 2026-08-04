@@ -48,6 +48,7 @@ jobs:
             backend/scripts/smoke_phase3_outlook_summary_dependency_contract.py \
             backend/scripts/smoke_phase4_5_virtual_host_contract.py \
             backend/scripts/smoke_conversation_proximity_contract.py \
+            backend/scripts/smoke_conversation_proximity_phase1_contract.py \
             backend/scripts/smoke_human_recording_general_chat_contract.py \
             backend/scripts/smoke_phase5_remote_vision_contract.py \
             backend/scripts/test_phase5_remote_vision_lan.py \
@@ -85,8 +86,8 @@ jobs:
         run: python backend/scripts/smoke_phase3_outlook_summary_dependency_contract.py
       - name: Run Phase 4-5 exhibition contract
         run: python backend/scripts/smoke_phase4_5_virtual_host_contract.py
-      - name: Run conversation and proximity contract
-        run: python backend/scripts/smoke_conversation_proximity_contract.py
+      - name: Run Phase 1-aware conversation and proximity contract
+        run: python backend/scripts/smoke_conversation_proximity_phase1_contract.py
       - name: Run human recording and general chat contract
         run: python backend/scripts/smoke_human_recording_general_chat_contract.py
       - name: Run Phase 5 remote vision contract
