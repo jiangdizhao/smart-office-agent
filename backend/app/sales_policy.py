@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -14,13 +15,19 @@ from app.sales_models import (
 )
 
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
+_FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
-    return raw.strip().casefold() in _TRUE_VALUES
+    clean = raw.strip().casefold()
+    if clean in _TRUE_VALUES:
+        return True
+    if clean in _FALSE_VALUES:
+        return False
+    return default
 
 
 @dataclass(frozen=True)
@@ -36,31 +43,28 @@ class DemonstrationDecision:
 
 
 class SalesRuntimePolicy:
-    """Hard policy gates for the Phase 0 sales foundation.
-
-    These methods do not alter the current conversation runtime. Phase 1 will call
-    them from the active router. Their behaviour is already contract-tested so the
-    user-facing implementation cannot bypass Visit limits later.
-    """
+    """Hard policy gates for the active Phase 1 sales runtime."""
 
     def feature_flags(self) -> SalesFeatureFlags:
-        agent_enabled = _env_bool("SMART_OFFICE_SALES_AGENT_ENABLED", False)
+        # Phase 1 is the approved default for the exhibition branch. Every feature
+        # remains independently disableable through an explicit environment value.
+        agent_enabled = _env_bool("SMART_OFFICE_SALES_AGENT_ENABLED", True)
         realtime_mode = os.getenv("SMART_OFFICE_REALTIME_MODE", "quality").strip().casefold()
         if realtime_mode not in {"quality", "economy"}:
             realtime_mode = "quality"
         return SalesFeatureFlags(
             agent_enabled=agent_enabled,
             proactive_enabled=(
-                agent_enabled and _env_bool("SMART_OFFICE_SALES_PROACTIVE_ENABLED", False)
+                agent_enabled and _env_bool("SMART_OFFICE_SALES_PROACTIVE_ENABLED", True)
             ),
             humour_enabled=(
-                agent_enabled and _env_bool("SMART_OFFICE_SALES_HUMOUR_ENABLED", False)
+                agent_enabled and _env_bool("SMART_OFFICE_SALES_HUMOUR_ENABLED", True)
             ),
             profile_persistence_enabled=(
                 agent_enabled
                 and _env_bool(
                     "SMART_OFFICE_SALES_PROFILE_PERSISTENCE_ENABLED",
-                    False,
+                    True,
                 )
             ),
             telemetry_enabled=_env_bool("SMART_OFFICE_SALES_TELEMETRY_ENABLED", True),
@@ -70,13 +74,13 @@ class SalesRuntimePolicy:
     def status(self) -> dict[str, Any]:
         flags = self.feature_flags()
         requested = {
-            "agent_enabled": _env_bool("SMART_OFFICE_SALES_AGENT_ENABLED", False),
+            "agent_enabled": _env_bool("SMART_OFFICE_SALES_AGENT_ENABLED", True),
             "proactive_enabled": _env_bool(
-                "SMART_OFFICE_SALES_PROACTIVE_ENABLED", False
+                "SMART_OFFICE_SALES_PROACTIVE_ENABLED", True
             ),
-            "humour_enabled": _env_bool("SMART_OFFICE_SALES_HUMOUR_ENABLED", False),
+            "humour_enabled": _env_bool("SMART_OFFICE_SALES_HUMOUR_ENABLED", True),
             "profile_persistence_enabled": _env_bool(
-                "SMART_OFFICE_SALES_PROFILE_PERSISTENCE_ENABLED", False
+                "SMART_OFFICE_SALES_PROFILE_PERSISTENCE_ENABLED", True
             ),
             "telemetry_enabled": _env_bool(
                 "SMART_OFFICE_SALES_TELEMETRY_ENABLED", True
@@ -92,11 +96,13 @@ class SalesRuntimePolicy:
             if requested[name] and not getattr(flags, name)
         ]
         return {
-            "phase": "phase0_sales_foundation",
+            "phase": "phase1_sales_runtime",
             "effective_flags": flags.model_dump(mode="json"),
             "requested_flags": requested,
             "suppressed_without_agent": suppressed,
+            "runtime_active": flags.agent_enabled,
             "default_behaviour_unchanged": not flags.agent_enabled,
+            "quality_baseline": "gpt-realtime-2.1",
         }
 
     def demonstration_decision(
@@ -173,6 +179,7 @@ class SalesRuntimePolicy:
         return (
             state.stage != "close"
             and not state.booking_rejected
+            and not state.booking_opened
             and state.booking_offer_count < 2
             and gap_ok
         )
@@ -182,8 +189,10 @@ class SalesRuntimePolicy:
         return (
             state.stage != "close"
             and not state.contact_rejected
+            and not state.contact_opened
             and state.contact_offer_count < 1
             and state.effective_user_turn_count >= 2
+            and state.value_delivered
         )
 
     @staticmethod
@@ -197,6 +206,7 @@ class SalesRuntimePolicy:
     ) -> bool:
         return bool(
             state.stage != "close"
+            and not state.disengaged
             and state.proactive_nudge_count < 2
             and not user_speaking
             and not agent_speaking
@@ -204,12 +214,49 @@ class SalesRuntimePolicy:
             and not interaction_input_active
         )
 
+    @staticmethod
+    def _stable_index(seed: str, size: int) -> int:
+        if size <= 1:
+            return 0
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "big") % size
+
+    def approved_humour_text(
+        self,
+        *,
+        theme: str,
+        language: Language,
+        seed: str,
+    ) -> str | None:
+        bundle = sales_config.load()
+        if bundle is None:
+            return None
+        entry = next(
+            (
+                item
+                for item in bundle.claims.humour_themes
+                if str(item.get("theme_id") or "") == theme
+            ),
+            None,
+        )
+        if not isinstance(entry, dict):
+            return None
+        examples = entry.get(f"examples_{language}")
+        if not isinstance(examples, list):
+            return None
+        cleaned = [" ".join(str(item).strip().split()) for item in examples if str(item).strip()]
+        if not cleaned:
+            return None
+        return cleaned[self._stable_index(f"{seed}|{theme}|{language}", len(cleaned))]
+
     def humour_directive(
         self,
         state: SalesSessionState,
         *,
         context: str,
         theme: str | None,
+        language: Language = "zh",
+        seed: str = "",
     ) -> HumourDirective:
         flags = self.feature_flags()
         bundle = sales_config.load()
@@ -219,32 +266,76 @@ class SalesRuntimePolicy:
         persona_humour = bundle.persona.humour
         forbidden = set(persona_humour.get("forbidden_contexts", []))
         allowed_contexts = set(persona_humour.get("allowed_contexts", []))
-        known_themes = {
-            str(item.get("theme_id"))
-            for item in bundle.claims.humour_themes
-            if isinstance(item, dict) and item.get("theme_id")
-        }
+        theme_entry = next(
+            (
+                item
+                for item in bundle.claims.humour_themes
+                if isinstance(item, dict) and str(item.get("theme_id") or "") == str(theme or "")
+            ),
+            None,
+        )
         minimum_gap = int(persona_humour.get("minimum_turn_gap", 4))
 
         if context in forbidden:
             return HumourDirective(reason=f"forbidden_context:{context}")
         if context not in allowed_contexts:
             return HumourDirective(reason=f"unapproved_context:{context}")
-        if not theme or theme not in known_themes:
+        if not theme or not isinstance(theme_entry, dict):
             return HumourDirective(reason="unknown_or_missing_theme")
+        theme_contexts = set(theme_entry.get("allowed_contexts", []))
+        if context not in theme_contexts:
+            return HumourDirective(reason="theme_not_approved_for_context")
         if theme in state.humour_themes_used:
             return HumourDirective(reason="theme_already_used_in_visit")
         if state.turns_since_humour < minimum_gap:
             return HumourDirective(reason="minimum_turn_gap_not_met")
+        text = self.approved_humour_text(
+            theme=theme,
+            language=language,
+            seed=seed or f"{state.conversation_id}|{state.visit_id}|{state.turn_count}",
+        )
+        if not text:
+            return HumourDirective(reason="approved_theme_has_no_text")
 
         return HumourDirective(
             allowed=True,
             intensity="light",
             theme=theme,
+            text=text,
             reason="approved_low_risk_context",
             maximum_lines=1,
             forbidden_topics=sorted(forbidden),
         )
+
+    def approved_cost_claim(
+        self,
+        *,
+        language: Language,
+        seed: str,
+    ) -> tuple[str, str] | None:
+        bundle = sales_config.load()
+        if bundle is None:
+            return None
+        claim = next(
+            (
+                item
+                for item in bundle.claims.claims
+                if item.get("claim_id") == "typical_ai_voice_cost_analogy"
+                and item.get("enabled") is True
+            ),
+            None,
+        )
+        if not isinstance(claim, dict):
+            return None
+        examples = claim.get("examples", {}).get(language, [])
+        examples = [" ".join(str(item).strip().split()) for item in examples if str(item).strip()]
+        follow_up = " ".join(
+            str(claim.get("required_follow_up", {}).get(language, "")).strip().split()
+        )
+        if not examples or not follow_up:
+            return None
+        selected = examples[self._stable_index(f"{seed}|cost|{language}", len(examples))]
+        return selected, follow_up
 
     def phase0_reply_plan(
         self,
@@ -255,12 +346,7 @@ class SalesRuntimePolicy:
         capability_ids: list[str] | None = None,
         suggested_question: str | None = None,
     ) -> SalesReplyPlan:
-        """Build a non-executing contract sample used by Phase 0 tests and review.
-
-        Phase 1 will add the real planner. This method deliberately contains no LLM
-        call and never asserts that a tool action was completed.
-        """
-
+        # Kept as a compatibility helper for the original foundation contract.
         approved_claims: list[str] = []
         prohibited_claims = ["never_claim_unverified_execution"]
         for capability_id in capability_ids or []:
