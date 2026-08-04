@@ -21,6 +21,7 @@ from app.semantic_route_models import (  # noqa: E402
     SemanticRouteRequest,
 )
 from app.semantic_route_policy import semantic_route_policy  # noqa: E402
+from app.semantic_route_validator import validate_semantic_action_evidence  # noqa: E402
 from app.unified_semantic_router import unified_semantic_router  # noqa: E402
 
 
@@ -46,6 +47,7 @@ async def fast_path_contract() -> None:
             language="zh",
         )
         route, model, pending = await unified_semantic_router.classify(request)
+        route = validate_semantic_action_evidence(route, request.text)
         route, final, _ = semantic_route_policy.apply(route)
         require(model is None, f"Fast path unexpectedly used a model for: {text}")
         require(pending is None, f"Fast path unexpectedly used pending intent: {text}")
@@ -104,7 +106,11 @@ def policy_boundary_contract() -> None:
         complexity="simple",
         answer_engine="realtime",
     )
-    checked, final, _ = semantic_route_policy.apply(discussion)
+    checked = validate_semantic_action_evidence(
+        discussion,
+        "不要打开 Teams，先介绍一下它能做什么。",
+    )
+    checked, final, _ = semantic_route_policy.apply(checked)
     require(final == "answer_only", "Negated discussion must remain answer-only.")
     require(not checked.actions, "Negated action must never become executable.")
 
@@ -128,9 +134,45 @@ def policy_boundary_contract() -> None:
         source="semantic_model",
         answer_engine="office_interpreter",
     )
-    checked, final, reasons = semantic_route_policy.apply(hypothetical)
+    checked = validate_semantic_action_evidence(
+        hypothetical,
+        "如果打开 Teams 会发生什么？",
+    )
+    checked, final, reasons = semantic_route_policy.apply(checked)
     require(final == "clarify", f"Hypothetical action must not execute: {final}, {reasons}")
     require(not checked.actions, "Hypothetical action must be removed by policy.")
+
+    hallucinated = SemanticRoute(
+        primary_intent="application_action",
+        domain="office",
+        action_mode="execute",
+        confidence=0.99,
+        actions=[
+            SemanticAction(
+                verb="open",
+                target="teams",
+                polarity="affirmed",
+                speech_act="command",
+                evidence="打开 Teams",
+            )
+        ],
+        entities={"language": "zh"},
+        risk="low",
+        reason_codes=[],
+        source="semantic_model",
+        answer_engine="office_interpreter",
+    )
+    checked = validate_semantic_action_evidence(
+        hallucinated,
+        "介绍一下 Teams 能做什么。",
+    )
+    checked, final, reasons = semantic_route_policy.apply(checked)
+    require(not checked.actions, "Action without source evidence survived validation.")
+    require(final == "clarify", f"Hallucinated action must fail closed: {final}, {reasons}")
+    require(
+        any(code.startswith("action_evidence_rejected") for code in checked.reason_codes),
+        "Rejected action did not leave a diagnostic reason code.",
+    )
 
     external = SemanticRoute(
         primary_intent="email_action",
@@ -152,9 +194,13 @@ def policy_boundary_contract() -> None:
         source="semantic_model",
         answer_engine="office_interpreter",
     )
-    checked, final, _ = semantic_route_policy.apply(external)
+    checked = validate_semantic_action_evidence(external, "发送邮件")
+    checked, final, _ = semantic_route_policy.apply(checked)
     require(final != "execute", "External-effect email action must never directly execute.")
-    require(checked.risk == "none" or final in {"clarify", "request_confirmation"}, "External action policy failed closed.")
+    require(
+        checked.risk == "none" or final in {"clarify", "request_confirmation"},
+        "External action policy failed closed.",
+    )
 
 
 def evidence_contract() -> None:
@@ -183,8 +229,14 @@ def evidence_contract() -> None:
         answer_engine="backend",
     )
     checked = unified_semantic_router._validate_profile_evidence(route, text)
-    require(set(checked.profile_extraction.explicit_facts) == {"industry", "role"}, "Forbidden or unsupported fields survived validation.")
-    require(len(checked.profile_extraction.pain_points) == 1, "Unsupported evidence survived validation.")
+    require(
+        set(checked.profile_extraction.explicit_facts) == {"industry", "role"},
+        "Forbidden or unsupported fields survived validation.",
+    )
+    require(
+        len(checked.profile_extraction.pain_points) == 1,
+        "Unsupported evidence survived validation.",
+    )
 
 
 def source_architecture_contract() -> None:
@@ -194,6 +246,12 @@ def source_architecture_contract() -> None:
     sales_router = (
         ROOT / "ui" / "smart-office-ui" / "src" / "sales" / "salesConversationRouter.ts"
     ).read_text(encoding="utf-8")
+    semantic_client = (
+        ROOT / "ui" / "smart-office-ui" / "src" / "routing" / "unifiedSemanticRouterClient.ts"
+    ).read_text(encoding="utf-8")
+    semantic_api = (ROOT / "backend" / "app" / "semantic_route_api.py").read_text(
+        encoding="utf-8"
+    )
     require("requestUnifiedSemanticRoute" in frontend, "Frontend is not using unified semantic routing.")
     require("matchInteractionWindowIntent" not in frontend, "Legacy interaction matcher still owns the main route.")
     require("matchSystemAction" not in frontend, "Legacy system matcher still owns the main route.")
@@ -201,6 +259,14 @@ def source_architecture_contract() -> None:
     require("matchesSelfIntroduction" not in sales_router, "Identity regex still owns self-introduction routing.")
     require("semantic_decision" in sales_router, "Sales router is not consuming the unified decision.")
     require("setSemanticPendingIntent" in sales_router, "Sales conversion questions do not create structured pending intents.")
+    require(
+        "SUPPORTED_SALES_PROFILE_FIELDS" in semantic_client,
+        "Frontend does not filter semantic facts to the deterministic sales schema.",
+    )
+    require(
+        "validate_semantic_action_evidence(route, request.text)" in semantic_api,
+        "API does not validate action evidence before policy execution.",
+    )
 
 
 async def main() -> None:
@@ -211,7 +277,7 @@ async def main() -> None:
     source_architecture_contract()
     print(
         "PASS: unified semantic routing uses a narrow fast path, schema-validated model decisions, "
-        "evidence validation, structured pending intent and deterministic policy-gated execution."
+        "action and profile evidence validation, structured pending intent and deterministic policy-gated execution."
     )
 
 
