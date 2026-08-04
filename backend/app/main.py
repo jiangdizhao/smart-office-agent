@@ -33,6 +33,8 @@ from app.result_center_api import router as result_center_router
 from app.sales_api import router as sales_router
 from app.sales_config import sales_config
 from app.sales_policy import sales_runtime_policy
+from app.semantic_route_api import router as semantic_route_router
+from app.semantic_route_policy import semantic_route_policy
 from app.state_store import state_store
 from app.system_status_policy import install_lightweight_system_status_policy
 from app.task_graph import build_task_graph, task_graph_event_data
@@ -73,6 +75,7 @@ app.include_router(contact_record_router)
 app.include_router(result_center_router)
 app.include_router(display_role_router)
 app.include_router(sales_router)
+app.include_router(semantic_route_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -87,6 +90,7 @@ def _sse_payload(event: StepEvent) -> dict:
 def health_check():
     sales_flags = sales_runtime_policy.feature_flags()
     sales_configuration = sales_config.status()
+    semantic_configuration = semantic_route_policy.status()
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
@@ -108,6 +112,13 @@ def health_check():
             "unified_office_plan": True,
             "agent_turn_api": True,
             "unified_turn_router": True,
+            "unified_semantic_router": True,
+            "semantic_route_schema": "semantic-route-v1",
+            "semantic_router_default_mode": semantic_configuration.get("default_mode"),
+            "semantic_pending_intent": True,
+            "semantic_evidence_validated_sales_profile": True,
+            "semantic_policy_gated_execution": True,
+            "semantic_route_diagnostics": True,
             "exact_desktop_command_api": True,
             "reception_knowledge": True,
             "general_backend_chat": True,
