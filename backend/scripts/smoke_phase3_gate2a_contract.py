@@ -19,6 +19,7 @@ import app.turn_api as turn_api  # noqa: E402
 CURRENT_OR_LATER_RUNTIME_PHASES = {
     "m3a_fusion_phase_3_gate_3_5",
     "preemptive_visit_orchestration",
+    "phase1_sales_runtime_with_preemptive_visit_orchestration",
 }
 
 
