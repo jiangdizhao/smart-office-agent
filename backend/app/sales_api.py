@@ -55,6 +55,77 @@ def _require_configuration() -> None:
         )
 
 
+def _append_question(text: str, question: str, language: str) -> str:
+    base = " ".join(str(text or "").strip().split()).rstrip("。.!！?？")
+    prompt = " ".join(str(question or "").strip().split())
+    if not base:
+        return prompt
+    separator = ". " if language == "en" else "。"
+    return f"{base}{separator}{prompt}"
+
+
+def _maybe_offer_contact(response: SalesTurnResponse) -> SalesTurnResponse:
+    """Add the single contact invitation only after useful discovery is complete.
+
+    This post-policy runs after the main reply planner so it cannot interfere with
+    Office actions, privacy/cost answers, booking decisions, failures or explicit
+    demonstrations. The store remains the authoritative one-off counter.
+    """
+
+    plan = response.reply_plan
+    state = response.session
+    if (
+        not response.handled
+        or plan is None
+        or response.reason != "explicit_sales_context_processed"
+        or response.ui_action is not None
+        or plan.suggested_question is not None
+        or state.stage not in {"recommend", "handle_objection"}
+        or state.booking_rejected
+        or state.booking_opened
+        or not (state.interested_capabilities or state.pain_points)
+        or not sales_runtime_policy.can_offer_contact(state)
+    ):
+        return response
+
+    allowed, state = sales_session_store.offer_contact(
+        state.conversation_id,
+        state.visit_id,
+    )
+    if not allowed:
+        return response
+
+    question = (
+        "需要我打开登记信息表，方便顾问根据您刚才的需求继续联系吗？"
+        if state.language == "zh"
+        else "Shall I open visitor registration so a consultant can follow up on the needs you just described?"
+    )
+    plan = plan.model_copy(
+        update={
+            "suggested_question": question,
+            "recommended_action": "offer_contact",
+        }
+    )
+    sales_telemetry.emit(
+        "contact_offered",
+        conversation_id=state.conversation_id,
+        visit_id=state.visit_id,
+        stage=state.stage,
+        data={"source": "post_value_complete_discovery"},
+    )
+    return response.model_copy(
+        update={
+            "reply_plan": plan,
+            "fallback_text": _append_question(
+                response.fallback_text,
+                question,
+                state.language,
+            ),
+            "session": state,
+        }
+    )
+
+
 @router.get("/status")
 def sales_status() -> dict:
     config_status = sales_config.status()
@@ -86,6 +157,7 @@ def sales_status() -> dict:
             "consent_gated_sales_profile_persistence",
             "visit_scoped_invitation_limits",
             "allowlisted_repeated_demo_delegation",
+            "single_post_value_contact_offer",
         ],
         "deferred_components": [
             "mini_model_ab_test",
@@ -103,7 +175,7 @@ def sales_turn(req: SalesTurnRequest) -> SalesTurnResponse:
         # sales discovery.
         if req.actor_type != "employee":
             req = req.model_copy(update={"actor_type": "visitor"})
-        return sales_reply_planner.handle_turn(req)
+        return _maybe_offer_contact(sales_reply_planner.handle_turn(req))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
