@@ -97,8 +97,9 @@ def main() -> None:
         assert blocked_payload.get("task_status") is None, blocked_payload
     else:
         # Later runtimes may retain a non-bounded legacy request as a plan-only task
-        # for observability. This remains safe only when execute=False on the stored
-        # task and no tool result, verification result or presentation state exists.
+        # for observability. A simulation can transiently report "running" or later
+        # "succeeded" even though no real tool is present. The security boundary is
+        # execute=False plus an empty tool/result surface, not the simulator label.
         assert route == "office_planned_task", blocked_payload
         spoken = str(blocked_payload.get("spoken_text") or "")
         assert "no real Office action was executed" in spoken, blocked_payload
@@ -108,10 +109,15 @@ def main() -> None:
         task_response.raise_for_status()
         task_payload = task_response.json()
         assert task_payload["execute"] is False, task_payload
-        assert all(step.get("result") is None for step in task_payload.get("steps", [])), task_payload
-        assert all(
-            step.get("status") not in {"running", "verifying", "succeeded"}
-            for step in task_payload.get("steps", [])
+        steps = task_payload.get("steps", [])
+        assert steps, task_payload
+        assert all(step.get("tool_name") is None for step in steps), task_payload
+        assert all(step.get("result") is None for step in steps), task_payload
+        events = task_payload.get("events", [])
+        assert any(
+            event.get("data", {}).get("mode") == "plan_only_simulation"
+            or "No real tools will run" in str(event.get("message") or "")
+            for event in events
         ), task_payload
 
     print(
