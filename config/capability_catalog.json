@@ -1,0 +1,139 @@
+{
+  "schema_version": "capability-catalog-v1",
+  "catalog_version": "expo-appointment-first-v1",
+  "default_status": "appointment_demo",
+  "status_definitions": {
+    "live_demo": "The capability may be executed immediately and verified on site.",
+    "appointment_demo": "Lead with a complete appointment demonstration; use an allowlisted short on-site action only after repeated explicit requests.",
+    "custom_integration": "Describe the business value and required adaptation without claiming the customer's system is already integrated.",
+    "roadmap": "Describe only as an expansion direction or planned capability.",
+    "restricted": "Do not execute or promote beyond the stated boundary."
+  },
+  "capabilities": [
+    {
+      "capability_id": "meeting_booking",
+      "title": {"zh": "会议预约", "en": "Meeting booking"},
+      "status": "live_demo",
+      "category": "conversion",
+      "keywords": {"zh": ["预约会议", "安排时间", "预约演示", "预约日历"], "en": ["book a meeting", "schedule a meeting", "book a demo"]},
+      "customer_value": {"zh": ["立即选择会面日期和时间", "保存预约并展示会面地址"], "en": ["Choose a meeting date and time", "Save the booking and show the meeting address"]},
+      "live_actions": ["meeting_open"],
+      "approved_pitch": {"zh": "我可以现在帮您安排一次完整体验。", "en": "I can arrange a complete experience for you now."},
+      "recommended_next_action": "open_booking",
+      "prohibited_claims": ["do_not_claim_calendar_invites_were_sent", "do_not_claim_a_specific_employee_was_assigned"]
+    },
+    {
+      "capability_id": "visitor_registration",
+      "title": {"zh": "访客登记", "en": "Visitor registration"},
+      "status": "live_demo",
+      "category": "conversion",
+      "keywords": {"zh": ["登记信息", "留下联系方式", "个人信息表"], "en": ["register my details", "leave contact details"]},
+      "customer_value": {"zh": ["在明确同意后保存联系方式和服务要点"], "en": ["Save contact details and service highlights after explicit consent"]},
+      "live_actions": ["contact_open"],
+      "approved_pitch": {"zh": "如果您愿意，我可以打开登记界面，方便团队准备后续方案。", "en": "I can open the registration form so the team can prepare a relevant follow-up."},
+      "recommended_next_action": "open_contact",
+      "prohibited_claims": ["do_not_claim_contact_details_were_saved_before_submission"]
+    },
+    {
+      "capability_id": "teams_collaboration",
+      "title": {"zh": "Teams 会议与协作", "en": "Teams meetings and collaboration"},
+      "status": "appointment_demo",
+      "category": "meeting",
+      "keywords": {"zh": ["Teams", "视频会议", "远程会议", "会议协作"], "en": ["Teams", "video meeting", "remote meeting", "meeting collaboration"]},
+      "customer_value": {"zh": ["会议准备", "协作流程", "会议内容整理", "后续任务跟进"], "en": ["Meeting preparation", "Collaboration workflow", "Meeting content organisation", "Follow-up tasks"]},
+      "live_actions": ["teams_open"],
+      "approved_pitch": {"zh": "完整 Teams 协作流程更适合在安静的办公环境中演示，我可以现在帮您预约。", "en": "The complete Teams collaboration workflow is better demonstrated in a quiet office environment, and I can book that experience now."},
+      "onsite_fallback_after_repeated_request": "teams_open_only",
+      "recommended_next_action": "offer_booking",
+      "prohibited_claims": ["do_not_claim_a_teams_meeting_was_created", "do_not_claim_attendees_were_invited", "do_not_claim_live_meeting_summary_is_implemented"]
+    },
+    {
+      "capability_id": "presentation_automation",
+      "title": {"zh": "PowerPoint 与客户演示自动化", "en": "PowerPoint and customer-presentation automation"},
+      "status": "appointment_demo",
+      "category": "presentation",
+      "keywords": {"zh": ["PowerPoint", "PPT", "幻灯片", "产品演示"], "en": ["PowerPoint", "PPT", "slides", "product presentation"]},
+      "customer_value": {"zh": ["语音控制演示", "演示内容讲解", "客户问题和会后跟进衔接"], "en": ["Voice-controlled presentation", "Presentation narration", "Link customer questions to follow-up"]},
+      "live_actions": ["presentation_open_configured", "presentation_start_slideshow", "presentation_next_slide", "presentation_previous_slide", "presentation_go_to_slide", "presentation_end_slideshow"],
+      "approved_pitch": {"zh": "现场可以展示一个简短操作，但完整体验更适合把演示准备、讲解和会后跟进串起来。", "en": "A short action can be shown here, but the full experience is better when presentation preparation, delivery and follow-up are connected."},
+      "onsite_fallback_after_repeated_request": "short_verified_presentation_demo",
+      "recommended_next_action": "offer_booking",
+      "prohibited_claims": ["do_not_claim_unverified_slide_state", "do_not_claim_a_complete_sales_workflow_is_currently_running"]
+    },
+    {
+      "capability_id": "outlook_workflow",
+      "title": {"zh": "Outlook 邮件与客户跟进", "en": "Outlook email and customer follow-up"},
+      "status": "appointment_demo",
+      "category": "communication",
+      "keywords": {"zh": ["Outlook", "邮件", "草稿", "客户跟进"], "en": ["Outlook", "email", "draft", "customer follow-up"]},
+      "customer_value": {"zh": ["根据已验证内容准备邮件", "审批后发送", "减少遗漏"], "en": ["Prepare email from verified content", "Send after approval", "Reduce missed follow-up"]},
+      "live_actions": ["outlook_create_summary_draft", "outlook_send_approved_draft"],
+      "approved_pitch": {"zh": "完整邮件流程更适合结合会议内容和客户资料演示，我可以帮您预约。", "en": "The complete email workflow is better demonstrated with meeting content and customer information, and I can arrange that session."},
+      "onsite_fallback_after_repeated_request": "approved_draft_only",
+      "recommended_next_action": "offer_booking",
+      "prohibited_claims": ["do_not_claim_email_was_sent_without_verified_send_result", "do_not_bypass_approval"]
+    },
+    {
+      "capability_id": "meeting_summary",
+      "title": {"zh": "会议记录、总结与行动项", "en": "Meeting recording, summaries and action items"},
+      "status": "appointment_demo",
+      "category": "meeting",
+      "keywords": {"zh": ["会议总结", "会议记录", "行动项", "录音总结"], "en": ["meeting summary", "meeting notes", "action items", "recording summary"]},
+      "customer_value": {"zh": ["减少会后整理", "提取决定和待办", "支持后续邮件"], "en": ["Reduce post-meeting administration", "Extract decisions and actions", "Support follow-up emails"]},
+      "live_actions": ["recording_open", "recording_start", "recording_stop_save", "recording_summarize"],
+      "approved_pitch": {"zh": "展会现场可以看到局部流程，完整会议体验更适合在安静环境中完成。", "en": "Part of the workflow can be shown here, while a complete meeting experience is better in a quiet environment."},
+      "onsite_fallback_after_repeated_request": "short_recording_summary_demo",
+      "recommended_next_action": "offer_booking",
+      "prohibited_claims": ["do_not_claim_a_summary_exists_before_generation"]
+    },
+    {
+      "capability_id": "activity_management",
+      "title": {"zh": "企业活动组织与管理", "en": "Company activity organisation and management"},
+      "status": "appointment_demo",
+      "category": "management",
+      "keywords": {"zh": ["组织活动", "公司活动", "活动管理", "活动安排"], "en": ["organise an event", "company activity", "event management"]},
+      "customer_value": {"zh": ["拆分活动任务", "安排提醒", "整理参与信息", "追踪后续事项"], "en": ["Break down event tasks", "Schedule reminders", "Organise participant information", "Track follow-up"]},
+      "live_actions": [],
+      "approved_pitch": {"zh": "活动管理需要结合公司日历、人员和审批流程，完整方案适合预约演示。", "en": "Activity management needs the company's calendars, people and approval workflow, so it is best shown in a booked demonstration."},
+      "recommended_next_action": "offer_booking",
+      "prohibited_claims": ["do_not_claim_an_event_was_created", "do_not_claim_participants_were_notified"]
+    },
+    {
+      "capability_id": "office_automation",
+      "title": {"zh": "企业办公自动化", "en": "Enterprise office automation"},
+      "status": "appointment_demo",
+      "category": "automation",
+      "keywords": {"zh": ["办公自动化", "自动处理", "重复工作", "工作流"], "en": ["office automation", "automate work", "repetitive tasks", "workflow"]},
+      "customer_value": {"zh": ["连接多个办公步骤", "减少重复劳动", "保留审批和验证"], "en": ["Connect office steps", "Reduce repetitive work", "Retain approval and verification"]},
+      "live_actions": ["system_volume_set", "onenote_open", "onenote_close"],
+      "approved_pitch": {"zh": "现场适合看一个小动作，完整价值在于把多个步骤连接成受控流程。", "en": "The exhibition is suitable for one small action; the full value comes from connecting several steps into a controlled workflow."},
+      "onsite_fallback_after_repeated_request": "allowlisted_single_action",
+      "recommended_next_action": "offer_booking",
+      "prohibited_claims": ["do_not_claim_arbitrary_desktop_control", "do_not_claim_an_unverified_workflow_completed"]
+    },
+    {
+      "capability_id": "product_planning",
+      "title": {"zh": "产品需求与规划辅助", "en": "Product requirements and planning assistance"},
+      "status": "appointment_demo",
+      "category": "planning",
+      "keywords": {"zh": ["产品规划", "需求整理", "产品路线", "规划产品"], "en": ["product planning", "requirements", "product roadmap"]},
+      "customer_value": {"zh": ["整理需求", "形成优先级建议", "跟踪决策和后续任务"], "en": ["Organise requirements", "Suggest priorities", "Track decisions and actions"]},
+      "live_actions": [],
+      "approved_pitch": {"zh": "产品规划需要结合真实业务背景，预约后可以用您的场景做更有针对性的演示。", "en": "Product planning depends on real business context, so a booked session can use your scenario for a more relevant demonstration."},
+      "recommended_next_action": "offer_booking",
+      "prohibited_claims": ["do_not_claim_a_final_product_strategy_without_customer_context"]
+    },
+    {
+      "capability_id": "enterprise_custom_integration",
+      "title": {"zh": "企业系统定制集成", "en": "Custom enterprise-system integration"},
+      "status": "custom_integration",
+      "category": "integration",
+      "keywords": {"zh": ["ERP", "CRM", "门禁", "内部系统", "定制集成"], "en": ["ERP", "CRM", "access control", "internal system", "custom integration"]},
+      "customer_value": {"zh": ["在保留现有系统的前提下接入 AI", "根据企业流程定制"], "en": ["Add AI while retaining existing systems", "Adapt to enterprise workflows"]},
+      "live_actions": [],
+      "approved_pitch": {"zh": "这类功能需要根据您现有系统做适配，我们可以先了解流程，再准备定制演示。", "en": "This requires adaptation to your existing systems. We can first understand the workflow and then prepare a customised demonstration."},
+      "recommended_next_action": "discover_and_offer_booking",
+      "prohibited_claims": ["do_not_claim_the_customer_system_is_already_integrated", "do_not_quote_unapproved_delivery_time_or_price"]
+    }
+  ]
+}
