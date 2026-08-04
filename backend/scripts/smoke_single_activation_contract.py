@@ -152,7 +152,8 @@ def main() -> None:
     ).read_text(encoding="utf-8")
     assert "unified_semantic_router" in voice_loop
     assert "duplicate-transcript-suppressed" in voice_loop
-    assert "await controller().submit(transcript, 'voice')" in voice_loop
+    assert "const current = controller()" in voice_loop
+    assert "await current.submit(transcript, 'voice')" in voice_loop
     assert "executeDeterministicDesktopCommand" not in voice_loop
     assert "resolveInteractionVoiceCommand" not in voice_loop
     assert "/api/desktop-command" not in voice_loop
