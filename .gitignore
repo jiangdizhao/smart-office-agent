@@ -18,6 +18,8 @@ critical.txt
 download_cli.ps1
 .env
 .env.*
+!backend/.env.local.example
+backend/.env.local
 *.key
 *.pem
 *gmail_credentials*.json
