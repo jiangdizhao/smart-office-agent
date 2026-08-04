@@ -6,7 +6,7 @@ import {
   generateSimpleRealtimeAnswer as generateBaseRealtimeAnswer,
   previewConversationRoute as previewBaseConversationRoute,
   type FastConversationRoute,
-} from '../voice/fastConversationRouter'
+} from '../voice/fastConversationRouterCore'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import type { VisitLease } from '../vision/visitLeaseRegistry'
 import {
@@ -138,10 +138,10 @@ export async function previewConversationRoute(
 ): Promise<SalesAwareConversationRoute> {
   const base = await previewBaseConversationRoute(request)
 
-  // The existing deterministic route has already executed these actions and must
-  // remain the sole source of operational truth. Sales never reinterprets them.
+  // The exhibition UI uses operator for Office permissions. Operator therefore
+  // remains a visitor conversation for sales, while employee explicitly bypasses it.
   if (
-    request.actor !== 'visitor'
+    request.actor === 'employee'
     || !request.visitId
     || base.route_reason === 'interaction_panel_command'
     || base.route_reason.startsWith('deterministic_system_action:')
@@ -155,7 +155,7 @@ export async function previewConversationRoute(
       visitId: request.visitId,
       text: request.text,
       language: request.language,
-      actor: request.actor,
+      actor: 'visitor',
       recentContext: base.recent_context,
       lease: request.lease,
     })
@@ -206,8 +206,6 @@ export async function previewConversationRoute(
       visitId: request.visitId,
       baseRoute: base.route,
     })
-    // Sales is an enhancement layer. A transient sales failure must not break
-    // ordinary conversation or deterministic Office control.
     return base
   }
 }
