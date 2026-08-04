@@ -29,6 +29,9 @@ from app.realtime_api import router as realtime_router
 from app.reception_api import router as reception_router
 from app.recipient_api import router as recipient_router
 from app.result_center_api import router as result_center_router
+from app.sales_api import router as sales_router
+from app.sales_config import sales_config
+from app.sales_policy import sales_runtime_policy
 from app.state_store import state_store
 from app.system_status_policy import install_lightweight_system_status_policy
 from app.task_graph import build_task_graph, task_graph_event_data
@@ -67,6 +70,7 @@ app.include_router(human_recording_router)
 app.include_router(contact_record_router)
 app.include_router(result_center_router)
 app.include_router(display_role_router)
+app.include_router(sales_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -79,6 +83,8 @@ def _sse_payload(event: StepEvent) -> dict:
 
 @app.get("/")
 def health_check():
+    sales_flags = sales_runtime_policy.feature_flags()
+    sales_configuration = sales_config.status()
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
@@ -155,6 +161,15 @@ def health_check():
             "approval_gated_email_send_enabled": True,
             "unrestricted_email_send_enabled": False,
             "general_office_execution_via_turn": False,
+            "sales_phase0_foundation": True,
+            "sales_configuration_valid": bool(sales_configuration.get("ok")),
+            "sales_agent_enabled": sales_flags.agent_enabled,
+            "sales_proactive_enabled": sales_flags.proactive_enabled,
+            "sales_humour_enabled": sales_flags.humour_enabled,
+            "sales_profile_persistence_enabled": (
+                sales_flags.profile_persistence_enabled
+            ),
+            "sales_runtime_default_unchanged": not sales_flags.agent_enabled,
         },
     }
 
