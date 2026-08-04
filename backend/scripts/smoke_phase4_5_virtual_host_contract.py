@@ -191,7 +191,8 @@ def main() -> None:
         "DUPLICATE_TRANSCRIPT_WINDOW_MS",
         "duplicate-transcript-suppressed",
         "routeOwner: 'unified_semantic_router'",
-        "await controller().submit(transcript, 'voice')",
+        "const current = controller()",
+        "await current.submit(transcript, 'voice')",
     )
     assert_not_contains(
         proactive_loop_source,
@@ -263,6 +264,7 @@ def main() -> None:
         coordinator_source,
         "smartoffice:realtime-vad-speech-started",
         "preempt('visitor_barge_in')",
+        "'/api/semantic-route'",
         "/cancel",
         "takeLatestUtterance",
         "recoverToReady",
