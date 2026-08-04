@@ -20,15 +20,83 @@ function Unquote-EnvValue {
     return $trimmed
 }
 
+function Get-EnvEntryKey {
+    param([string]$RawLine)
+
+    $trimmed = ([string]$RawLine).Trim()
+    if (-not $trimmed -or $trimmed.StartsWith('#')) {
+        return $null
+    }
+    if ($trimmed.StartsWith('export ')) {
+        $trimmed = $trimmed.Substring(7).TrimStart()
+    }
+    $separator = $trimmed.IndexOf('=')
+    if ($separator -lt 1) {
+        return $null
+    }
+    $name = $trimmed.Substring(0, $separator).Trim()
+    if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+        return $null
+    }
+    return $name
+}
+
+function Merge-MissingDefaults {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [Parameter(Mandatory = $true)][string]$SourceTemplate
+    )
+
+    if (-not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $SourceTemplate -PathType Leaf)) {
+        return
+    }
+
+    $existingKeys = @{}
+    foreach ($line in Get-Content -LiteralPath $TargetPath -Encoding UTF8) {
+        $key = Get-EnvEntryKey -RawLine $line
+        if ($null -ne $key) {
+            $existingKeys[$key] = $true
+        }
+    }
+
+    $missingEntries = New-Object System.Collections.Generic.List[string]
+    foreach ($line in Get-Content -LiteralPath $SourceTemplate -Encoding UTF8) {
+        $key = Get-EnvEntryKey -RawLine $line
+        if ($null -eq $key -or $existingKeys.ContainsKey($key)) {
+            continue
+        }
+        $missingEntries.Add(([string]$line).Trim())
+        $existingKeys[$key] = $true
+    }
+
+    if ($missingEntries.Count -eq 0) {
+        return
+    }
+
+    $newline = [Environment]::NewLine
+    $appendText = $newline + '# Automatically added missing defaults from .env.local.example' + $newline
+    $appendText += ($missingEntries -join $newline) + $newline
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::AppendAllText($TargetPath, $appendText, $utf8NoBom)
+    Write-Host "Added missing Backend defaults: $($missingEntries -join ', ')" -ForegroundColor Yellow
+}
+
 $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+$resolvedTemplate = $null
+if (-not [string]::IsNullOrWhiteSpace($TemplatePath)) {
+    $resolvedTemplate = [System.IO.Path]::GetFullPath($TemplatePath)
+}
+
 if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
     if (-not $CreateFromTemplate) {
         throw "Backend environment file was not found: $resolvedPath"
     }
-    if ([string]::IsNullOrWhiteSpace($TemplatePath)) {
+    if ([string]::IsNullOrWhiteSpace($resolvedTemplate)) {
         throw "TemplatePath is required when CreateFromTemplate is enabled."
     }
-    $resolvedTemplate = [System.IO.Path]::GetFullPath($TemplatePath)
     if (-not (Test-Path -LiteralPath $resolvedTemplate -PathType Leaf)) {
         throw "Backend environment template was not found: $resolvedTemplate"
     }
@@ -36,6 +104,9 @@ if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
     Copy-Item -LiteralPath $resolvedTemplate -Destination $resolvedPath
     Write-Host "Created Backend local environment file: $resolvedPath" -ForegroundColor Yellow
+}
+elseif ($CreateFromTemplate -and -not [string]::IsNullOrWhiteSpace($resolvedTemplate)) {
+    Merge-MissingDefaults -TargetPath $resolvedPath -SourceTemplate $resolvedTemplate
 }
 
 $loaded = New-Object System.Collections.Generic.List[string]
