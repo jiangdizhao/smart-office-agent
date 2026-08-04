@@ -10,7 +10,6 @@ on:
       - "config/**"
       - "data/company_knowledge/**"
       - "ui/smart-office-ui/**"
-      - "docs/PHASE0_SALES_AGENT_TEST.md"
       - "PHASE4_5_EXHIBITION_ACCEPTANCE.md"
       - "PHASE5_REMOTE_VISION_CLIENT.md"
       - ".github/workflows/virtual-host-phase1-check.yml"
@@ -20,12 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SMART_OFFICE_EMAIL_RECIPIENTS_FILE: config/email_recipients.example.json
-      SMART_OFFICE_SALES_AGENT_ENABLED: "false"
-      SMART_OFFICE_SALES_PROACTIVE_ENABLED: "false"
-      SMART_OFFICE_SALES_HUMOUR_ENABLED: "false"
-      SMART_OFFICE_SALES_PROFILE_PERSISTENCE_ENABLED: "false"
-      SMART_OFFICE_SALES_TELEMETRY_ENABLED: "true"
-      SMART_OFFICE_REALTIME_MODE: quality
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -107,5 +100,13 @@ jobs:
           cache-dependency-path: ui/smart-office-ui/package-lock.json
       - name: Install frontend dependencies
         run: npm ci
+      - name: Run voice command integrity contract
+        run: |
+          npx --no-install esbuild scripts/smoke_voice_command_integrity.ts \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --outfile=.contract-build/smoke_voice_command_integrity.cjs
+          node .contract-build/smoke_voice_command_integrity.cjs
       - name: Build frontend
         run: npm run build
