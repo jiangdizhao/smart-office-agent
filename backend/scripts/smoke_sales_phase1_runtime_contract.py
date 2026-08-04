@@ -55,6 +55,24 @@ def post_turn(
     return response.json()
 
 
+def conversion_event(
+    client: TestClient,
+    conversation_id: str,
+    visit_id: str,
+    event: str,
+) -> dict:
+    response = client.post(
+        "/api/sales/conversion-event",
+        json={
+            "conversation_id": conversation_id,
+            "visit_id": visit_id,
+            "event": event,
+        },
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def main() -> None:
     sales_session_store.clear()
     suffix = uuid4().hex[:10]
@@ -69,6 +87,7 @@ def main() -> None:
         assert payload["policy"]["effective_flags"]["humour_enabled"] is True
         assert payload["policy"]["effective_flags"]["realtime_mode"] == "quality"
         assert "explicit_only_sales_profile_extraction" in payload["active_components"]
+        assert "single_post_value_contact_offer" in payload["active_components"]
 
         conversation = f"phase1-profile-{suffix}"
         visit = f"visit-profile-{suffix}"
@@ -84,7 +103,9 @@ def main() -> None:
         assert "运营" in profile["session"]["explicit_facts"]["role"]
         assert profile["session"]["pain_points"]
         assert "meeting_summary" in profile["session"]["interested_capabilities"]
-        assert profile["reply_plan"]["suggested_question"] is not None
+        # All four discovery targets were already explicit, so Sara must not ask a
+        # redundant profile question merely to keep the funnel moving.
+        assert profile["reply_plan"]["suggested_question"] is None
         assert profile["reply_plan"]["maximum_sentences"] <= 4
         assert profile["reply_plan"]["humour"]["allowed"] is True
         configured_humour = profile["reply_plan"]["humour"]["text"]
@@ -99,6 +120,35 @@ def main() -> None:
         )
         assert humour_repeat["reply_plan"]["humour"]["allowed"] is False
         assert humour_repeat["session"]["humour_used_count"] == 1
+        assert humour_repeat["session"]["contact_offer_count"] == 1
+        assert humour_repeat["reply_plan"]["recommended_action"] == "offer_contact"
+        assert "登记信息表" in humour_repeat["reply_plan"]["suggested_question"]
+
+        contact_accept = post_turn(
+            client,
+            conversation,
+            visit,
+            "可以。",
+            recent_context=humour_repeat["fallback_text"],
+        )
+        assert contact_accept["ui_action"] == "open_contact"
+        assert contact_accept["session"]["contact_opened"] is False
+        assert contact_accept["session"]["last_sales_action"] == "contact_panel_requested"
+        contact_failed = conversion_event(
+            client,
+            conversation,
+            visit,
+            "contact_failed",
+        )
+        assert contact_failed["session"]["contact_opened"] is False
+        assert contact_failed["session"]["last_sales_action"] == "contact_panel_failed"
+        contact_opened = conversion_event(
+            client,
+            conversation,
+            visit,
+            "contact_opened",
+        )
+        assert contact_opened["session"]["contact_opened"] is True
 
         office_visit = f"visit-office-{suffix}"
         office = post_turn(
@@ -110,6 +160,33 @@ def main() -> None:
         assert office["handled"] is False
         assert office["reason"] == "direct_operational_command_must_reach_office_interpreter"
         assert office["extraction"]["direct_operational_command"] is True
+
+        booking_conversation = f"phase1-booking-{suffix}"
+        booking_visit = f"visit-booking-{suffix}"
+        booking_request = post_turn(
+            client,
+            booking_conversation,
+            booking_visit,
+            "我想预约一次完整体验。",
+        )
+        assert booking_request["ui_action"] == "open_booking"
+        assert booking_request["session"]["booking_opened"] is False
+        assert booking_request["session"]["last_sales_action"] == "booking_panel_requested"
+        booking_failed = conversion_event(
+            client,
+            booking_conversation,
+            booking_visit,
+            "booking_failed",
+        )
+        assert booking_failed["session"]["booking_opened"] is False
+        assert booking_failed["session"]["last_sales_action"] == "booking_panel_failed"
+        booking_opened = conversion_event(
+            client,
+            booking_conversation,
+            booking_visit,
+            "booking_opened",
+        )
+        assert booking_opened["session"]["booking_opened"] is True
 
         demo_conversation = f"phase1-demo-{suffix}"
         demo_visit = f"visit-demo-{suffix}"
@@ -146,7 +223,9 @@ def main() -> None:
             recent_context="要不要我现在帮您预约一次完整体验？",
         )
         assert rejected["handled"] is True
+        assert rejected["reason"] == "booking_rejected"
         assert rejected["session"]["booking_rejected"] is True
+        assert rejected["session"]["stage"] != "close"
         assert rejected["reply_plan"]["suggested_question"] is None
 
         cost_conversation = f"phase1-cost-{suffix}"
@@ -253,7 +332,7 @@ def main() -> None:
             client,
             persist_conversation,
             persist_visit,
-            "我们在教育行业，我负责行政，会议整理很麻烦。",
+            "我们在教育行业，我负责行政，最大的问题是会议整理很麻烦。",
         )
         assert before_consent["profile_persisted"] is False
 
@@ -290,8 +369,8 @@ def main() -> None:
                 (persist_visit,),
             ).fetchone()
         assert snapshot is not None
-        assert "education" not in snapshot[0].casefold() or "教育" in snapshot[0]
-        assert "会议" in snapshot[1]
+        assert "教育" in snapshot[0]
+        assert "会议整理很麻烦" in snapshot[1]
 
         ended = client.post(
             "/api/sales/visit/end",
@@ -326,9 +405,10 @@ def main() -> None:
 
     print(
         "PASS: Phase 1 performs explicit-only discovery, preserves Office commands, "
-        "enforces appointment-first and repeated-demo delegation, bounds cost claims "
-        "and humour, runs two Visit-scoped proactive nudges, persists only after contact "
-        "consent, and deletes anonymous Visit state."
+        "enforces appointment-first and repeated-demo delegation, verifies conversion "
+        "panel outcomes, bounds cost claims and humour, runs two Visit-scoped proactive "
+        "nudges, offers contact once after value, persists only after contact consent, "
+        "and deletes anonymous Visit state."
     )
 
 
