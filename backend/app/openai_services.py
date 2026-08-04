@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 import httpx
 
 _OPENAI_API_URL = "https://api.openai.com/v1"
+LOGGER = logging.getLogger(__name__)
 
 
 def _api_key() -> str:
@@ -63,6 +65,10 @@ def _extract_response_text(payload: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def _safe_preview(value: str, maximum: int = 800) -> str:
+    return " ".join(str(value or "").replace("\x00", "").split())[:maximum]
+
+
 async def generate_response_text(
     *,
     input_text: str,
@@ -85,13 +91,20 @@ async def generate_response_text(
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(f"{_base_url()}/responses", headers=headers, json=body)
     if response.status_code >= 400:
-        detail = response.text[:1600]
+        detail = _safe_preview(response.text, 1600)
+        LOGGER.error(
+            "OPENAI_TEXT_FAILURE model=%s status=%s detail=%s",
+            selected_model,
+            response.status_code,
+            detail,
+        )
         raise RuntimeError(
             f"OpenAI Responses request failed ({response.status_code}) using {selected_model}: {detail}"
         )
     payload = response.json()
     text = _extract_response_text(payload)
     if not text:
+        LOGGER.error("OPENAI_TEXT_EMPTY model=%s", selected_model)
         raise RuntimeError("OpenAI Responses returned no text output.")
     return text, selected_model
 
@@ -205,16 +218,72 @@ async def transcribe_human_conversation(
             ) from fallback_error
 
 
-def parse_json_object(text: str) -> dict[str, Any]:
+def _strip_code_fence(text: str) -> str:
     clean = text.strip()
-    if clean.startswith("```"):
-        lines = clean.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        clean = "\n".join(lines).strip()
-    value = json.loads(clean)
-    if not isinstance(value, dict):
-        raise ValueError("Expected a JSON object.")
-    return value
+    if not clean.startswith("```"):
+        return clean
+    lines = clean.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _first_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    while start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+                if depth < 0:
+                    break
+        start = text.find("{", start + 1)
+    return None
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    clean = _strip_code_fence(text)
+    candidates = [clean]
+    extracted = _first_balanced_json_object(clean)
+    if extracted and extracted != clean:
+        candidates.append(extracted)
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+            if not isinstance(value, dict):
+                raise ValueError("Expected a JSON object.")
+            return value
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_error = exc
+
+    preview = _safe_preview(clean, 500)
+    LOGGER.error(
+        "OPENAI_JSON_PARSE_FAILURE error_type=%s error=%s preview=%s",
+        type(last_error).__name__ if last_error else "unknown",
+        str(last_error or "unknown"),
+        preview,
+    )
+    raise ValueError(
+        f"Expected a valid JSON object from the model. Preview: {preview}"
+    ) from last_error
