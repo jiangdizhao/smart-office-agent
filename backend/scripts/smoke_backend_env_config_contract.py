@@ -23,7 +23,7 @@ def main() -> None:
         "SMART_OFFICE_SALES_TELEMETRY_ENABLED": "true",
         "SMART_OFFICE_REALTIME_MODE": "quality",
         "SMART_OFFICE_SEMANTIC_ROUTER_MODE": "unified",
-        "OPENAI_SEMANTIC_ROUTER_MODEL": "gpt-5.6-luna",
+        "OPENAI_SEMANTIC_ROUTER_MODEL": "gpt-5.6-terra",
     }
     for name, value in required.items():
         assert f"{name}={value}" in template, f"Missing Backend default: {name}"
@@ -31,6 +31,9 @@ def main() -> None:
     assert "OPENAI_API_KEY=" not in template
     assert "CreateFromTemplate" in loader
     assert "Merge-MissingDefaults" in loader
+    assert "Update-DeprecatedDefaults" in loader
+    assert "gpt-5.6-luna" in loader
+    assert "gpt-5.6-terra" in loader
     assert "Get-EnvEntryKey" in loader
     assert "AppendAllText" in loader
     assert "SetEnvironmentVariable($name, $value, 'Process')" in loader
@@ -46,8 +49,8 @@ def main() -> None:
 
     print(
         "PASS: Backend flags and unified semantic routing defaults are stored in an "
-        "ignored backend/.env.local, created or safely extended from the tracked "
-        "template and loaded before the stable Realtime/Office launcher starts; "
+        "ignored backend/.env.local, Terra is the default semantic model, the old "
+        "Luna default is migrated without replacing arbitrary custom models, and "
         "OPENAI_API_KEY remains interactive."
     )
 
