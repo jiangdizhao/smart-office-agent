@@ -6,6 +6,7 @@ import { voiceOutputManager } from './voiceOutputManager'
 
 const nativeFetch = window.fetch.bind(window)
 const TURN_SCOPED_PATHS = [
+  '/api/semantic-route',
   '/api/general-chat',
   '/api/conversation-route',
   '/agent/turn',
@@ -63,6 +64,8 @@ class PreemptiveTurnCoordinator {
 
   constructor() {
     // Only requests that belong to one conversational turn inherit the turn signal.
+    // Unified semantic routing, general answers and Office interpretation are all
+    // cancelled immediately when a newer visitor utterance supersedes the turn.
     // Task polling, recording upload/summary, and panel data requests keep their own
     // explicit lifecycle and are never cancelled by an unrelated new utterance.
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
