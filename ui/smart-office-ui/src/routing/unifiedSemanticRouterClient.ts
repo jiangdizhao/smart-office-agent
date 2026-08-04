@@ -185,29 +185,37 @@ export async function setSemanticPendingIntent(input: {
   metadata?: Record<string, unknown>
   lease: VisitLease | null
 }): Promise<void> {
-  const response = await fetchWithTimeout(
-    '/api/semantic-route/pending',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({
-        conversation_id: input.conversationId,
-        visit_id: input.visitId,
-        intent_type: input.intentType,
-        source_turn_id: input.sourceTurnId ?? null,
-        metadata: input.metadata ?? {},
-      }),
-    },
-    input.lease,
-    5_000,
-  )
-  if (!response.ok) {
-    const detail = await response.text()
-    console.error('[SemanticRoute] pending-intent-write-rejected', {
-      status: response.status,
-      detail,
+  try {
+    const response = await fetchWithTimeout(
+      '/api/semantic-route/pending',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          conversation_id: input.conversationId,
+          visit_id: input.visitId,
+          intent_type: input.intentType,
+          source_turn_id: input.sourceTurnId ?? null,
+          metadata: input.metadata ?? {},
+        }),
+      },
+      input.lease,
+      5_000,
+    )
+    if (!response.ok) {
+      const detail = await response.text()
+      console.error('[SemanticRoute] pending-intent-write-rejected', {
+        status: response.status,
+        detail,
+        visitId: input.visitId,
+        intentType: input.intentType,
+      })
+    }
+  } catch (error) {
+    console.error('[SemanticRoute] pending-intent-write-unavailable', {
       visitId: input.visitId,
       intentType: input.intentType,
+      message: error instanceof Error ? error.message : String(error),
     })
   }
 }
