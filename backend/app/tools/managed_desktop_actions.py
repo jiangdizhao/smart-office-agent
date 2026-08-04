@@ -58,6 +58,8 @@ def _pid_values(result: ToolResult) -> set[int]:
 
 
 def _reactivate_application(application: str) -> dict[str, Any]:
+    """Issue one immediate protocol activation, never a delayed retry."""
+
     protocol = "msteams:" if application == "teams" else "onenote:"
     try:
         completed = subprocess.run(
@@ -70,6 +72,7 @@ def _reactivate_application(application: str) -> dict[str, Any]:
         )
         return {
             "attempted": True,
+            "immediate": True,
             "protocol": protocol,
             "return_code": completed.returncode,
             "stdout": completed.stdout[-500:],
@@ -78,6 +81,7 @@ def _reactivate_application(application: str) -> dict[str, Any]:
     except Exception as exc:
         return {
             "attempted": True,
+            "immediate": True,
             "protocol": protocol,
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -90,8 +94,9 @@ def _place_real_window(
     title_keywords: Iterable[str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    # Prefer a titled top-level window. Process-only matching can select a Teams
-    # helper/background HWND. The fallback remains for localized window titles.
+    # Window discovery may wait for the single immediate launch to create its HWND,
+    # but it must never invoke the application again. Title-only matching is tried
+    # first to avoid selecting Teams helper/background windows.
     placement = place_window_on_content_monitor(
         title_keywords=title_keywords,
         timeout_seconds=timeout_seconds,
@@ -106,6 +111,7 @@ def _place_real_window(
         timeout_seconds=timeout_seconds,
     )
     fallback["title_only_attempt"] = placement
+    fallback["additional_activation_attempted"] = False
     return fallback
 
 
@@ -114,6 +120,7 @@ def _merge_placement(
     placement: dict[str, Any],
     *,
     subject: str,
+    activation: dict[str, Any],
 ) -> ToolResult:
     placement_ok = bool(placement.get("placement_verified"))
     launch_verified = bool(result.ok and result.data.get("verified", True) is not False)
@@ -125,9 +132,6 @@ def _merge_placement(
             "diagnostics were inconclusive."
         )
     )
-    # Window placement is now best-effort metadata. A successful application launch
-    # must not be converted into failure because Windows cannot report maximized or
-    # foreground state reliably.
     return result.model_copy(
         update={
             "ok": launch_verified,
@@ -143,11 +147,15 @@ def _merge_placement(
                 "content_monitor_device": (placement.get("target_monitor") or {}).get(
                     "device"
                 ),
-                "status_scope": "managed_application_launch_with_best_effort_display2",
+                "status_scope": "managed_application_single_immediate_activation",
+                "activation": activation,
+                "activation_attempt_count": 1 if activation.get("attempted") else 0,
+                "delayed_reactivation_allowed": False,
             },
             "raw": {
                 **result.raw,
                 "window_placement": placement,
+                "activation": activation,
             },
         }
     )
@@ -168,37 +176,41 @@ def open_managed_application_on_content_display(application: str) -> ToolResult:
                     **result.data,
                     "verified": True,
                     "window_placement_required_for_success": False,
+                    "activation_attempt_count": 1 if not result.data.get("already_running") else 0,
+                    "delayed_reactivation_allowed": False,
                 },
             }
         )
 
-    # Always reactivate. Teams commonly leaves only a background/tray process, and
-    # open_managed_application() historically treated that as already open.
-    reactivation = _reactivate_application(application)
-    time.sleep(0.6)
+    already_running = bool(result.data.get("already_running"))
+    existing_windows = result.data.get("windows")
+    has_visible_window = isinstance(existing_windows, list) and bool(existing_windows)
+    activation: dict[str, Any] = {
+        "attempted": False,
+        "reason": "single_launch_already_requested" if not already_running else "visible_window_already_exists",
+        "immediate": True,
+    }
+
+    # A tray/background process is not a usable demo window. In that one state only,
+    # issue exactly one protocol activation immediately. Do not sleep first and do
+    # not retry after window-placement diagnostics.
+    if already_running and not has_visible_window:
+        activation = _reactivate_application(application)
+        activation["reason"] = "background_process_without_visible_window"
+
     placement = _place_real_window(
         process_names=spec["process_names"],
         pids=_pid_values(result),
         title_keywords=spec["title_keywords"],
         timeout_seconds=8.0,
     )
-
-    # Retry once only when the visible main HWND has not appeared yet. No maximize
-    # operation or maximize verification is performed.
-    if not placement.get("placement_verified"):
-        second_reactivation = _reactivate_application(application)
-        time.sleep(0.8)
-        placement = _place_real_window(
-            process_names=spec["process_names"],
-            pids=_pid_values(result),
-            title_keywords=spec["title_keywords"],
-            timeout_seconds=8.0,
-        )
-        placement["second_reactivation"] = second_reactivation
-
-    placement["reactivation"] = reactivation
     label = "Microsoft Teams" if application == "teams" else "OneNote"
-    return _merge_placement(result, placement, subject=label)
+    return _merge_placement(
+        result,
+        placement,
+        subject=label,
+        activation=activation,
+    )
 
 
 def close_managed_application_from_desktop(application: str) -> ToolResult:
@@ -215,6 +227,8 @@ def _configured_media_process_names() -> tuple[str, ...]:
 
 
 def play_random_music_on_content_display() -> ToolResult:
+    # play_random_music() performs the one immediate player launch for this command.
+    # Window discovery/placement below never relaunches the selected player.
     result = play_random_music()
     if not result.ok:
         return result
@@ -237,7 +251,25 @@ def play_random_music_on_content_display() -> ToolResult:
         title_keywords=title_keywords,
         timeout_seconds=10.0,
     )
-    return _merge_placement(result, placement, subject="Media Player")
+    merged = _merge_placement(
+        result,
+        placement,
+        subject="Media Player",
+        activation={
+            "attempted": True,
+            "immediate": True,
+            "reason": "single_track_launch",
+        },
+    )
+    return merged.model_copy(
+        update={
+            "data": {
+                **merged.data,
+                "activation_attempt_count": 1,
+                "delayed_reactivation_allowed": False,
+            }
+        }
+    )
 
 
 def _send_media_stop_key() -> bool:
@@ -313,9 +345,6 @@ def _force_close_media_players(names: Iterable[str]) -> dict[str, Any]:
 
 
 def stop_music_from_desktop() -> ToolResult:
-    # First use the session-aware close path, then independently send the Windows
-    # media-stop key and terminate every configured player image. The old path could
-    # track the short-lived Shell launcher PID instead of the real Media Player PID.
     session_result = stop_music()
     media_stop_sent = _send_media_stop_key()
     process_names = _configured_media_process_names()
