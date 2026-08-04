@@ -82,10 +82,31 @@ def main() -> None:
     )
     blocked_turn.raise_for_status()
     blocked_payload = blocked_turn.json()
-    assert blocked_payload["route"] == "office_action_blocked", blocked_payload
     assert blocked_payload["requires_approval"] is False, blocked_payload
-    assert blocked_payload["task_id"] is None, blocked_payload
-    assert blocked_payload["task_status"] is None, blocked_payload
+    assert blocked_payload["tool_result"] is None, blocked_payload
+    assert blocked_payload["verification_result"] is None, blocked_payload
+    assert blocked_payload["presentation_status"] is None, blocked_payload
+
+    if blocked_payload["route"] == "office_action_blocked":
+        assert blocked_payload["task_id"] is None, blocked_payload
+        assert blocked_payload["task_status"] is None, blocked_payload
+    else:
+        # Later runtimes may retain a non-bounded legacy request as a plan-only task
+        # for observability. This remains safe only when execute=False on the stored
+        # task and no tool result, verification result or presentation state exists.
+        assert blocked_payload["route"] == "office_planned_task", blocked_payload
+        assert "no real Office action was executed" in blocked_payload["spoken_text"], blocked_payload
+        task_id = str(blocked_payload["task_id"] or "")
+        assert task_id, blocked_payload
+        task_response = client.get(f"/agent/tasks/{task_id}")
+        task_response.raise_for_status()
+        task_payload = task_response.json()
+        assert task_payload["execute"] is False, task_payload
+        assert all(step.get("result") is None for step in task_payload.get("steps", [])), task_payload
+        assert all(
+            step.get("status") not in {"running", "verifying", "succeeded"}
+            for step in task_payload.get("steps", [])
+        ), task_payload
 
     print(
         "PASS: Gate 1 presentation API and safety contracts remain available in the "
