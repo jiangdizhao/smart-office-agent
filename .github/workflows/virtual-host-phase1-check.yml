@@ -102,11 +102,17 @@ jobs:
         run: npm ci
       - name: Run voice command integrity contract
         run: |
-          npx --no-install esbuild scripts/smoke_voice_command_integrity.ts \
-            --bundle \
-            --platform=node \
-            --format=cjs \
-            --outfile=.contract-build/smoke_voice_command_integrity.cjs
-          node .contract-build/smoke_voice_command_integrity.cjs
+          rm -rf .contract-build
+          npx --no-install tsc \
+            src/voice/commandTranscriptRepair.ts \
+            src/voice/presentationCommandPlan.ts \
+            --target ES2022 \
+            --module commonjs \
+            --moduleResolution node \
+            --outDir .contract-build \
+            --skipLibCheck \
+            --lib ES2022,DOM
+          printf '{"type":"commonjs"}\n' > .contract-build/package.json
+          node scripts/smoke_voice_command_integrity.cjs
       - name: Build frontend
         run: npm run build
