@@ -64,6 +64,7 @@ function isContinuableSalesOutput(detail: AssistantOutputLifecycleDetail): boole
 class SalesPhase2AProactiveScheduler {
   private installed = false
   private generation = 0
+  private pendingSyncGeneration = 0
   private timer: number | null = null
   private active: ActiveSchedule | null = null
   private userSpeaking = false
@@ -74,7 +75,6 @@ class SalesPhase2AProactiveScheduler {
   private lastBackendReason: string | null = null
   private episodeNudgeCount: number | null = null
   private totalNudgeCount: number | null = null
-  private pendingOfferVisitId: string | null = null
   private state: Phase2ASalesCoordinatorStatus['state'] = 'inactive'
 
   install(): void {
@@ -112,24 +112,65 @@ class SalesPhase2AProactiveScheduler {
     this.timer = null
   }
 
-  private clearPendingOffer(
+  private async clearPendingForVisit(
+    visitId: string,
     reason: string,
-    visitId = this.pendingOfferVisitId,
-    lease: VisitLease | null = null,
-  ): void {
+    lease: VisitLease | null,
+  ): Promise<void> {
     const conversationId = this.conversationId()
-    if (!visitId || !conversationId) return
-    this.pendingOfferVisitId = null
-    void clearSemanticPendingIntent({
+    if (!conversationId || !visitId) return
+    await clearSemanticPendingIntent({
       conversationId,
       visitId,
       lease,
     }).catch((error) => {
-      console.error('[SemanticRoute] proactive-pending-intent-clear-failed', {
+      console.error('[SemanticRoute] completed-output-pending-clear-failed', {
         reason,
         visitId,
         message: error instanceof Error ? error.message : String(error),
       })
+    })
+  }
+
+  private async syncPendingIntentAfterCompletedOutput(
+    detail: AssistantOutputLifecycleDetail,
+  ): Promise<void> {
+    const conversationId = this.conversationId()
+    if (!conversationId || !detail.visitId) return
+    const generation = ++this.pendingSyncGeneration
+    const currentLease = visitLeaseRegistry.current()
+    const lease = currentLease?.visitId === detail.visitId ? currentLease : null
+
+    // Every completed assistant output supersedes the previous conversational
+    // expectation. A conversion response is recognised only when the relevant
+    // question was actually played to completion.
+    await this.clearPendingForVisit(
+      detail.visitId,
+      `completed_output:${detail.purpose}`,
+      lease,
+    )
+    if (generation !== this.pendingSyncGeneration) return
+
+    const intentType = detail.expectUserResponse
+      ? detail.questionField === 'booking'
+        ? 'booking_offer'
+        : detail.questionField === 'contact'
+          ? 'contact_offer'
+          : null
+      : null
+    if (!intentType) return
+
+    await setSemanticPendingIntent({
+      conversationId,
+      visitId: detail.visitId,
+      intentType,
+      sourceTurnId: detail.outputId,
+      metadata: {
+        purpose: detail.purpose,
+        reply_mode: detail.replyMode,
+        question_field: detail.questionField,
+      },
+      lease,
     })
   }
 
@@ -266,21 +307,6 @@ class SalesPhase2AProactiveScheduler {
         return
       }
 
-      if (response.reason === 'contextual_booking_offer' && reply.expect_user_response) {
-        await setSemanticPendingIntent({
-          conversationId: active.conversationId,
-          visitId: active.visitId,
-          intentType: 'booking_offer',
-          sourceTurnId: reply.purpose,
-          metadata: {
-            source: 'phase2a_proactive',
-            episode_nudge_count: response.continuity.episode_nudge_count,
-          },
-          lease: active.lease,
-        })
-        this.pendingOfferVisitId = active.visitId
-      }
-
       publishSessionMessage({
         conversationId: active.conversationId,
         visitId: active.visitId,
@@ -343,8 +369,9 @@ class SalesPhase2AProactiveScheduler {
     const detail = event instanceof CustomEvent ? event.detail : null
     const replacedVisitId = String(detail?.replacedVisitId ?? '').trim()
     const conversationId = this.conversationId()
+    this.pendingSyncGeneration += 1
     if (replacedVisitId && conversationId) {
-      this.clearPendingOffer('visit_replaced', replacedVisitId, null)
+      void this.clearPendingForVisit(replacedVisitId, 'visit_replaced', null)
       void endSalesVisit({ conversationId, visitId: replacedVisitId })
     }
     this.userSpeaking = false
@@ -363,8 +390,9 @@ class SalesPhase2AProactiveScheduler {
       ?? '',
     ).trim()
     const conversationId = this.active?.conversationId || this.conversationId()
+    this.pendingSyncGeneration += 1
     if (revokedVisitId && conversationId) {
-      this.clearPendingOffer('visit_revoked', revokedVisitId, null)
+      void this.clearPendingForVisit(revokedVisitId, 'visit_revoked', null)
       void endSalesVisit({ conversationId, visitId: revokedVisitId })
     }
     this.userSpeaking = false
@@ -409,6 +437,7 @@ class SalesPhase2AProactiveScheduler {
     this.userSpeaking = false
     this.lastOutputResult = 'completed'
     this.reportOutput(detail)
+    void this.syncPendingIntentAfterCompletedOutput(detail)
 
     if (!isContinuableSalesOutput(detail)) {
       this.cancel(`completed_without_sales_continuation:${detail.purpose}`)
@@ -427,12 +456,6 @@ class SalesPhase2AProactiveScheduler {
     if (!detail) return
     this.lastOutputResult = 'interrupted'
     this.reportOutput(detail)
-    if (
-      detail.purpose === 'sales_phase2a_proactive_second'
-      && this.pendingOfferVisitId === detail.visitId
-    ) {
-      this.clearPendingOffer('proactive_offer_interrupted', detail.visitId, null)
-    }
     this.cancel(`assistant_output_interrupted:${detail.purpose}`)
   }
 
@@ -443,12 +466,6 @@ class SalesPhase2AProactiveScheduler {
     if (!detail) return
     this.lastOutputResult = 'failed'
     this.reportOutput(detail)
-    if (
-      detail.purpose === 'sales_phase2a_proactive_second'
-      && this.pendingOfferVisitId === detail.visitId
-    ) {
-      this.clearPendingOffer('proactive_offer_failed', detail.visitId, null)
-    }
     this.cancel(`assistant_output_failed:${detail.purpose}`)
   }
 
