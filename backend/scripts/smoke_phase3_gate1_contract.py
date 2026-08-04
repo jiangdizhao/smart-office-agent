@@ -82,10 +82,10 @@ def main() -> None:
     )
     blocked_turn.raise_for_status()
     blocked_payload = blocked_turn.json()
-    assert blocked_payload["route"] == "office_action_blocked"
-    assert blocked_payload["requires_approval"] is False
-    assert blocked_payload["task_id"] is None
-    assert blocked_payload["task_status"] is None
+    assert blocked_payload["route"] == "office_action_blocked", blocked_payload
+    assert blocked_payload["requires_approval"] is False, blocked_payload
+    assert blocked_payload["task_id"] is None, blocked_payload
+    assert blocked_payload["task_status"] is None, blocked_payload
 
     print(
         "PASS: Gate 1 presentation API and safety contracts remain available in the "
