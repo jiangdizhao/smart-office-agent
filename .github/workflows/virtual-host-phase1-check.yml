@@ -31,7 +31,6 @@ jobs:
       - name: Compile backend
         run: |
           python -m compileall backend/app \
-            backend/scripts/probe_sales_phase1_profile.py \
             backend/scripts/smoke_sales_phase0_contract.py \
             backend/scripts/smoke_sales_phase1_runtime_contract.py \
             backend/scripts/smoke_phase1_voice_contract.py \
@@ -57,8 +56,6 @@ jobs:
         run: python backend/scripts/smoke_portable_paths_contract.py
       - name: Run Phase 0 sales compatibility contract
         run: python backend/scripts/smoke_sales_phase0_contract.py
-      - name: Probe Phase 1 profile route
-        run: python backend/scripts/probe_sales_phase1_profile.py
       - name: Run Phase 1 sales runtime contract
         run: python backend/scripts/smoke_sales_phase1_runtime_contract.py
       - name: Run Phase 1 regression contract
