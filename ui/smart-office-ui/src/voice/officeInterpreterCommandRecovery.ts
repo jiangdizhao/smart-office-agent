@@ -1,7 +1,7 @@
 import {
   commandClarification,
   recoverCommandTranscript,
-} from './commandSpeechRecovery'
+} from './commandTranscriptRepair'
 import {
   realtimeOfficeInterpreter,
   type RealtimeOfficeDecision,
@@ -29,9 +29,6 @@ export function deterministicPresentationSteps(
 ): Array<Record<string, unknown>> | null {
   const clean = text.normalize('NFKC').replace(/\s+/g, ' ').trim()
   if (!clean || PRESENTATION_QUESTION.test(clean)) return null
-
-  // Rich or cross-domain commands must remain intact for the unified model planner.
-  // A deterministic shortcut must never execute only the first half of a request.
   if (GOTO_OR_MULTI_PAGE.test(clean) || OTHER_DOMAIN.test(clean)) return null
 
   const hasTerm = PRESENTATION_TERM.test(clean)
@@ -50,8 +47,6 @@ export function deterministicPresentationSteps(
     .filter(Boolean).length
   const startLike = hasDemonstrate || hasStart
 
-  // The only deterministic compound plan is open + start slideshow. All other
-  // multi-action combinations go to the unified planner with the full utterance.
   if (startLike && controlCount === 0) {
     if (hasDemonstrate || hasOpen) {
       return [
@@ -108,8 +103,6 @@ export function installOfficeInterpreterCommandRecovery(): void {
   ): Promise<RealtimeOfficeDecision> => {
     const recovered = recoverCommandTranscript(text, language)
 
-    // Domain-specific complete intents take precedence over generic bare-app
-    // clarification. This prevents “演示 PPT” from being treated as ambiguous.
     const presentationSteps = deterministicPresentationSteps(
       recovered.raw || text,
     ) ?? deterministicPresentationSteps(recovered.normalized)
@@ -140,8 +133,6 @@ export function installOfficeInterpreterCommandRecovery(): void {
       )
     }
 
-    // Realtime receives the complete repaired utterance. It owns rich compound
-    // planning; this layer never truncates a second action or another domain.
     return await originalInterpret(recovered.normalized, language)
   }
 }
