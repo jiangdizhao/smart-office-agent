@@ -84,6 +84,41 @@ function Merge-MissingDefaults {
     Write-Host "Added missing Backend defaults: $($missingEntries -join ', ')" -ForegroundColor Yellow
 }
 
+function Update-DeprecatedDefaults {
+    param([Parameter(Mandatory = $true)][string]$TargetPath)
+
+    if (-not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) {
+        return
+    }
+
+    $lines = @(Get-Content -LiteralPath $TargetPath -Encoding UTF8)
+    $changed = $false
+    for ($index = 0; $index -lt $lines.Count; $index += 1) {
+        $line = [string]$lines[$index]
+        $key = Get-EnvEntryKey -RawLine $line
+        if ($key -ne 'OPENAI_SEMANTIC_ROUTER_MODEL') {
+            continue
+        }
+        $separator = $line.IndexOf('=')
+        if ($separator -lt 1) {
+            continue
+        }
+        $value = Unquote-EnvValue -Value $line.Substring($separator + 1)
+        if ($value.Trim().ToLowerInvariant() -eq 'gpt-5.6-luna') {
+            $lines[$index] = 'OPENAI_SEMANTIC_ROUTER_MODEL=gpt-5.6-terra'
+            $changed = $true
+        }
+    }
+
+    if (-not $changed) {
+        return
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($TargetPath, $lines, $utf8NoBom)
+    Write-Host 'Migrated OPENAI_SEMANTIC_ROUTER_MODEL from gpt-5.6-luna to gpt-5.6-terra.' -ForegroundColor Yellow
+}
+
 $resolvedPath = [System.IO.Path]::GetFullPath($Path)
 $resolvedTemplate = $null
 if (-not [string]::IsNullOrWhiteSpace($TemplatePath)) {
@@ -108,6 +143,8 @@ if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
 elseif ($CreateFromTemplate -and -not [string]::IsNullOrWhiteSpace($resolvedTemplate)) {
     Merge-MissingDefaults -TargetPath $resolvedPath -SourceTemplate $resolvedTemplate
 }
+
+Update-DeprecatedDefaults -TargetPath $resolvedPath
 
 $loaded = New-Object System.Collections.Generic.List[string]
 $lineNumber = 0
