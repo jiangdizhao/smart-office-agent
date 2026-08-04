@@ -30,6 +30,8 @@ ReplyMode = Literal[
     "closing",
 ]
 HumourIntensity = Literal["none", "light"]
+ConversionIntent = Literal["none", "accept", "reject", "direct"]
+SalesUiAction = Literal["open_booking", "open_contact"]
 
 ALLOWED_PROFILE_FIELDS = frozenset(
     {
@@ -169,6 +171,7 @@ class HumourDirective(BaseModel):
     allowed: bool = False
     intensity: HumourIntensity = "none"
     theme: str | None = Field(default=None, max_length=120)
+    text: str | None = Field(default=None, max_length=500)
     reason: str = Field(default="not_selected", max_length=200)
     maximum_lines: int = Field(default=0, ge=0, le=1)
     forbidden_topics: list[str] = Field(default_factory=list)
@@ -178,9 +181,10 @@ class HumourDirective(BaseModel):
         if not self.allowed:
             self.intensity = "none"
             self.theme = None
+            self.text = None
             self.maximum_lines = 0
-        elif not self.theme:
-            raise ValueError("An allowed humour directive requires a theme.")
+        elif not self.theme or not self.text:
+            raise ValueError("An allowed humour directive requires a theme and approved text.")
         return self
 
 
@@ -243,6 +247,30 @@ class SalesSessionPatch(BaseModel):
         return result
 
 
+class SalesProfileExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    explicit_facts: dict[str, str] = Field(default_factory=dict)
+    pain_points: list[str] = Field(default_factory=list)
+    interested_capabilities: list[str] = Field(default_factory=list)
+    objections: list[str] = Field(default_factory=list)
+    declined_fields: list[str] = Field(default_factory=list)
+    matched_playbooks: list[str] = Field(default_factory=list)
+    demo_capability_id: str | None = Field(default=None, max_length=120)
+    explicit_demo_request: bool = False
+    booking_intent: ConversionIntent = "none"
+    contact_intent: ConversionIntent = "none"
+    cost_question: bool = False
+    privacy_question: bool = False
+    ordinary_chatbot_objection: bool = False
+    disengaged: bool = False
+    brief_affirmation: bool = False
+    brief_rejection: bool = False
+    direct_operational_command: bool = False
+    sales_relevant: bool = False
+    evidence: list[str] = Field(default_factory=list)
+
+
 class SalesSessionState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -257,6 +285,7 @@ class SalesSessionState(BaseModel):
     pain_points: list[str] = Field(default_factory=list)
     interested_capabilities: list[str] = Field(default_factory=list)
     demonstrated_capabilities: list[str] = Field(default_factory=list)
+    explicit_demo_request_counts: dict[str, int] = Field(default_factory=dict)
     asked_fields: list[str] = Field(default_factory=list)
     declined_fields: list[str] = Field(default_factory=list)
     objections: list[str] = Field(default_factory=list)
@@ -264,6 +293,10 @@ class SalesSessionState(BaseModel):
     contact_offer_count: int = Field(default=0, ge=0, le=1)
     booking_rejected: bool = False
     contact_rejected: bool = False
+    booking_opened: bool = False
+    contact_opened: bool = False
+    value_delivered: bool = False
+    cost_claim_used_count: int = Field(default=0, ge=0, le=1)
     humour_used_count: int = Field(default=0, ge=0)
     humour_themes_used: list[str] = Field(default_factory=list)
     last_humour_theme: str | None = None
@@ -274,8 +307,62 @@ class SalesSessionState(BaseModel):
     last_sales_action: str | None = None
     last_booking_offer_turn: int | None = Field(default=None, ge=0)
     last_profile_question_turn: int | None = Field(default=None, ge=0)
+    profile_persisted: bool = False
+    disengaged: bool = False
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
+
+
+class SalesTurnRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(..., min_length=1, max_length=160)
+    visit_id: str = Field(..., min_length=1, max_length=160)
+    text: str = Field(..., min_length=1, max_length=12_000)
+    language: Language = "zh"
+    actor_type: Literal["visitor", "employee", "operator"] = "visitor"
+    recent_context: str = Field(default="", max_length=20_000)
+
+
+class SalesTurnResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool = True
+    phase: Literal["phase1_sales_runtime"] = "phase1_sales_runtime"
+    handled: bool
+    route: Literal["sales_realtime", "pass_through"]
+    reason: str = Field(..., min_length=1, max_length=240)
+    extraction: SalesProfileExtraction
+    reply_plan: SalesReplyPlan | None = None
+    fallback_text: str = Field(default="", max_length=2_000)
+    ui_action: SalesUiAction | None = None
+    session: SalesSessionState
+    profile_persisted: bool = False
+
+
+class SalesProactiveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(..., min_length=1, max_length=160)
+    visit_id: str = Field(..., min_length=1, max_length=160)
+    language: Language = "zh"
+    silence_seconds: int = Field(..., ge=1, le=120)
+    user_speaking: bool = False
+    agent_speaking: bool = False
+    tool_active: bool = False
+    interaction_input_active: bool = False
+
+
+class SalesProactiveResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool = True
+    phase: Literal["phase1_sales_runtime"] = "phase1_sales_runtime"
+    speak: bool
+    reason: str = Field(..., min_length=1, max_length=240)
+    reply_plan: SalesReplyPlan | None = None
+    fallback_text: str = Field(default="", max_length=2_000)
+    session: SalesSessionState
 
 
 class SalesTelemetryEvent(BaseModel):
