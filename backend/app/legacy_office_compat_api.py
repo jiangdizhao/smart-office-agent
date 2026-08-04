@@ -4,28 +4,17 @@ import asyncio
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict, Field
 
 from app.office_actions import execute_office_tool_call
+from app.office_api import SystemVolumeRequest
 
 router = APIRouter(tags=["office-compatibility"])
 
 
-class LegacySystemVolumeRequest(BaseModel):
-    """Compatibility contract for the original direct volume endpoint.
-
-    The active voice runtime uses the unified Office plan. This adapter preserves
-    old debug clients while delegating execution and verification to the same
-    isolated Office worker used by the current runtime.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    percent: int = Field(..., ge=0, le=100)
-
-
 @router.post("/api/office/system/volume")
-async def legacy_system_volume(req: LegacySystemVolumeRequest) -> dict[str, Any]:
+async def legacy_system_volume(req: SystemVolumeRequest) -> dict[str, Any]:
+    """Preserve the original bounded URL through the unified Office worker."""
+
     result, verification, status = await asyncio.to_thread(
         execute_office_tool_call,
         "system_set_volume",
