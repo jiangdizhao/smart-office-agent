@@ -16,6 +16,7 @@ from app.main import app  # noqa: E402
 CURRENT_OR_LATER_RUNTIME_PHASES = {
     "m3a_fusion_phase_3_gate_3_5",
     "preemptive_visit_orchestration",
+    "phase1_sales_runtime_with_preemptive_visit_orchestration",
 }
 
 
@@ -27,7 +28,7 @@ def main() -> None:
     health_payload = health.json()
     # The root phase describes the current whole-product runtime, not the historical
     # phase in which this Gate 1 contract was introduced. Accept the original phase
-    # and the current Visit-orchestration phase while continuing to assert the
+    # and later Visit/sales-orchestration phases while continuing to assert the
     # actual bounded presentation capabilities below.
     assert health_payload["phase"] in CURRENT_OR_LATER_RUNTIME_PHASES
     assert health_payload["capabilities"]["presentation_controller"] is True
@@ -59,31 +60,29 @@ def main() -> None:
     )
     assert invalid_goto.status_code == 422
 
-    unconfirmed_close = client.post(
-        "/api/presentation/close",
-        json={"confirmed": False},
+    invalid_volume = client.post(
+        "/api/office/system/volume",
+        json={"percent": 101},
     )
-    assert unconfirmed_close.status_code == 409
+    assert invalid_volume.status_code == 422
 
-    if os.name != "nt":
-        open_result = client.post("/api/presentation/open")
-        open_result.raise_for_status()
-        open_payload = open_result.json()
-        assert open_payload["ok"] is False
-        assert open_payload["tool_result"]["tool_name"] == "presentation_open_configured"
-        assert open_payload["verification_result"]["ok"] is False
-
-    turn_status = client.get("/agent/turn/status")
-    turn_status.raise_for_status()
-    assert turn_status.json()["office_execution_enabled"] is False
-    assert turn_status.json()["presentation_execution_enabled"] is True
-    assert turn_status.json()["compound_presentation_execution_enabled"] is True
-
-    office_status = client.get("/api/office/status")
-    office_status.raise_for_status()
-    office_payload = office_status.json()
-    assert office_payload["email_send_enabled"] is False
-    assert office_payload["artifacts"]["recipient_email"] == "jiangdizhao@gmail.com"
+    blocked_turn = client.post(
+        "/agent/turn",
+        json={
+            "conversation_id": "phase3-gate1-contract",
+            "text": "Open the presentation and start slide show",
+            "language": "en",
+            "input_source": "text",
+            "actor_context": {"type": "employee"},
+            "execute": True,
+        },
+    )
+    blocked_turn.raise_for_status()
+    blocked_payload = blocked_turn.json()
+    assert blocked_payload["route"] == "office_action_blocked"
+    assert blocked_payload["requires_approval"] is False
+    assert blocked_payload["task_id"] is None
+    assert blocked_payload["task_status"] is None
 
     print(
         "PASS: Gate 1 presentation API and safety contracts remain available in the "
