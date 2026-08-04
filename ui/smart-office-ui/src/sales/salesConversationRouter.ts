@@ -15,9 +15,12 @@ import {
   type SalesTurnResponse,
 } from './salesConversationClient'
 import { queueSalesOfficeDelegate } from './salesOfficeDelegate'
+import { fetchPhase2ASelfIntroduction } from './salesPhase2AClient'
 import { renderSalesReply, type SalesUiResult } from './salesReplyRenderer'
+import { registerVoiceOutputContext } from './voiceDelivery'
 
 const SALES_CONTEXT_PREFIX = '__SMART_OFFICE_SALES_CONTEXT__:'
+const SELF_INTRO_CONTEXT_PREFIX = '__SMART_OFFICE_PHASE2A_SELF_INTRO__:'
 
 export type SalesAwareConversationRoute = FastConversationRoute & {
   office_delegate_text?: string | null
@@ -26,6 +29,10 @@ export type SalesAwareConversationRoute = FastConversationRoute & {
 type SalesRouteContext = {
   turn: SalesTurnResponse
   uiResult: SalesUiResult | null
+}
+
+type SelfIntroductionContext = {
+  text: string
 }
 
 type RouteRequest = {
@@ -50,6 +57,27 @@ function parseSalesContext(value: string): SalesRouteContext | null {
   } catch {
     return null
   }
+}
+
+function selfIntroductionContext(text: string): string {
+  return `${SELF_INTRO_CONTEXT_PREFIX}${JSON.stringify({ text } satisfies SelfIntroductionContext)}`
+}
+
+function parseSelfIntroductionContext(value: string): SelfIntroductionContext | null {
+  if (!value.startsWith(SELF_INTRO_CONTEXT_PREFIX)) return null
+  try {
+    const parsed = JSON.parse(value.slice(SELF_INTRO_CONTEXT_PREFIX.length)) as SelfIntroductionContext
+    return parsed?.text?.trim() ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function matchesSelfIntroduction(text: string): boolean {
+  const clean = text.replace(/\s+/g, ' ').trim().toLocaleLowerCase()
+  if (!clean) return false
+  return /你是谁|介绍一下(?:你自己|自己|你)|自我介绍|你的身份|你是什么|你能做什么/.test(clean)
+    || /\bwho are you\b|\bintroduce yourself\b|\btell me about yourself\b|\bwhat do you do\b/.test(clean)
 }
 
 function conversionEvent(
@@ -137,10 +165,22 @@ function uiFailureFallback(
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<SalesAwareConversationRoute> {
+  if (matchesSelfIntroduction(request.text)) {
+    const text = await fetchPhase2ASelfIntroduction(request.language, request.lease)
+    return {
+      route: 'sales_realtime',
+      scene: 'reception',
+      route_reason: 'phase2a_canonical_self_introduction',
+      conversation_complexity: 'simple',
+      answer_engine: 'realtime',
+      recent_context: selfIntroductionContext(text),
+      visit_id: request.visitId,
+      office_delegate_text: null,
+    }
+  }
+
   const base = await previewBaseConversationRoute(request)
 
-  // The exhibition UI uses operator for Office permissions. Operator therefore
-  // remains a visitor conversation for sales, while employee explicitly bypasses it.
   if (
     request.actor === 'employee'
     || !request.visitId
@@ -222,6 +262,30 @@ export async function generateSimpleRealtimeAnswer(
   recentContext: string,
   lease: VisitLease | null,
 ): Promise<string> {
+  const selfIntroduction = parseSelfIntroductionContext(recentContext)
+  if (selfIntroduction) {
+    const answer = selfIntroduction.text.trim()
+    registerVoiceOutputContext(answer, {
+      delivery: {
+        schema_version: 'voice-delivery-v1',
+        style: 'warm_confident',
+        pace: 'natural_brisk',
+        energy: 'medium_high',
+        question_tone: 'none',
+        emphasis_terms: language === 'zh'
+          ? ['数字管理员', '企业解决方案顾问']
+          : ['Digital Manager', 'Enterprise Solution Consultant'],
+        humour_delivery: 'none',
+        pause_before_question: false,
+      },
+      purpose: 'sales_self_introduction',
+      replyMode: 'pure_sales',
+      expectUserResponse: false,
+      questionField: null,
+    })
+    return answer
+  }
+
   const sales = parseSalesContext(recentContext)
   if (!sales) {
     return await generateBaseRealtimeAnswer(text, language, recentContext, lease)
