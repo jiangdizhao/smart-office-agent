@@ -22,12 +22,17 @@ def main() -> None:
         "SMART_OFFICE_SALES_PROFILE_PERSISTENCE_ENABLED": "true",
         "SMART_OFFICE_SALES_TELEMETRY_ENABLED": "true",
         "SMART_OFFICE_REALTIME_MODE": "quality",
+        "SMART_OFFICE_SEMANTIC_ROUTER_MODE": "unified",
+        "OPENAI_SEMANTIC_ROUTER_MODEL": "gpt-5.6-luna",
     }
     for name, value in required.items():
         assert f"{name}={value}" in template, f"Missing Backend default: {name}"
 
     assert "OPENAI_API_KEY=" not in template
     assert "CreateFromTemplate" in loader
+    assert "Merge-MissingDefaults" in loader
+    assert "Get-EnvEntryKey" in loader
+    assert "AppendAllText" in loader
     assert "SetEnvironmentVariable($name, $value, 'Process')" in loader
     assert "Invalid Backend environment entry" in loader
     assert "Invalid environment variable name" in loader
@@ -40,9 +45,10 @@ def main() -> None:
     assert "!backend/.env.local.example" in gitignore
 
     print(
-        "PASS: Backend Phase 1 flags are stored in an ignored backend/.env.local, "
-        "created from a tracked template, validated and loaded into the process before "
-        "the stable Realtime/Office launcher starts; OPENAI_API_KEY remains interactive."
+        "PASS: Backend flags and unified semantic routing defaults are stored in an "
+        "ignored backend/.env.local, created or safely extended from the tracked "
+        "template and loaded before the stable Realtime/Office launcher starts; "
+        "OPENAI_API_KEY remains interactive."
     )
 
 
