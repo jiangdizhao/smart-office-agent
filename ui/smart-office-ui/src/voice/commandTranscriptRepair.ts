@@ -1,4 +1,4 @@
-import type { VoiceLanguage } from './realtimeAgentRuntime'
+export type RepairLanguage = 'zh' | 'en'
 
 const APP_PATTERNS = {
   teams: /(?:microsoft\s*)?teams|微软团队/i,
@@ -67,7 +67,7 @@ function actionFromTranscript(text: string, target: CommandTarget): CommandActio
   return actions.length === 1 ? actions[0] : null
 }
 
-function commandLanguage(text: string, fallback: VoiceLanguage): VoiceLanguage {
+function commandLanguage(text: string, fallback: RepairLanguage): RepairLanguage {
   const hasChineseAction = EXPLICIT_ZH_ACTION.test(text)
   const hasEnglishAction = EXPLICIT_EN_ACTION.test(text)
   if (hasChineseAction && !hasEnglishAction) return 'zh'
@@ -133,7 +133,7 @@ function canonicalTarget(target: CommandTarget): string {
 function canonicalCommand(
   target: CommandTarget,
   action: CommandAction,
-  language: VoiceLanguage,
+  language: RepairLanguage,
 ): string {
   const app = canonicalTarget(target)
   if (language === 'en') {
@@ -156,13 +156,13 @@ export type RecoveredCommandTranscript = {
   target: CommandTarget | null
   action: CommandAction
   ambiguous: boolean
-  language: VoiceLanguage
+  language: RepairLanguage
   recovered: boolean
 }
 
 export function recoverCommandTranscript(
   value: string,
-  language: VoiceLanguage = 'zh',
+  language: RepairLanguage = 'zh',
 ): RecoveredCommandTranscript {
   const raw = value.trim()
   const clean = cleanTranscript(raw)
