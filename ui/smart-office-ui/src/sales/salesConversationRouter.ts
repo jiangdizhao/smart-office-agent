@@ -3,6 +3,10 @@ import {
   type InteractionWindowKind,
 } from '../display/multiScreenWindowManager'
 import {
+  flattenSemanticProfile,
+  setSemanticPendingIntent,
+} from '../routing/unifiedSemanticRouterClient'
+import {
   generateSimpleRealtimeAnswer as generateBaseRealtimeAnswer,
   previewConversationRoute as previewBaseConversationRoute,
   type FastConversationRoute,
@@ -71,13 +75,6 @@ function parseSelfIntroductionContext(value: string): SelfIntroductionContext | 
   } catch {
     return null
   }
-}
-
-function matchesSelfIntroduction(text: string): boolean {
-  const clean = text.replace(/\s+/g, ' ').trim().toLocaleLowerCase()
-  if (!clean) return false
-  return /你是谁|介绍一下(?:你自己|自己|你)|自我介绍|你的身份|你是什么|你能做什么/.test(clean)
-    || /\bwho are you\b|\bintroduce yourself\b|\btell me about yourself\b|\bwhat do you do\b/.test(clean)
 }
 
 function conversionEvent(
@@ -162,15 +159,50 @@ function uiFailureFallback(
     : `The ${label} did not open. Please refresh the main display and try again.`
 }
 
+async function updatePendingIntent(
+  turn: SalesTurnResponse,
+  request: RouteRequest,
+): Promise<void> {
+  if (!request.visitId || !turn.reply_plan?.suggested_question) return
+  const action = turn.reply_plan.recommended_action
+  const intentType = action === 'offer_booking'
+    ? 'booking_offer'
+    : action === 'offer_contact'
+      ? 'contact_offer'
+      : null
+  if (!intentType) return
+  await setSemanticPendingIntent({
+    conversationId: request.conversationId,
+    visitId: request.visitId,
+    intentType,
+    sourceTurnId: turn.reply_plan.created_at,
+    metadata: {
+      sales_stage: turn.session.stage,
+      recommended_action: action,
+    },
+    lease: request.lease,
+  }).catch((error) => {
+    console.error('[SemanticRoute] pending-intent-write-failed', {
+      intentType,
+      message: error instanceof Error ? error.message : String(error),
+      visitId: request.visitId,
+    })
+  })
+}
+
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<SalesAwareConversationRoute> {
-  if (matchesSelfIntroduction(request.text)) {
+  const base = await previewBaseConversationRoute(request)
+  const semantic = base.semantic_decision?.route
+
+  if (semantic?.primary_intent === 'self_introduction') {
     const text = await fetchPhase2ASelfIntroduction(request.language, request.lease)
     return {
+      ...base,
       route: 'sales_realtime',
       scene: 'reception',
-      route_reason: 'phase2a_canonical_self_introduction',
+      route_reason: 'semantic_canonical_self_introduction',
       conversation_complexity: 'simple',
       answer_engine: 'realtime',
       recent_context: selfIntroductionContext(text),
@@ -179,18 +211,17 @@ export async function previewConversationRoute(
     }
   }
 
-  const base = await previewBaseConversationRoute(request)
-
   if (
     request.actor === 'employee'
     || !request.visitId
-    || base.route_reason === 'interaction_panel_command'
-    || base.route_reason.startsWith('deterministic_system_action:')
+    || !semantic
+    || !['sales', 'privacy'].includes(semantic.domain)
   ) {
     return base
   }
 
   try {
+    const semanticExtraction = flattenSemanticProfile(semantic.profile_extraction)
     const turn = await previewSalesTurn({
       conversationId: request.conversationId,
       visitId: request.visitId,
@@ -198,6 +229,7 @@ export async function previewConversationRoute(
       language: request.language,
       actor: 'visitor',
       recentContext: base.recent_context,
+      semanticExtraction,
       lease: request.lease,
     })
 
@@ -226,9 +258,12 @@ export async function previewConversationRoute(
 
     if (!turn.handled) return base
 
+    await updatePendingIntent(turn, request)
     const uiResult = await executeSalesUiAction(turn, request)
-    console.info('[SalesRuntime] sales-turn-routed', {
+    console.info('[SalesRuntime] semantic-sales-turn-routed', {
       reason: turn.reason,
+      semanticIntent: semantic.primary_intent,
+      semanticSource: semantic.source,
       stage: turn.session.stage,
       uiAction: turn.ui_action,
       uiOk: uiResult?.ok ?? null,
@@ -236,6 +271,7 @@ export async function previewConversationRoute(
       visitId: request.visitId,
     })
     return {
+      ...base,
       route: 'sales_realtime',
       scene: 'reception',
       route_reason: turn.reason,
@@ -247,10 +283,11 @@ export async function previewConversationRoute(
     }
   } catch (error) {
     if (request.lease?.signal.aborted) throw error
-    console.error('[SalesRuntime] sales-route-failed-open', {
+    console.error('[SalesRuntime] semantic-sales-route-failed-open', {
       message: error instanceof Error ? error.message : String(error),
       visitId: request.visitId,
       baseRoute: base.route,
+      semanticIntent: semantic.primary_intent,
     })
     return base
   }
