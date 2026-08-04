@@ -98,6 +98,11 @@ def sales_status() -> dict:
 def sales_turn(req: SalesTurnRequest) -> SalesTurnResponse:
     _require_configuration()
     try:
+        # The exhibition UI deliberately uses operator for Office permissions. It
+        # remains a visitor-facing sales conversation; only employee mode bypasses
+        # sales discovery.
+        if req.actor_type != "employee":
+            req = req.model_copy(update={"actor_type": "visitor"})
         return sales_reply_planner.handle_turn(req)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -141,9 +146,19 @@ def sales_conversion_event(req: SalesConversionEventRequest) -> dict:
     elif req.event == "contact_opened":
         state = sales_session_store.mark_contact_opened(req.conversation_id, req.visit_id)
     elif req.event == "booking_failed":
-        state.last_sales_action = "booking_panel_failed"
+        state = sales_session_store.transition(
+            req.conversation_id,
+            req.visit_id,
+            state.stage,
+            action="booking_panel_failed",
+        )
     elif req.event == "contact_failed":
-        state.last_sales_action = "contact_panel_failed"
+        state = sales_session_store.transition(
+            req.conversation_id,
+            req.visit_id,
+            state.stage,
+            action="contact_panel_failed",
+        )
     return {
         "ok": True,
         "phase": "phase1_sales_runtime",
