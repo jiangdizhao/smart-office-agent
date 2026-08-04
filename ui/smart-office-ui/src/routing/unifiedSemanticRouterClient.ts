@@ -202,7 +202,13 @@ export async function setSemanticPendingIntent(input: {
     5_000,
   )
   if (!response.ok) {
-    throw new Error(`Pending semantic intent failed: ${response.status} ${await response.text()}`)
+    const detail = await response.text()
+    console.error('[SemanticRoute] pending-intent-write-rejected', {
+      status: response.status,
+      detail,
+      visitId: input.visitId,
+      intentType: input.intentType,
+    })
   }
 }
 
