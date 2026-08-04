@@ -1,18 +1,23 @@
-import type { VisitLease } from '../vision/visitLeaseRegistry'
 import {
-  matchInteractionWindowIntent,
+  currentInteractionPanel,
   openInteractionWindow,
   type InteractionWindowKind,
   type InteractionWindowResult,
 } from '../display/multiScreenWindowManager'
+import {
+  requestUnifiedSemanticRoute,
+  type UnifiedSemanticRoute,
+  type UnifiedSemanticRouteResponse,
+} from '../routing/unifiedSemanticRouterClient'
+import type { VisitLease } from '../vision/visitLeaseRegistry'
 import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
-const ROUTE_TIMEOUT_MS = 6_000
 const SYSTEM_ACTION_TIMEOUT_MS = 22_000
 const INTERACTION_CONTEXT_PREFIX = '__SMART_OFFICE_INTERACTION_WINDOW__:'
 const SYSTEM_ACTION_CONTEXT_PREFIX = '__SMART_OFFICE_SYSTEM_ACTION__:'
+const SEMANTIC_ANSWER_CONTEXT_PREFIX = '__SMART_OFFICE_SEMANTIC_ANSWER__:'
 
 export type FastConversationAnswerEngine =
   | 'realtime'
@@ -28,6 +33,7 @@ export type FastConversationRoute = {
   answer_engine: FastConversationAnswerEngine
   recent_context: string
   visit_id?: string | null
+  semantic_decision?: UnifiedSemanticRouteResponse | null
 }
 
 type RouteRequest = {
@@ -78,6 +84,11 @@ type SystemActionContext = {
   result: LegacyToolResult
 }
 
+type SemanticAnswerContext = {
+  text: string
+  purpose: 'clarification' | 'confirmation' | 'rejection'
+}
+
 function abortError(message: string): Error {
   const error = new Error(message)
   error.name = 'AbortError'
@@ -97,7 +108,7 @@ async function fetchWithTimeout(
   try {
     return await fetch(url, { ...init, signal: controller.signal })
   } catch (error) {
-    if (signal?.aborted) throw abortError('Conversation route preview was aborted.')
+    if (signal?.aborted) throw abortError('Conversation route belongs to a stale Visit.')
     throw error
   } finally {
     window.clearTimeout(timer)
@@ -120,6 +131,25 @@ function parseInteractionContext(value: string): InteractionContext | null {
   }
 }
 
+function semanticAnswerContext(
+  text: string,
+  purpose: SemanticAnswerContext['purpose'],
+): string {
+  return `${SEMANTIC_ANSWER_CONTEXT_PREFIX}${JSON.stringify({ text, purpose } satisfies SemanticAnswerContext)}`
+}
+
+function parseSemanticAnswerContext(value: string): SemanticAnswerContext | null {
+  if (!value.startsWith(SEMANTIC_ANSWER_CONTEXT_PREFIX)) return null
+  try {
+    const parsed = JSON.parse(
+      value.slice(SEMANTIC_ANSWER_CONTEXT_PREFIX.length),
+    ) as SemanticAnswerContext
+    return parsed?.text?.trim() ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 function interactionReply(context: InteractionContext, language: VoiceLanguage): string {
   const labels: Record<InteractionWindowKind, { zh: string; en: string }> = {
     contact: { zh: '登记信息', en: 'contact registration' },
@@ -137,39 +167,6 @@ function interactionReply(context: InteractionContext, language: VoiceLanguage):
   return language === 'zh'
     ? `${label}面板没有成功打开。请刷新主屏幕后再试一次。`
     : `The ${label} panel did not open. Please refresh the main display and try again.`
-}
-
-function normaliseSystemCommand(text: string): string {
-  return text
-    .toLocaleLowerCase()
-    .replace(/\b(one\s*note)\b/gi, 'onenote')
-    .replace(/\b(microsoft\s+teams)\b/gi, 'teams')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function matchSystemAction(text: string): SystemActionKind | null {
-  const clean = normaliseSystemCommand(text)
-  if (!clean) return null
-
-  const close =
-    /(关闭|关掉|停止|退出|结束|别放了|不要播放|close|stop|quit|exit|turn off)/i.test(clean)
-  const open =
-    /(打开|启动|开启|播放|放一首|放点|来一首|open|launch|start|play|turn on)/i.test(clean)
-
-  const music = /(音乐|歌曲|放歌|听歌|\bmusic\b|\bsong\b)/i.test(clean)
-  if (music && close) return 'music_stop'
-  if (music && open) return 'music_play_random'
-
-  const teams = /(^|[^a-z])teams([^a-z]|$)|微软团队/i.test(clean)
-  if (teams && close) return 'teams_close'
-  if (teams && open) return 'teams_open'
-
-  const onenote = /(^|[^a-z])onenote([^a-z]|$)|微软笔记/i.test(clean)
-  if (onenote && close) return 'onenote_close'
-  if (onenote && open) return 'onenote_open'
-
-  return null
 }
 
 function systemActionContext(kind: SystemActionKind, result: LegacyToolResult): string {
@@ -219,6 +216,18 @@ function latestTaskResult(task: LegacyTaskSession): LegacyToolResult | null {
   return steps.find((step) => step.result)?.result ?? null
 }
 
+function canonicalSystemCommand(kind: SystemActionKind): string {
+  const commands: Record<SystemActionKind, string> = {
+    music_play_random: '播放音乐',
+    music_stop: '停止音乐',
+    teams_open: '打开 Teams',
+    teams_close: '关闭 Teams',
+    onenote_open: '打开 OneNote',
+    onenote_close: '关闭 OneNote',
+  }
+  return commands[kind]
+}
+
 async function executeSystemAction(
   kind: SystemActionKind,
   request: RouteRequest,
@@ -231,7 +240,9 @@ async function executeSystemAction(
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: JSON.stringify({
-          text: request.text,
+          // The legacy planner now receives only an allowlisted canonical command.
+          // It no longer interprets arbitrary visitor language on the unified path.
+          text: canonicalSystemCommand(kind),
           execute: true,
           conversation_id: request.conversationId,
           visit_id: request.visitId,
@@ -261,12 +272,11 @@ async function executeSystemAction(
           tool_name: kind,
           ok: false,
           message:
-            task.summary?.trim() ||
-            `System action task ended with status ${status || 'unknown'} without a tool result.`,
+            task.summary?.trim()
+            || `System action ended with status ${status || 'unknown'} without a result.`,
           data: { verified: false, task_id: taskId, task_status: status },
         }
       }
-
       await wait(250, request.lease?.signal)
       const pollResponse = await fetchWithTimeout(
         `${API_BASE_URL}/agent/tasks/${encodeURIComponent(taskId)}`,
@@ -276,12 +286,11 @@ async function executeSystemAction(
       )
       if (!pollResponse.ok) {
         throw new Error(
-          `System action task status failed: ${pollResponse.status} ${await pollResponse.text()}`,
+          `System action status failed: ${pollResponse.status} ${await pollResponse.text()}`,
         )
       }
       task = (await pollResponse.json()) as LegacyTaskSession
     }
-
     throw new Error('The system action did not finish within the configured timeout.')
   } catch (error) {
     if (taskId) void cancelSystemActionTask(taskId)
@@ -308,32 +317,25 @@ function systemActionReply(context: SystemActionContext, language: VoiceLanguage
       ? `没有完成这项操作。${detail || '请检查应用安装和本机配置。'}`
       : `I could not complete that action. ${detail || 'Please check the application installation and local configuration.'}`
   }
-
   if (kind === 'music_play_random') {
-    if (verified) {
-      return language === 'zh'
+    return verified
+      ? language === 'zh'
         ? `好的，已经随机播放${trackName ? `《${trackName}》` : '一首本地音乐'}。`
         : `Okay. I randomly selected and started ${trackName || 'a local track'}.`
-    }
-    return language === 'zh'
-      ? `已经把${trackName ? `《${trackName}》` : '随机选择的音乐'}交给默认媒体播放器，但暂时无法确认播放器窗口。`
-      : `I sent ${trackName || 'the selected track'} to the default media player, but I could not positively identify the player window.`
+      : language === 'zh'
+        ? `已经把${trackName ? `《${trackName}》` : '随机选择的音乐'}交给默认媒体播放器，但暂时无法确认播放器窗口。`
+        : `I sent ${trackName || 'the selected track'} to the media player, but could not verify its window.`
   }
-
   if (kind === 'music_stop') {
     return language === 'zh'
-      ? alreadyStopped
-        ? '音乐当前已经停止。'
-        : '音乐已经停止，受控媒体播放器也已关闭。'
-      : alreadyStopped
-        ? 'Music is already stopped.'
-        : 'Music has stopped and the managed media player has been closed.'
+      ? alreadyStopped ? '音乐当前已经停止。' : '音乐已经停止，受控媒体播放器也已关闭。'
+      : alreadyStopped ? 'Music is already stopped.' : 'Music has stopped and the managed player has closed.'
   }
-
-  const labels: Record<
-    Exclude<SystemActionKind, 'music_play_random' | 'music_stop'>,
-    { zh: string; en: string; action: 'open' | 'close' }
-  > = {
+  const labels: Record<Exclude<SystemActionKind, 'music_play_random' | 'music_stop'>, {
+    zh: string
+    en: string
+    action: 'open' | 'close'
+  }> = {
     teams_open: { zh: 'Microsoft Teams', en: 'Microsoft Teams', action: 'open' },
     teams_close: { zh: 'Microsoft Teams', en: 'Microsoft Teams', action: 'close' },
     onenote_open: { zh: 'OneNote', en: 'OneNote', action: 'open' },
@@ -342,118 +344,200 @@ function systemActionReply(context: SystemActionContext, language: VoiceLanguage
   const item = labels[kind]
   if (item.action === 'open') {
     return language === 'zh'
-      ? alreadyRunning
-        ? `${item.zh} 已经处于打开状态。`
-        : `${item.zh} 已经打开并通过状态验证。`
-      : alreadyRunning
-        ? `${item.en} is already open.`
-        : `${item.en} is open and its state was verified.`
+      ? alreadyRunning ? `${item.zh} 已经处于打开状态。` : `${item.zh} 已经打开并通过状态验证。`
+      : alreadyRunning ? `${item.en} is already open.` : `${item.en} is open and verified.`
   }
   return language === 'zh'
-    ? alreadyStopped
-      ? `${item.zh} 已经处于关闭状态。`
-      : `${item.zh} 已经关闭并通过状态验证。`
-    : alreadyStopped
-      ? `${item.en} is already closed.`
-      : `${item.en} is closed and its state was verified.`
+    ? alreadyStopped ? `${item.zh} 已经处于关闭状态。` : `${item.zh} 已经关闭并通过状态验证。`
+    : alreadyStopped ? `${item.en} is already closed.` : `${item.en} is closed and verified.`
+}
+
+function interactionKind(route: UnifiedSemanticRoute): InteractionWindowKind | null {
+  const target = route.actions[0]?.target
+  const mapping: Record<string, InteractionWindowKind> = {
+    contact_registration: 'contact',
+    meeting_booking: 'meeting',
+    recording: 'recording',
+    transcript: 'transcript',
+    result_center: 'results',
+  }
+  return mapping[target] ?? null
+}
+
+function systemActionKind(route: UnifiedSemanticRoute): SystemActionKind | null {
+  const action = route.actions[0]
+  if (!action) return null
+  const key = `${action.target}:${action.verb}`
+  const mapping: Record<string, SystemActionKind> = {
+    'music:start': 'music_play_random',
+    'music:open': 'music_play_random',
+    'music:stop': 'music_stop',
+    'music:close': 'music_stop',
+    'teams:open': 'teams_open',
+    'teams:close': 'teams_close',
+    'onenote:open': 'onenote_open',
+    'onenote:close': 'onenote_close',
+  }
+  return mapping[key] ?? null
+}
+
+function clarificationRoute(
+  semantic: UnifiedSemanticRouteResponse,
+  request: RouteRequest,
+): FastConversationRoute {
+  const text = semantic.route.clarification_question?.trim()
+    || (request.language === 'zh'
+      ? '请明确告诉我是要执行操作，还是只想了解这个功能。'
+      : 'Please clarify whether you want the action performed or only an explanation.')
+  return {
+    route: 'realtime_direct',
+    scene: 'reception',
+    route_reason: `semantic_clarification:${semantic.route.primary_intent}`,
+    conversation_complexity: 'simple',
+    answer_engine: 'realtime',
+    recent_context: semanticAnswerContext(text, 'clarification'),
+    visit_id: request.visitId,
+    semantic_decision: semantic,
+  }
 }
 
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<FastConversationRoute> {
-  const interactionKind = matchInteractionWindowIntent(request.text)
-  if (interactionKind) {
-    const startedAt = performance.now()
+  const startedAt = performance.now()
+  const semantic = await requestUnifiedSemanticRoute({
+    ...request,
+    interactionPanel: currentInteractionPanel()?.kind ?? null,
+    activeTool: document.body.classList.contains('smartoffice-tool-active') ? 'active' : null,
+  })
+  const route = semantic.route
+  const finalDecision = semantic.final_policy_decision
+
+  console.info('[SemanticRoute]', {
+    decisionId: semantic.decision_id,
+    mode: semantic.mode,
+    source: route.source,
+    intent: route.primary_intent,
+    domain: route.domain,
+    actionMode: route.action_mode,
+    finalDecision,
+    risk: route.risk,
+    confidence: route.confidence,
+    actions: route.actions,
+    negatedActions: route.negated_actions,
+    reasonCodes: route.reason_codes,
+    policyReasons: semantic.policy_reason_codes,
+    elapsedMs: semantic.elapsed_ms,
+    visitId: request.visitId,
+  })
+
+  if (finalDecision === 'clarify' || route.requires_clarification) {
+    return clarificationRoute(semantic, request)
+  }
+  if (finalDecision === 'request_confirmation') {
+    const text = request.language === 'zh'
+      ? '这项操作会产生外部影响。请明确确认是否继续。'
+      : 'This action has an external effect. Please explicitly confirm whether to continue.'
+    return {
+      ...clarificationRoute(semantic, request),
+      route_reason: `semantic_confirmation_required:${route.primary_intent}`,
+      recent_context: semanticAnswerContext(text, 'confirmation'),
+    }
+  }
+  if (finalDecision === 'reject') {
+    const text = request.language === 'zh'
+      ? '这项操作不能在当前状态下执行。'
+      : 'That action cannot be performed in the current state.'
+    return {
+      ...clarificationRoute(semantic, request),
+      route_reason: `semantic_policy_rejection:${route.primary_intent}`,
+      recent_context: semanticAnswerContext(text, 'rejection'),
+    }
+  }
+
+  if (route.domain === 'interaction' && finalDecision === 'execute') {
+    const kind = interactionKind(route)
+    if (!kind) return clarificationRoute(semantic, request)
     const result = await openInteractionWindow({
-      kind: interactionKind,
+      kind,
       conversationId: request.conversationId,
       visitId: request.visitId,
       language: request.language,
     })
-    console.info('[ConversationLatency] interaction-panel-command-complete', {
-      kind: interactionKind,
-      ok: result.ok,
-      blocked: result.blocked,
-      target: result.target,
-      elapsedMs: Math.round(performance.now() - startedAt),
-      visitId: request.visitId,
-    })
     return {
       route: 'realtime_direct',
       scene: 'reception',
-      route_reason: 'interaction_panel_command',
+      route_reason: `semantic_interaction_action:${kind}`,
       conversation_complexity: 'simple',
       answer_engine: 'realtime',
-      recent_context: interactionContext(interactionKind, result),
+      recent_context: interactionContext(kind, result),
       visit_id: request.visitId,
+      semantic_decision: semantic,
     }
   }
 
-  const systemAction = matchSystemAction(request.text)
-  if (systemAction) {
-    const startedAt = performance.now()
-    const result = await executeSystemAction(systemAction, request)
-    console.info('[ConversationLatency] deterministic-system-action-complete', {
-      kind: systemAction,
-      tool: result.tool_name ?? null,
-      ok: result.ok === true,
-      verified: result.data?.verified === true,
-      elapsedMs: Math.round(performance.now() - startedAt),
-      visitId: request.visitId,
-    })
-    return {
-      route: 'realtime_direct',
-      scene: 'office',
-      route_reason: `deterministic_system_action:${systemAction}`,
-      conversation_complexity: 'simple',
-      answer_engine: 'realtime',
-      recent_context: systemActionContext(systemAction, result),
-      visit_id: request.visitId,
-    }
-  }
-
-  const startedAt = performance.now()
-  const response = await fetchWithTimeout(
-    `${API_BASE_URL}/api/conversation-route`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({
-        conversation_id: request.conversationId,
+  if (route.domain === 'office' && finalDecision === 'execute') {
+    const actionKind = systemActionKind(route)
+    if (actionKind) {
+      const result = await executeSystemAction(actionKind, request)
+      return {
+        route: 'realtime_direct',
+        scene: 'office',
+        route_reason: `semantic_verified_system_action:${actionKind}`,
+        conversation_complexity: 'simple',
+        answer_engine: 'realtime',
+        recent_context: systemActionContext(actionKind, result),
         visit_id: request.visitId,
-        text: request.text,
-        language: request.language,
-        actor_type: request.actor,
-      }),
-    },
-    ROUTE_TIMEOUT_MS,
-    request.lease?.signal,
-  )
-  if (!response.ok) {
-    throw new Error(
-      `Conversation route preview failed: ${response.status} ${await response.text()}`,
-    )
+        semantic_decision: semantic,
+      }
+    }
+    // Presentation, volume, email and compound Office work are delegated to the
+    // existing domain interpreter only after the unified route and policy gates.
+    return {
+      route: 'office_direct',
+      scene: 'office',
+      route_reason: `semantic_office_action:${route.primary_intent}`,
+      conversation_complexity: 'not_applicable',
+      answer_engine: 'office_interpreter',
+      recent_context: '',
+      visit_id: request.visitId,
+      semantic_decision: semantic,
+    }
   }
-  const payload = (await response.json()) as FastConversationRoute
-  const elapsedMs = Math.round(performance.now() - startedAt)
-  console.info('[OfficeRoute]', {
-    transcript: request.text,
-    route: payload.route,
-    routeReason: payload.route_reason,
-    answerEngine: payload.answer_engine,
-    complexity: payload.conversation_complexity,
-    elapsedMs,
+
+  if (route.domain === 'office' && finalDecision === 'delegate') {
+    return {
+      route: 'office_direct',
+      scene: 'office',
+      route_reason: `semantic_office_delegate:${route.primary_intent}`,
+      conversation_complexity: 'not_applicable',
+      answer_engine: 'office_interpreter',
+      recent_context: '',
+      visit_id: request.visitId,
+      semantic_decision: semantic,
+    }
+  }
+
+  const answerEngine = route.answer_engine
+  const realtimeRoute = answerEngine === 'terra' ? 'general_chat' : 'realtime_direct'
+  console.info('[ConversationLatency] unified-route-complete', {
+    elapsedMs: Math.round(performance.now() - startedAt),
+    semanticElapsedMs: semantic.elapsed_ms,
+    domain: route.domain,
+    intent: route.primary_intent,
+    answerEngine,
     visitId: request.visitId,
   })
-  console.info('[ConversationLatency] route-preview-complete', {
-    route: payload.route,
-    routeReason: payload.route_reason,
-    complexity: payload.conversation_complexity,
-    answerEngine: payload.answer_engine,
-    elapsedMs,
-    visitId: request.visitId,
-  })
-  return payload
+  return {
+    route: realtimeRoute,
+    scene: route.domain === 'office' ? 'office' : 'reception',
+    route_reason: `semantic_${route.domain}:${route.primary_intent}`,
+    conversation_complexity: route.complexity,
+    answer_engine: answerEngine,
+    recent_context: '',
+    visit_id: request.visitId,
+    semantic_decision: semantic,
+  }
 }
 
 function directInstructions(
@@ -463,12 +547,10 @@ function directInstructions(
 ): string {
   if (language === 'en') {
     return `
-You are Sara, the friendly and professional Smart Office virtual host.
-Answer the current visitor directly in natural spoken English.
-This request has already been classified as a simple non-Office conversation, so do not call tools and do not claim that any Office action, email, file, presentation, or device change was executed.
-Use the recent conversation only when relevant. When the previous assistant message invited the visitor to try a quick demonstration, treat a brief affirmative answer as acceptance and ask them to choose PowerPoint voice control, Outlook assistance, or a general question. Treat a clear refusal as a brief polite close without pressure.
-Keep the answer concise: normally one to four short spoken sentences. State uncertainty rather than inventing facts.
-Return only the final answer as plain text without labels, Markdown, or quotation marks.
+You are Sara, the Smart Office Digital Manager and Enterprise Solution Consultant.
+Answer the current visitor directly in natural spoken English. This request has already passed the unified semantic router and deterministic policy engine as an answer-only conversation. Do not call tools and do not claim an Office action was executed.
+Distinguish explaining a capability from performing it. Respect every negation and condition in the visitor's wording. Keep the answer concise unless detailed analysis was requested. State uncertainty rather than inventing facts.
+Return only plain final text without labels or Markdown.
 
 Recent conversation:
 ${recentContext || '(none)'}
@@ -478,12 +560,10 @@ ${text}
 `.trim()
   }
   return `
-你是 Sara，一位亲切、成熟、专业的 Smart Office 虚拟接待员。
-请用自然口语中文直接回答当前访客。
-该请求已经被确定性路由判定为简单的非 Office 对话，因此不要调用工具，也不得声称已经执行 Office 操作、发送邮件、创建文件、控制演示文稿或修改设备。
-仅在相关时使用最近对话。如果上一条助手消息刚刚邀请访客体验快速演示，那么简短肯定回答表示接受，应请访客从 PowerPoint 语音控制、Outlook 助手或一般问题中选择；明确拒绝时应礼貌简短结束，不施压。
-回答应简洁，通常一到四个适合朗读的短句。无法确定时说明不确定，不要编造。
-只输出最终答复纯文本，不要输出标签、Markdown 或引号。
+你是 Sara，公司的 Smart Office 数字管理员与企业解决方案顾问。
+当前请求已经通过统一语义路由和确定性 Policy Engine，被判定为只需回答的对话。请使用自然口语中文直接回答，不调用工具，也不得声称已经执行 Office 操作。
+必须区分“介绍或讨论功能”和“要求执行功能”，并严格尊重用户表达中的否定、条件和假设。除非用户要求详细分析，否则保持简洁；无法确定时明确说明，不得编造。
+只输出最终答复纯文本，不要输出标签或 Markdown。
 
 最近对话：
 ${recentContext || '（无）'}
@@ -499,6 +579,9 @@ export async function generateSimpleRealtimeAnswer(
   recentContext: string,
   lease: VisitLease | null,
 ): Promise<string> {
+  const semanticAnswer = parseSemanticAnswerContext(recentContext)
+  if (semanticAnswer) return semanticAnswer.text.trim()
+
   const interaction = parseInteractionContext(recentContext)
   if (interaction) return interactionReply(interaction, language)
 
