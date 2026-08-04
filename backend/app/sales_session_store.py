@@ -14,10 +14,10 @@ from app.sales_models import (
 )
 
 _ALLOWED_STAGE_TRANSITIONS: dict[SalesStage, set[SalesStage]] = {
-    "attract": {"discover", "recommend", "convert", "close"},
-    "discover": {"recommend", "handle_objection", "convert", "close"},
+    "attract": {"discover", "recommend", "demonstrate", "handle_objection", "convert", "close"},
+    "discover": {"recommend", "demonstrate", "handle_objection", "convert", "close"},
     "recommend": {"discover", "demonstrate", "handle_objection", "convert", "close"},
-    "demonstrate": {"recommend", "handle_objection", "convert", "close"},
+    "demonstrate": {"discover", "recommend", "handle_objection", "convert", "close"},
     "handle_objection": {"discover", "recommend", "demonstrate", "convert", "close"},
     "convert": {"recommend", "close"},
     "close": set(),
@@ -36,11 +36,11 @@ def _clean_list(values: Iterable[str], maximum: int = 20) -> list[str]:
 
 
 class SalesSessionStore:
-    """In-memory, Visit-fenced sales state for the Phase 0 foundation.
+    """In-memory, Visit-fenced sales state.
 
-    The store deliberately has no persistence side effects. Phase 1 may link a
-    consented summary to a contact record, but anonymous Visit state must disappear
-    when the Visit ends.
+    Anonymous sales context is never written by this store. The optional Phase 1
+    persistence service may copy an explicit summary only after a consented contact
+    record exists for the same Visit.
     """
 
     def __init__(self) -> None:
@@ -76,6 +76,9 @@ class SalesSessionStore:
                     language=language,
                 )
                 self._sessions[key] = state
+            elif state.language != language:
+                state.language = language
+                self._sessions[key] = state
             return self._copy(state)
 
     def snapshot(self, conversation_id: str, visit_id: str) -> SalesSessionState | None:
@@ -104,6 +107,7 @@ class SalesSessionStore:
                 visit_id=key[1],
                 language=language,
             )
+            state.language = language
             state.turn_count += 1
             if effective:
                 state.effective_user_turn_count += 1
@@ -154,6 +158,8 @@ class SalesSessionStore:
             state.stage = stage
             if action:
                 state.last_sales_action = " ".join(action.strip().split())[:160]
+            if stage == "close":
+                state.disengaged = True
             return self._update(state)
 
     def mark_field_asked(
@@ -204,6 +210,27 @@ class SalesSessionStore:
             state.explicit_facts.pop(clean, None)
             return self._update(state)
 
+    def increment_demo_request(
+        self,
+        conversation_id: str,
+        visit_id: str,
+        capability_id: str,
+    ) -> tuple[int, SalesSessionState]:
+        clean = str(capability_id or "").strip()
+        if not clean:
+            raise ValueError("capability_id is required")
+        key = self._key(conversation_id, visit_id)
+        with self._lock:
+            state = self._sessions.get(key) or SalesSessionState(
+                conversation_id=key[0],
+                visit_id=key[1],
+            )
+            count = min(10, int(state.explicit_demo_request_counts.get(clean, 0)) + 1)
+            state.explicit_demo_request_counts[clean] = count
+            state.last_recommended_capability = clean
+            state.last_sales_action = "explicit_demo_requested"
+            return count, self._update(state)
+
     def offer_booking(
         self,
         conversation_id: str,
@@ -221,6 +248,7 @@ class SalesSessionStore:
             )
             allowed = (
                 not state.booking_rejected
+                and not state.booking_opened
                 and state.booking_offer_count < 2
                 and gap_ok
             )
@@ -245,6 +273,21 @@ class SalesSessionStore:
             state.last_sales_action = "booking_rejected"
             return self._update(state)
 
+    def mark_booking_opened(
+        self,
+        conversation_id: str,
+        visit_id: str,
+    ) -> SalesSessionState:
+        key = self._key(conversation_id, visit_id)
+        with self._lock:
+            state = self._sessions.get(key) or SalesSessionState(
+                conversation_id=key[0],
+                visit_id=key[1],
+            )
+            state.booking_opened = True
+            state.last_sales_action = "booking_opened"
+            return self._update(state)
+
     def offer_contact(
         self,
         conversation_id: str,
@@ -258,8 +301,10 @@ class SalesSessionStore:
             )
             allowed = (
                 not state.contact_rejected
+                and not state.contact_opened
                 and state.contact_offer_count < 1
                 and state.effective_user_turn_count >= 2
+                and state.value_delivered
             )
             if allowed:
                 state.contact_offer_count += 1
@@ -280,6 +325,55 @@ class SalesSessionStore:
             state.contact_rejected = True
             state.last_sales_action = "contact_rejected"
             return self._update(state)
+
+    def mark_contact_opened(
+        self,
+        conversation_id: str,
+        visit_id: str,
+    ) -> SalesSessionState:
+        key = self._key(conversation_id, visit_id)
+        with self._lock:
+            state = self._sessions.get(key) or SalesSessionState(
+                conversation_id=key[0],
+                visit_id=key[1],
+            )
+            state.contact_opened = True
+            state.last_sales_action = "contact_opened"
+            return self._update(state)
+
+    def mark_value_delivered(
+        self,
+        conversation_id: str,
+        visit_id: str,
+        *,
+        action: str = "customer_value_explained",
+    ) -> SalesSessionState:
+        key = self._key(conversation_id, visit_id)
+        with self._lock:
+            state = self._sessions.get(key) or SalesSessionState(
+                conversation_id=key[0],
+                visit_id=key[1],
+            )
+            state.value_delivered = True
+            state.last_sales_action = action[:160]
+            return self._update(state)
+
+    def record_cost_claim(
+        self,
+        conversation_id: str,
+        visit_id: str,
+    ) -> tuple[bool, SalesSessionState]:
+        key = self._key(conversation_id, visit_id)
+        with self._lock:
+            state = self._sessions.get(key) or SalesSessionState(
+                conversation_id=key[0],
+                visit_id=key[1],
+            )
+            allowed = state.cost_claim_used_count < 1
+            if allowed:
+                state.cost_claim_used_count = 1
+                state.last_sales_action = "approved_cost_analogy_used"
+            return allowed, self._update(state)
 
     def record_demonstration(
         self,
@@ -353,6 +447,21 @@ class SalesSessionStore:
                 state.last_sales_action = "proactive_nudge"
             return allowed, self._update(state)
 
+    def mark_profile_persisted(
+        self,
+        conversation_id: str,
+        visit_id: str,
+    ) -> SalesSessionState:
+        key = self._key(conversation_id, visit_id)
+        with self._lock:
+            state = self._sessions.get(key) or SalesSessionState(
+                conversation_id=key[0],
+                visit_id=key[1],
+            )
+            state.profile_persisted = True
+            state.last_sales_action = "consented_sales_profile_persisted"
+            return self._update(state)
+
     def end_visit(self, conversation_id: str, visit_id: str) -> SalesSessionState | None:
         key = self._key(conversation_id, visit_id)
         with self._lock:
@@ -367,6 +476,7 @@ class SalesSessionStore:
         with self._lock:
             return {
                 "schema_version": "sales-session-v1",
+                "phase": "phase1_sales_runtime",
                 "active_session_count": len(self._sessions),
             }
 
