@@ -14,6 +14,7 @@ import {
   reportSalesConversionEvent,
   type SalesTurnResponse,
 } from './salesConversationClient'
+import { queueSalesOfficeDelegate } from './salesOfficeDelegate'
 import { renderSalesReply, type SalesUiResult } from './salesReplyRenderer'
 
 const SALES_CONTEXT_PREFIX = '__SMART_OFFICE_SALES_CONTEXT__:'
@@ -162,6 +163,11 @@ export async function previewConversationRoute(
 
     const delegateText = delegatedOfficeText(turn)
     if (!turn.handled && delegateText) {
+      queueSalesOfficeDelegate({
+        originalText: request.text,
+        delegateText,
+        visitId: request.visitId,
+      })
       console.info('[SalesRuntime] allowlisted-demo-delegated', {
         reason: turn.reason,
         delegateText,
