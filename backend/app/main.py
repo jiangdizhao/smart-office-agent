@@ -14,6 +14,7 @@ from app.exhibition_admin_mode import ExhibitionAdminModeMiddleware, exhibition_
 from app.executor import run_task_plan_only, run_task_with_tools
 from app.general_chat_api import router as general_chat_router
 from app.human_recording_api import router as human_recording_router
+from app.legacy_office_compat_api import router as legacy_office_compat_router
 from app.models import (
     AgentRequest,
     AgentResponse,
@@ -63,6 +64,7 @@ app.include_router(enhanced_turn_router)
 app.include_router(turn_router)
 app.include_router(presentation_router)
 app.include_router(office_router)
+app.include_router(legacy_office_compat_router)
 app.include_router(desktop_command_router)
 app.include_router(recipient_router)
 app.include_router(general_chat_router)
