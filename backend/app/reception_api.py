@@ -5,11 +5,16 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.conversation_store import ActorType, Language, conversation_store
 from app.event_bus import event_bus
 from app.reception_knowledge import reception_knowledge
+from app.sales_experience import (
+    SalesExperienceProactiveRequest,
+    SalesExperienceProactiveResponse,
+    sales_experience,
+)
 from app.state_store import state_store
 from app.visitor_memory_queue import visitor_memory_queue
 from app.visitor_memory_store import visitor_memory_store
@@ -77,17 +82,13 @@ class ProximityDetectionRequest(BaseModel):
     identity_similarity: float | None = Field(default=None, ge=-1.0, le=1.0)
 
 
-def _proactive_reception_intro(language: Language) -> str:
-    if language == "en":
-        return (
-            "I am Sara, your Smart Office virtual host. I can demonstrate voice-controlled "
-            "PowerPoint, assist with Outlook, and answer general questions. Would you like "
-            "to try a quick demonstration?"
-        )
-    return (
-        "我是 Sara，Smart Office 虚拟接待员。我可以为您演示 PowerPoint 语音控制、"
-        "Outlook 助手，也可以回答一般问题。您愿意体验一个快速演示吗？"
-    )
+class SalesExperienceOutputRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(..., min_length=1, max_length=160)
+    visit_id: str = Field(..., min_length=1, max_length=160)
+    result: Literal["completed", "interrupted", "failed", "cancelled"]
+    cancel_reason: str | None = Field(default=None, max_length=160)
 
 
 def _stale_visit_http(exc: RuntimeError) -> HTTPException:
@@ -267,6 +268,8 @@ def conversation_visit_end(
             recent_messages=list(archive.get("recent_messages") or []),
             visit_id=str(archive.get("visit_id") or visit_id or "") or None,
         )
+    if visit_id:
+        sales_experience.end_visit(conversation_id, visit_id)
 
     return {
         "ok": True,
@@ -300,7 +303,7 @@ def proximity_greeting(
         if request.greeting_kind == "registered_identity" and request.identity_id
         else None
     )
-    triggered, greeting, reason, state = conversation_store.proximity_greeting(
+    triggered, _, reason, state = conversation_store.proximity_greeting(
         conversation_id,
         language=request.language,
         actor_type=request.actor_type,
@@ -308,33 +311,76 @@ def proximity_greeting(
         registered_memory=registered_memory,
     )
 
-    spoken_text = greeting
-    registered_return = request.greeting_kind == "registered_identity"
-    if triggered and not registered_return:
-        intro = _proactive_reception_intro(request.language)
+    opening = None
+    spoken_text = ""
+    if triggered and state.visit_id:
+        opening = sales_experience.plan_opening(
+            conversation_id=conversation_id,
+            visit_id=state.visit_id,
+            language=request.language,
+            greeting_kind=request.greeting_kind,
+            display_name=request.display_name or state.display_name,
+        )
+        spoken_text = opening.text
         state = conversation_store.complete_assistant_turn(
             conversation_id,
-            text=intro,
-            route="proactive_reception_opening",
+            text=spoken_text,
+            route="sales_experience_opening",
             expect_reply=True,
             source="virtual_host",
             expected_visit_id=state.visit_id,
         )
-        spoken_text = f"{greeting} {intro}".strip()
 
     return {
         "ok": True,
         "triggered": triggered,
         "greeting": spoken_text,
+        "opening": None if opening is None else opening.model_dump(mode="json"),
         "reason": reason,
         "conversation_phase": state.conversation_phase,
         "proactive_reception": triggered,
-        "registered_return": registered_return,
+        "registered_return": request.greeting_kind == "registered_identity",
         "visit_id": state.visit_id,
         "identity_id": state.identity_id,
         "registered_memory_loaded": bool(registered_memory),
         "revision": state.revision,
     }
+
+
+@router.post(
+    "/api/sales/experience/proactive",
+    response_model=SalesExperienceProactiveResponse,
+)
+def sales_experience_proactive(
+    request: SalesExperienceProactiveRequest,
+) -> SalesExperienceProactiveResponse:
+    return sales_experience.plan_proactive(request)
+
+
+@router.get("/api/sales/experience/status/{conversation_id}/{visit_id}")
+def sales_experience_status(conversation_id: str, visit_id: str) -> dict:
+    return sales_experience.status(conversation_id, visit_id)
+
+
+@router.get("/api/sales/experience/self-test")
+def sales_experience_self_test() -> dict:
+    return sales_experience.self_test()
+
+
+@router.post("/api/sales/experience/output-result")
+def sales_experience_output_result(request: SalesExperienceOutputRequest) -> dict:
+    sales_experience.mark_output_result(
+        request.conversation_id,
+        request.visit_id,
+        request.result,
+    )
+    if request.cancel_reason:
+        sales_experience.mark_cancel_reason(
+            request.conversation_id,
+            request.visit_id,
+            request.cancel_reason,
+        )
+    return {"ok": True, "phase": "phase1_sales_experience"}
 
 
 @router.get("/reception/content/{entry_id}", response_class=HTMLResponse)
