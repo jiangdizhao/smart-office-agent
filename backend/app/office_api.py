@@ -49,6 +49,12 @@ class OfficeTurnRequest(BaseModel):
     realtime_tool_call: RealtimeOfficeToolCall
 
 
+class SystemVolumeRequest(BaseModel):
+    """Bounded compatibility request reused by the legacy direct volume adapter."""
+
+    percent: int = Field(..., ge=0, le=100)
+
+
 class OfficeTurnResponse(BaseModel):
     conversation_id: str
     route: Literal["office_direct", "office_planned_task"]
