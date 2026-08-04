@@ -31,8 +31,11 @@ if (scheduler.includes("addEventListener('smartoffice:realtime-speaking-stop'"))
 }
 
 for (const result of ['started', 'completed', 'interrupted', 'failed']) {
-  requireText(voice, `this.dispatchLifecycle('${result}'`, `Voice lifecycle ${result}`)
+  requireText(voice, `'${result}'`, `Voice lifecycle result ${result}`)
 }
+requireText(voice, "this.dispatchLifecycle('started'", 'Voice lifecycle start dispatch')
+requireText(voice, "this.dispatchLifecycle('completed'", 'Voice lifecycle completion dispatch')
+requireText(voice, "aborted ? 'interrupted' : 'failed'", 'Interrupted/failed classification')
 requireText(voice, 'speakExpressiveExact', 'Expressive exact speech path')
 requireText(delivery, 'light_playful', 'Approved playful delivery style')
 requireText(delivery, 'calm_reassuring', 'Sensitive-context delivery style')
