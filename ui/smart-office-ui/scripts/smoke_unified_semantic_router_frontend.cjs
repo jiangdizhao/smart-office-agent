@@ -19,6 +19,7 @@ const renderer = read('src/sales/salesReplyRenderer.ts')
 const proactive = read('src/sales/salesPhase2AProactiveScheduler.ts')
 const client = read('src/routing/unifiedSemanticRouterClient.ts')
 const continuousVoice = read('src/vision/proactiveReceptionVoiceLoop.ts')
+const preemption = read('src/voice/preemptiveTurnCoordinator.ts')
 
 requireText(core, 'requestUnifiedSemanticRoute', 'Main conversation route')
 requireText(core, 'semantic.final_policy_decision', 'Policy-gated route')
@@ -38,6 +39,11 @@ forbidText(continuousVoice, 'executeDeterministicDesktopCommand', 'Continuous vo
 forbidText(continuousVoice, 'resolveInteractionVoiceCommand', 'Continuous voice route')
 forbidText(continuousVoice, '/api/desktop-command', 'Continuous voice route')
 forbidText(continuousVoice, 'pendingInteractionConfirmation', 'Continuous voice route')
+
+requireText(preemption, "'/api/semantic-route'", 'Semantic route turn cancellation')
+requireText(preemption, "preempt('visitor_barge_in')", 'Barge-in cancellation')
+requireText(preemption, 'previous?.abort()', 'Superseded turn abort')
+requireText(preemption, 'TURN_SCOPED_PATHS', 'Turn-scoped request registry')
 
 requireText(sales, 'base.semantic_decision?.route', 'Sales semantic dispatch')
 requireText(sales, "semantic?.primary_intent === 'self_introduction'", 'Semantic identity dispatch')
@@ -69,4 +75,4 @@ requireText(client, 'flattenSemanticProfile', 'Profile evidence bridge')
 requireText(client, 'SUPPORTED_SALES_PROFILE_FIELDS', 'Deterministic profile field allowlist')
 requireText(client, '.filter(([key]) => SUPPORTED_SALES_PROFILE_FIELDS.has(key))', 'Unsupported profile filtering')
 
-console.log('PASS: frontend continuous voice has one Unified Router owner, bounded duplicate suppression, policy-gated structured actions, canonical execution commands, completion-bound booking/contact pending intent, supported sales profile fields and the canonical Digital Manager persona.')
+console.log('PASS: frontend continuous voice has one Unified Router owner, bounded duplicate suppression, semantic-route cancellation on barge-in, policy-gated structured actions, canonical execution commands, completion-bound booking/contact pending intent, supported sales profile fields and the canonical Digital Manager persona.')
