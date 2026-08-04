@@ -109,7 +109,6 @@ jobs:
             src/voice/presentationCommandPlan.ts \
             --target ES2022 \
             --module commonjs \
-            --moduleResolution node \
             --outDir .contract-build \
             --skipLibCheck \
             --lib ES2022,DOM
