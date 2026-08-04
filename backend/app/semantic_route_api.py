@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import unicodedata
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -28,6 +29,12 @@ from app.unified_semantic_router import unified_semantic_router
 router = APIRouter(prefix="/api/semantic-route", tags=["unified-semantic-routing"])
 
 
+def _normalise_input_text(text: str) -> str:
+    value = unicodedata.normalize("NFKC", str(text or ""))
+    value = value.replace("\u200b", "").replace("\ufeff", "")
+    return " ".join(value.strip().split())
+
+
 def _context_turns(request: SemanticRouteRequest) -> list[RecentTurn]:
     if request.recent_turns:
         return request.recent_turns[-12:]
@@ -43,7 +50,7 @@ def _context_turns(request: SemanticRouteRequest) -> list[RecentTurn]:
             if not isinstance(item, dict):
                 continue
             role = str(item.get("role") or "user")
-            text = " ".join(str(item.get("text") or "").strip().split())
+            text = _normalise_input_text(str(item.get("text") or ""))
             if role not in {"user", "assistant", "system"} or not text:
                 continue
             result.append(RecentTurn(role=role, text=text))
@@ -99,6 +106,10 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
     ):
         raise HTTPException(status_code=409, detail="stale_visit_before_semantic_route")
 
+    normalised_text = _normalise_input_text(request.text)
+    if not normalised_text:
+        raise HTTPException(status_code=400, detail="empty_text_after_normalisation")
+    request = request.model_copy(update={"text": normalised_text})
     request = request.model_copy(update={"recent_turns": _context_turns(request)})
     mode = semantic_route_policy.mode(
         os.getenv("SMART_OFFICE_SEMANTIC_ROUTER_MODE")
