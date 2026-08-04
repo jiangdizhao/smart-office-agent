@@ -1,5 +1,5 @@
 param(
-    [string]$CondaEnvName = "smartoffice",
+    [string]$CondaEnvName = "sm",
     [string]$Model = "gpt-realtime-2.1",
     [string]$HostAddress = "127.0.0.1",
     [int]$Port = 8000,
