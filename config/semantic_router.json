@@ -3,8 +3,8 @@
   "default_mode": "unified",
   "model": {
     "environment_variable": "OPENAI_SEMANTIC_ROUTER_MODEL",
-    "timeout_seconds": 12,
-    "maximum_output_tokens": 1800
+    "timeout_seconds": 4,
+    "maximum_output_tokens": 600
   },
   "thresholds": {
     "answer_only": 0.55,
