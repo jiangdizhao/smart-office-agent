@@ -7,6 +7,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.conversation_store import conversation_store
+from app.sales_api import _maybe_offer_contact
+from app.sales_models import SalesTurnRequest, SalesTurnResponse
+from app.sales_reply_planner import sales_reply_planner
 from app.semantic_pending_store import semantic_pending_intents
 from app.semantic_route_models import (
     PendingIntentRequest,
@@ -15,6 +18,7 @@ from app.semantic_route_models import (
     SemanticRouteResponse,
 )
 from app.semantic_route_policy import semantic_route_policy
+from app.semantic_sales_bridge import use_semantic_sales_extraction
 from app.turn_router import classify_turn
 from app.unified_semantic_router import unified_semantic_router
 
@@ -91,6 +95,28 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
         model=model,
         elapsed_ms=elapsed_ms,
     )
+
+
+@router.post("/sales-turn", response_model=SalesTurnResponse)
+def semantic_sales_turn(request: SalesTurnRequest) -> SalesTurnResponse:
+    """Run the existing deterministic sales policy with validated semantic facts.
+
+    The semantic router supplies open-domain language understanding. The sales
+    planner still owns invitation limits, capability claims, consent, stage changes
+    and UI actions. Regex extraction remains only a fallback on the legacy endpoint.
+    """
+
+    extraction = request.semantic_extraction
+    if extraction is None:
+        raise HTTPException(status_code=400, detail="semantic_extraction_required")
+    if not conversation_store.is_current_visit(
+        request.conversation_id, request.visit_id
+    ):
+        raise HTTPException(status_code=409, detail="stale_visit_before_semantic_sales_turn")
+    if request.actor_type != "employee":
+        request = request.model_copy(update={"actor_type": "visitor"})
+    with use_semantic_sales_extraction(extraction):
+        return _maybe_offer_contact(sales_reply_planner.handle_turn(request))
 
 
 @router.post("/pending")
