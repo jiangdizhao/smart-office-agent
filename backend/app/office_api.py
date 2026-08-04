@@ -50,7 +50,7 @@ class OfficeTurnRequest(BaseModel):
 
 
 class SystemVolumeRequest(BaseModel):
-    """Bounded compatibility request reused by the legacy direct volume adapter."""
+    """Bounded compatibility request for the original direct volume endpoint."""
 
     percent: int = Field(..., ge=0, le=100)
 
@@ -233,6 +233,27 @@ def office_status() -> dict:
         "email_send_enabled": False,
         "approval_gated_email_send_enabled": True,
         "unrestricted_email_send_enabled": False,
+    }
+
+
+@router.post("/api/office/system/volume")
+async def system_volume(req: SystemVolumeRequest) -> dict[str, Any]:
+    """Compatibility URL backed by the current isolated Office worker and verifier."""
+
+    result, verification, status = await asyncio.to_thread(
+        execute_office_tool_call,
+        "system_set_volume",
+        {"value_percent": req.percent},
+    )
+    return {
+        "ok": bool(result.ok and verification.ok),
+        "phase": "m3a_fusion_phase_3_gate_3_5",
+        "compatibility_endpoint": True,
+        "requested_percent": req.percent,
+        "result": result.model_dump(mode="json"),
+        "verification": verification.model_dump(mode="json"),
+        "office_status": status.model_dump(mode="json"),
+        "message": verification.message if result.ok else result.message,
     }
 
 
