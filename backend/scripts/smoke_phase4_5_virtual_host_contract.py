@@ -180,15 +180,31 @@ def main() -> None:
         "semanticRemainder",
         "normalized: raw",
     )
+
+    # Continuous voice now has exactly one route owner. It may normalize ASR text,
+    # but it cannot execute desktop or interaction actions before the shared
+    # Controller invokes Unified Semantic Router and deterministic policy.
     assert_contains(
         proactive_loop_source,
         "preemptiveTurnCoordinator.recoverToReady",
+        "takeLatestUtterance",
+        "DUPLICATE_TRANSCRIPT_WINDOW_MS",
+        "duplicate-transcript-suppressed",
+        "routeOwner: 'unified_semantic_router'",
+        "await controller().submit(transcript, 'voice')",
+    )
+    assert_not_contains(
+        proactive_loop_source,
         "resolveInteractionVoiceCommand",
         "executeInteractionPanelCommand",
-        "takeLatestUtterance",
+        "executeDeterministicDesktopCommand",
         "presentReply",
         "asynchronous-command-feedback-failed",
+        "/api/desktop-command",
     )
+
+    # Legacy panel interpreters remain available for bounded compatibility paths,
+    # but they are no longer allowed to intercept the continuous voice main path.
     assert_contains(
         semantic_source,
         "visitor_service_intent_classification",
@@ -289,8 +305,9 @@ def main() -> None:
 
     print(
         "PASS: Phase 4-5 includes Visit-scoped result protection, registration/result "
-        "disambiguation, nonblocking single-turn recovery, bounded VAD liveness, full "
-        "panel voice actions, latest-command preemption, and asynchronous feedback."
+        "disambiguation, nonblocking turn recovery, bounded VAD liveness, one Unified "
+        "Router owner for continuous voice, duplicate suppression, full panel actions, "
+        "latest-command preemption, and policy-gated execution."
     )
     print(
         "NOTE: Windows Office, Outlook, rightmost-display placement, real microphone "
