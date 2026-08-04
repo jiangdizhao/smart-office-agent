@@ -85,6 +85,7 @@ def main() -> None:
     nonblocking_error_css = read("ui/smart-office-ui/src/voice/nonBlockingTurnErrors.css")
     visit_bridge_source = read("ui/smart-office-ui/src/voice/visitRealtimeLeaseBridge.ts")
     command_recovery_source = read("ui/smart-office-ui/src/voice/commandSpeechRecovery.ts")
+    transcript_repair_source = read("ui/smart-office-ui/src/voice/commandTranscriptRepair.ts")
     proactive_loop_source = read("ui/smart-office-ui/src/vision/proactiveReceptionVoiceLoop.ts")
     semantic_source = read("ui/smart-office-ui/src/interaction/semanticInteractionInterpreter.ts")
     protected_results_source = read("ui/smart-office-ui/src/interaction/ProtectedResultCenterApp.tsx")
@@ -167,10 +168,17 @@ def main() -> None:
     )
     assert_contains(
         command_recovery_source,
-        "one\\s*b",
+        "recoverCommandTranscript",
         "active visitor language is Chinese",
-        "command-transcript-recovered",
+        "bounded-command-transcript-recovered",
+        "Preserve every requested action",
+    )
+    assert_contains(
+        transcript_repair_source,
+        "one\\s*b",
         "commandLanguage",
+        "semanticRemainder",
+        "normalized: raw",
     )
     assert_contains(
         proactive_loop_source,
