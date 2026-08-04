@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
@@ -14,6 +15,7 @@ from app.semantic_pending_store import semantic_pending_intents
 from app.semantic_route_models import (
     PendingIntentRequest,
     RecentTurn,
+    SemanticRoute,
     SemanticRouteRequest,
     SemanticRouteResponse,
 )
@@ -57,6 +59,38 @@ def _legacy_comparison(request: SemanticRouteRequest) -> dict[str, Any]:
     }
 
 
+def _semantic_timeout_seconds() -> float:
+    try:
+        configured = unified_semantic_router.config().get("model", {}).get(
+            "timeout_seconds", 12
+        )
+        return max(3.0, min(30.0, float(configured)))
+    except (TypeError, ValueError):
+        return 12.0
+
+
+def _timeout_route(language: str) -> SemanticRoute:
+    text = (
+        "语义理解暂时超时。请用一句更明确的话告诉我是要执行操作，还是只想了解功能。"
+        if language == "zh"
+        else "Semantic understanding timed out. Please state in one clear sentence whether you want an action performed or only an explanation."
+    )
+    return SemanticRoute(
+        primary_intent="unknown",
+        domain="unknown",
+        action_mode="clarify",
+        confidence=0.0,
+        requires_clarification=True,
+        clarification_question=text,
+        entities={"language": language},
+        risk="none",
+        reason_codes=["semantic_model_timeout_fail_closed"],
+        source="safe_fallback",
+        complexity="not_applicable",
+        answer_engine="backend",
+    )
+
+
 @router.post("", response_model=SemanticRouteResponse)
 async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse:
     started = time.perf_counter()
@@ -69,7 +103,15 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
     mode = semantic_route_policy.mode(
         os.getenv("SMART_OFFICE_SEMANTIC_ROUTER_MODE")
     )
-    route, model, pending_used = await unified_semantic_router.classify(request)
+    try:
+        route, model, pending_used = await asyncio.wait_for(
+            unified_semantic_router.classify(request),
+            timeout=_semantic_timeout_seconds(),
+        )
+    except TimeoutError:
+        route = _timeout_route(request.language)
+        model = os.getenv("OPENAI_SEMANTIC_ROUTER_MODEL", "").strip() or None
+        pending_used = None
     route = validate_semantic_action_evidence(route, request.text)
     route, final_decision, policy_reasons = semantic_route_policy.apply(route)
     legacy = _legacy_comparison(request) if mode in {"legacy", "shadow"} else None
@@ -182,6 +224,7 @@ def semantic_route_contracts() -> dict[str, Any]:
             "response_renderer",
         ],
         "execution_rule": "No model-proposed tool name is accepted. Only evidence-backed, allowlisted structured actions may reach a domain executor.",
+        "semantic_timeout_seconds": _semantic_timeout_seconds(),
     }
 
 
