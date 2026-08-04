@@ -32,6 +32,7 @@ jobs:
         run: |
           python -m compileall backend/app \
             backend/scripts/smoke_sales_phase0_contract.py \
+            backend/scripts/smoke_sales_phase1_runtime_contract.py \
             backend/scripts/smoke_phase1_voice_contract.py \
             backend/scripts/smoke_phase2_router_contract.py \
             backend/scripts/smoke_phase3_gate1_contract.py \
@@ -53,8 +54,10 @@ jobs:
             backend/scripts/setup_gmail_oauth.py
       - name: Run portable path contract
         run: python backend/scripts/smoke_portable_paths_contract.py
-      - name: Run Phase 0 sales foundation contract
+      - name: Run Phase 0 sales compatibility contract
         run: python backend/scripts/smoke_sales_phase0_contract.py
+      - name: Run Phase 1 sales runtime contract
+        run: python backend/scripts/smoke_sales_phase1_runtime_contract.py
       - name: Run Phase 1 regression contract
         run: python backend/scripts/smoke_phase1_voice_contract.py
       - name: Run Phase 2 router contract
