@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from app.contact_record_api import _initialise as initialise_contact_database
 from app.sales_models import SalesSessionState, utc_now_iso
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +34,10 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialise() -> None:
+    # The consent table is an explicit dependency. Do not rely on FastAPI router
+    # startup order, because direct contracts and isolated workers also call this
+    # service.
+    initialise_contact_database()
     with _LOCK, _connect() as connection:
         connection.execute(
             """
