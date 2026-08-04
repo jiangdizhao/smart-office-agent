@@ -5,6 +5,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 $pythonCommand = Get-Command python -ErrorAction Stop
 $scriptPath = Join-Path $PSScriptRoot "test_unified_semantic_router_live.py"
 
