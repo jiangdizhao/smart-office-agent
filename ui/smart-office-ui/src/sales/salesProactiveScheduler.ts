@@ -4,17 +4,20 @@ import {
 } from '../display/multiScreenWindowManager'
 import { publishSessionMessage } from '../interaction/sessionEventBus'
 import { realtimeAgent, type VoiceLanguage } from '../voice/realtimeAgentRuntime'
-import { voiceOutputManager } from '../voice/voiceOutputManager'
-import { visitLeaseRegistry, type VisitLease } from '../vision/visitLeaseRegistry'
 import {
-  endSalesVisit,
-  requestSalesProactive,
-} from './salesConversationClient'
-import { renderSalesReply } from './salesReplyRenderer'
+  voiceOutputManager,
+  type AssistantOutputLifecycleDetail,
+} from '../voice/voiceOutputManager'
+import { visitLeaseRegistry, type VisitLease } from '../vision/visitLeaseRegistry'
+import { endSalesVisit } from './salesConversationClient'
+import {
+  reportSalesExperienceOutput,
+  requestSalesExperienceProactive,
+} from './salesExperienceClient'
 
 const CONVERSATION_STORAGE_KEY = 'smartoffice_voice_conversation_id'
 const FIRST_NUDGE_MS = 7_000
-const SECOND_NUDGE_MS = 15_000
+const SECOND_NUDGE_DELAY_MS = 8_000
 const CJK = /[\u3400-\u9fff]/
 
 type ActiveSchedule = {
@@ -22,18 +25,32 @@ type ActiveSchedule = {
   visitId: string
   conversationId: string
   language: VoiceLanguage
-  quietStartedAt: number
+  purpose: string
+  delayMs: number
+  armedAt: number
   lease: VisitLease
+}
+
+export type SalesCoordinatorStatus = {
+  state: 'inactive' | 'awaiting_user' | 'user_speaking' | 'assistant_speaking' | 'interaction_active'
+  visitId: string | null
+  purpose: string | null
+  nextNudgeInMs: number | null
+  lastCancelReason: string | null
+  lastOutputResult: string | null
 }
 
 class SalesProactiveScheduler {
   private installed = false
   private generation = 0
-  private timers = new Set<number>()
+  private timer: number | null = null
   private active: ActiveSchedule | null = null
   private userSpeaking = false
   private interactionInputActive = false
   private lastLanguage: VoiceLanguage = 'zh'
+  private lastCancelReason: string | null = null
+  private lastOutputResult: string | null = null
+  private state: SalesCoordinatorStatus['state'] = 'inactive'
 
   install(): void {
     if (this.installed) return
@@ -44,10 +61,14 @@ class SalesProactiveScheduler {
     window.addEventListener('smartoffice:realtime-vad-speech-started', this.onUserSpeechStarted)
     window.addEventListener('smartoffice:continuous-user-transcript', this.onUserTranscript)
     window.addEventListener('smartoffice:realtime-continuous-utterance', this.onUserTranscript)
-    window.addEventListener('smartoffice:realtime-speaking-stop', this.onAgentSpeakingStopped)
+    window.addEventListener('smartoffice:assistant-output-started', this.onAssistantOutputStarted)
+    window.addEventListener('smartoffice:assistant-output-completed', this.onAssistantOutputCompleted)
+    window.addEventListener('smartoffice:assistant-output-interrupted', this.onAssistantOutputInterrupted)
+    window.addEventListener('smartoffice:assistant-output-failed', this.onAssistantOutputFailed)
     window.addEventListener('smartoffice:direct-assistant-caption', this.onAssistantCaption)
     window.addEventListener(INTERACTION_PANEL_OPEN_EVENT, this.onInteractionOpen)
     window.addEventListener(INTERACTION_PANEL_CLOSE_EVENT, this.onInteractionClose)
+    this.publishStatus()
   }
 
   private conversationId(): string {
@@ -61,53 +82,84 @@ class SalesProactiveScheduler {
     return this.lastLanguage
   }
 
-  private clearTimers(): void {
-    for (const timer of this.timers) window.clearTimeout(timer)
-    this.timers.clear()
+  private clearTimer(): void {
+    if (this.timer !== null) window.clearTimeout(this.timer)
+    this.timer = null
   }
 
-  cancel(reason: string): void {
+  private publishStatus(): void {
+    const status = this.status()
+    ;(window as Window & { __SMART_OFFICE_SALES_EXPERIENCE__?: SalesCoordinatorStatus })
+      .__SMART_OFFICE_SALES_EXPERIENCE__ = status
+    window.dispatchEvent(new CustomEvent('smartoffice:sales-experience-status', { detail: status }))
+  }
+
+  status(): SalesCoordinatorStatus {
+    const nextNudgeInMs = this.active
+      ? Math.max(0, this.active.armedAt + this.active.delayMs - Date.now())
+      : null
+    return {
+      state: this.state,
+      visitId: this.active?.visitId ?? visitLeaseRegistry.current()?.visitId ?? null,
+      purpose: this.active?.purpose ?? null,
+      nextNudgeInMs,
+      lastCancelReason: this.lastCancelReason,
+      lastOutputResult: this.lastOutputResult,
+    }
+  }
+
+  cancel(reason: string, state: SalesCoordinatorStatus['state'] = 'inactive'): void {
     this.generation += 1
-    this.clearTimers()
+    this.clearTimer()
     this.active = null
-    console.info('[SalesRuntime] proactive-schedule-cancelled', { reason })
+    this.lastCancelReason = reason
+    this.state = state
+    console.info('[SalesExperience] quiet-schedule-cancelled', { reason })
+    this.publishStatus()
   }
 
-  private scheduleFromQuietBoundary(reason: string): void {
+  private scheduleAfterCompletedOutput(
+    detail: AssistantOutputLifecycleDetail,
+    delayMs: number,
+  ): void {
     const lease = visitLeaseRegistry.current()
     const conversationId = this.conversationId()
-    if (!lease || !conversationId || lease.signal.aborted || this.interactionInputActive) return
+    if (
+      !lease
+      || !conversationId
+      || lease.signal.aborted
+      || this.interactionInputActive
+      || detail.visitId !== lease.visitId
+    ) return
 
     this.generation += 1
-    this.clearTimers()
+    this.clearTimer()
     const generation = this.generation
     this.active = {
       generation,
       visitId: lease.visitId,
       conversationId,
       language: this.lastLanguage,
-      quietStartedAt: Date.now(),
+      purpose: detail.purpose,
+      delayMs,
+      armedAt: Date.now(),
       lease,
     }
-    this.arm(generation, FIRST_NUDGE_MS)
-    this.arm(generation, SECOND_NUDGE_MS)
-    console.info('[SalesRuntime] proactive-schedule-armed', {
-      reason,
-      visitId: lease.visitId,
-      firstSeconds: FIRST_NUDGE_MS / 1_000,
-      secondSeconds: SECOND_NUDGE_MS / 1_000,
-    })
-  }
-
-  private arm(generation: number, delayMs: number): void {
-    const timer = window.setTimeout(() => {
-      this.timers.delete(timer)
-      void this.fire(generation, delayMs)
+    this.state = 'awaiting_user'
+    this.timer = window.setTimeout(() => {
+      this.timer = null
+      void this.fire(generation)
     }, delayMs)
-    this.timers.add(timer)
+    console.info('[SalesExperience] quiet-schedule-armed', {
+      visitId: lease.visitId,
+      afterPurpose: detail.purpose,
+      delaySeconds: delayMs / 1_000,
+      questionField: detail.questionField,
+    })
+    this.publishStatus()
   }
 
-  private async fire(generation: number, nominalDelayMs: number): Promise<void> {
+  private async fire(generation: number): Promise<void> {
     const active = this.active
     if (!active || active.generation !== generation || generation !== this.generation) return
     if (!visitLeaseRegistry.isCurrent(active.lease) || active.lease.signal.aborted) return
@@ -116,22 +168,23 @@ class SalesProactiveScheduler {
     const agentSpeaking = runtime.outputActive || runtime.responseActive
     const toolActive = document.body.classList.contains('smartoffice-tool-active')
     if (this.userSpeaking || agentSpeaking || toolActive || this.interactionInputActive) {
-      // The quiet interval starts again only after the blocking activity ends.
-      if (agentSpeaking || this.userSpeaking) return
-      this.arm(generation, 1_000)
+      this.cancel(
+        this.userSpeaking
+          ? 'visitor_speaking_at_deadline'
+          : agentSpeaking
+            ? 'assistant_speaking_at_deadline'
+            : toolActive
+              ? 'tool_active_at_deadline'
+              : 'interaction_active_at_deadline',
+      )
       return
     }
 
-    const silenceSeconds = Math.max(
-      Math.round(nominalDelayMs / 1_000),
-      Math.floor((Date.now() - active.quietStartedAt) / 1_000),
-    )
     try {
-      const response = await requestSalesProactive({
+      const response = await requestSalesExperienceProactive({
         conversationId: active.conversationId,
         visitId: active.visitId,
         language: active.language,
-        silenceSeconds,
         userSpeaking: this.userSpeaking,
         agentSpeaking,
         toolActive,
@@ -140,43 +193,57 @@ class SalesProactiveScheduler {
       })
       if (
         !response.speak
+        || !response.reply
         || generation !== this.generation
         || !visitLeaseRegistry.isCurrent(active.lease)
       ) return
 
-      const text = await renderSalesReply({
-        userText: '',
-        language: active.language,
-        plan: response.reply_plan,
-        fallbackText: response.fallback_text,
-        lease: active.lease,
-      })
-      if (generation !== this.generation || !visitLeaseRegistry.isCurrent(active.lease)) return
-
+      const reply = response.reply
+      const text = reply.text.trim() || reply.fallback_text.trim()
+      if (!text) return
       publishSessionMessage({
         conversationId: active.conversationId,
         visitId: active.visitId,
         role: 'assistant',
         text,
-        source: 'phase1_proactive_sales',
+        source: reply.purpose,
       })
       window.dispatchEvent(new CustomEvent('smartoffice:direct-assistant-caption', {
-        detail: { text, source: 'phase1_proactive_sales' },
+        detail: { text, source: reply.purpose },
       }))
       await voiceOutputManager.speak(text, active.language, {
         lease: active.lease,
         signal: active.lease.signal,
         allowLocalFallback: false,
+        delivery: reply.delivery,
+        purpose: reply.purpose,
+        replyMode: reply.reply_mode,
+        expectUserResponse: reply.expect_user_response,
+        questionField: reply.question_field,
       })
     } catch (error) {
       if (!active.lease.signal.aborted) {
-        console.error('[SalesRuntime] proactive-sales-failed-open', {
+        console.error('[SalesExperience] proactive-output-failed', {
           message: error instanceof Error ? error.message : String(error),
           visitId: active.visitId,
-          silenceSeconds,
         })
       }
     }
+  }
+
+  private reportOutput(detail: AssistantOutputLifecycleDetail): void {
+    const conversationId = this.conversationId()
+    const lease = visitLeaseRegistry.current()
+    if (!conversationId || !detail.visitId) return
+    const result = detail.result === 'started' ? null : detail.result
+    if (!result) return
+    void reportSalesExperienceOutput({
+      conversationId,
+      visitId: detail.visitId,
+      result,
+      cancelReason: result === 'interrupted' || result === 'failed' ? this.lastCancelReason : null,
+      lease: lease?.visitId === detail.visitId ? lease : null,
+    }).catch(() => undefined)
   }
 
   private onVisitActivated = (event: Event): void => {
@@ -210,7 +277,7 @@ class SalesProactiveScheduler {
 
   private onUserSpeechStarted = (): void => {
     this.userSpeaking = true
-    this.cancel('visitor_speech_started')
+    this.cancel('visitor_speech_started', 'user_speaking')
   }
 
   private onUserTranscript = (event: Event): void => {
@@ -227,19 +294,62 @@ class SalesProactiveScheduler {
     if (text) this.lastLanguage = this.inferLanguage(text)
   }
 
-  private onAgentSpeakingStopped = (): void => {
+  private onAssistantOutputStarted = (event: Event): void => {
+    const detail = event instanceof CustomEvent
+      ? event.detail as AssistantOutputLifecycleDetail
+      : null
+    if (!detail) return
+    this.lastLanguage = this.inferLanguage(detail.text)
+    this.lastOutputResult = 'started'
+    this.cancel(`assistant_output_started:${detail.purpose}`, 'assistant_speaking')
+  }
+
+  private onAssistantOutputCompleted = (event: Event): void => {
+    const detail = event instanceof CustomEvent
+      ? event.detail as AssistantOutputLifecycleDetail
+      : null
+    if (!detail) return
     this.userSpeaking = false
-    this.scheduleFromQuietBoundary('agent_output_completed')
+    this.lastOutputResult = 'completed'
+    this.reportOutput(detail)
+    if (!detail.expectUserResponse) {
+      this.cancel(`completed_without_expected_reply:${detail.purpose}`)
+      return
+    }
+    const delay = detail.purpose === 'sales_proactive_first'
+      ? SECOND_NUDGE_DELAY_MS
+      : FIRST_NUDGE_MS
+    this.scheduleAfterCompletedOutput(detail, delay)
+  }
+
+  private onAssistantOutputInterrupted = (event: Event): void => {
+    const detail = event instanceof CustomEvent
+      ? event.detail as AssistantOutputLifecycleDetail
+      : null
+    if (!detail) return
+    this.lastOutputResult = 'interrupted'
+    this.reportOutput(detail)
+    this.cancel(`assistant_output_interrupted:${detail.purpose}`)
+  }
+
+  private onAssistantOutputFailed = (event: Event): void => {
+    const detail = event instanceof CustomEvent
+      ? event.detail as AssistantOutputLifecycleDetail
+      : null
+    if (!detail) return
+    this.lastOutputResult = 'failed'
+    this.reportOutput(detail)
+    this.cancel(`assistant_output_failed:${detail.purpose}`)
   }
 
   private onInteractionOpen = (): void => {
     this.interactionInputActive = true
-    this.cancel('interaction_panel_open')
+    this.cancel('interaction_panel_open', 'interaction_active')
   }
 
   private onInteractionClose = (): void => {
     this.interactionInputActive = false
-    this.scheduleFromQuietBoundary('interaction_panel_closed')
+    this.cancel('interaction_panel_closed')
   }
 }
 
