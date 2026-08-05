@@ -1,12 +1,248 @@
-export {
-  generateSimpleRealtimeAnswer,
-  previewConversationRoute,
+import {
+  generateSimpleRealtimeAnswer as generateSalesAwareAnswer,
+  previewConversationRoute as previewSalesAwareRoute,
+  type SalesAwareConversationRoute,
 } from '../sales/salesConversationRouter'
+import type { VoiceLanguage } from './realtimeAgentRuntime'
+import type { VisitLease } from '../vision/visitLeaseRegistry'
+import {
+  startManagedBackgroundAction,
+  type ManagedBackgroundAction,
+} from './backgroundTaskRuntime'
+import { installSemanticOfficeInterpreterBridge } from './semanticOfficeInterpreterBridge'
 
-export type {
-  SalesAwareConversationRoute as FastConversationRoute,
-} from '../sales/salesConversationRouter'
+export type { FastConversationAnswerEngine } from './fastConversationRouterCore'
+export type FastConversationRoute = SalesAwareConversationRoute
 
-export type {
-  FastConversationAnswerEngine,
-} from './fastConversationRouterCore'
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
+const OPTIMIZED_CONTEXT_PREFIX = '__SMART_OFFICE_OPTIMIZED_CONTEXT__:'
+
+installSemanticOfficeInterpreterBridge()
+
+type RouteRequest = {
+  conversationId: string
+  visitId: string | null
+  text: string
+  language: VoiceLanguage
+  actor: 'visitor' | 'employee' | 'operator'
+  lease: VisitLease | null
+}
+
+type OptimizedContext = {
+  text: string
+  purpose: 'background_action_accepted' | 'direct_volume_result'
+}
+
+function optimizedContext(context: OptimizedContext): string {
+  return `${OPTIMIZED_CONTEXT_PREFIX}${JSON.stringify(context)}`
+}
+
+function parseOptimizedContext(value: string): OptimizedContext | null {
+  if (!value.startsWith(OPTIMIZED_CONTEXT_PREFIX)) return null
+  try {
+    const parsed = JSON.parse(value.slice(OPTIMIZED_CONTEXT_PREFIX.length)) as OptimizedContext
+    return parsed?.text?.trim() ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function normalize(text: string): string {
+  return text
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function stripPoliteness(text: string): string {
+  return normalize(text)
+    .replace(/^(?:请|请你|请您|麻烦|麻烦你|麻烦您|帮我|帮忙|可以帮我|你能|您能)\s*/u, '')
+    .replace(/(?:一下|吧|谢谢|thank you|please)[。.!！]?$/iu, '')
+    .trim()
+}
+
+function managedAction(text: string): ManagedBackgroundAction | null {
+  const clean = stripPoliteness(text).replace(/[。.!！]/g, '').trim()
+  if (/不要|别|无需|不用|是否|能否|能不能|为什么|怎么|如何|if\b|do not|don't|without/i.test(clean)) {
+    return null
+  }
+  const exact: Record<string, ManagedBackgroundAction> = {
+    '打开 teams': 'teams_open',
+    '打开teams': 'teams_open',
+    '启动 teams': 'teams_open',
+    '启动teams': 'teams_open',
+    'open teams': 'teams_open',
+    'launch teams': 'teams_open',
+    '关闭 teams': 'teams_close',
+    '关闭teams': 'teams_close',
+    '退出 teams': 'teams_close',
+    '退出teams': 'teams_close',
+    'close teams': 'teams_close',
+    '打开 onenote': 'onenote_open',
+    '打开onenote': 'onenote_open',
+    '启动 onenote': 'onenote_open',
+    '启动onenote': 'onenote_open',
+    'open onenote': 'onenote_open',
+    'launch onenote': 'onenote_open',
+    '关闭 onenote': 'onenote_close',
+    '关闭onenote': 'onenote_close',
+    '退出 onenote': 'onenote_close',
+    '退出onenote': 'onenote_close',
+    'close onenote': 'onenote_close',
+    '播放音乐': 'music_play_random',
+    '随机播放一首音乐': 'music_play_random',
+    'play music': 'music_play_random',
+    '停止音乐': 'music_stop',
+    '关闭音乐': 'music_stop',
+    'stop music': 'music_stop',
+  }
+  return exact[clean] ?? null
+}
+
+function clearVolumePercent(text: string): number | null {
+  const clean = stripPoliteness(text)
+  if (/不要|别|无需|不用|是否|能否|能不能|为什么|怎么|如何|多少|几|if\b|do not|don't/i.test(clean)) {
+    return null
+  }
+  const match = clean.match(
+    /^(?:把|将)?(?:系统|电脑|扬声器)?(?:音量|声音)(?:调到|调至|调整到|调整为|设置为|设为|改为|变成)\s*(?:百分之\s*)?(\d{1,3})\s*(?:%|％|percent)?$/iu,
+  ) ?? clean.match(/^set\s+(?:the\s+)?volume\s+to\s+(\d{1,3})\s*(?:%|percent)?$/i)
+  if (!match) return null
+  const value = Number(match[1])
+  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : null
+}
+
+async function setVolumeDirect(percent: number, request: RouteRequest): Promise<string> {
+  const response = await fetch(`${API_BASE_URL}/api/office/system/volume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ percent }),
+    signal: request.lease?.signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Direct volume action failed: ${response.status} ${await response.text()}`)
+  }
+  const payload = await response.json() as {
+    ok?: boolean
+    message?: string
+    office_status?: { data?: { volume_percent?: unknown } }
+  }
+  const observed = payload.office_status?.data?.volume_percent
+  if (payload.ok) {
+    const actual = typeof observed === 'number' ? Math.round(observed) : percent
+    return request.language === 'zh'
+      ? `系统音量已调整并验证为 ${actual}%。`
+      : `System volume was adjusted and verified at ${actual} percent.`
+  }
+  const detail = String(payload.message ?? '').trim()
+  return request.language === 'zh'
+    ? `音量操作没有完成。${detail || '请检查 Windows 音频设备。'}`
+    : `The volume action did not complete. ${detail || 'Please check the Windows audio device.'}`
+}
+
+function localGeneralFastPath(request: RouteRequest): SalesAwareConversationRoute | null {
+  const clean = normalize(request.text)
+  if (!clean || clean.length > 180) return null
+
+  // Pending sales answers, references and all business/Office/privacy language must
+  // still pass through the unified semantic and sales routers.
+  if (/^(可以|好|好的|行|愿意|不用|不用了|不了|不需要|yes|no|ok|okay|sure|not now)$/i.test(clean)) return null
+  if (/这个|那个|刚才|上一个|下一个|第二个|它|this|that|it|previous|second/i.test(clean)) return null
+  if (
+    /smart\s*office|公司|产品|方案|解决方案|演示|体验|报价|价格|费用|成本|预约|会议|联系方式|登记|隐私|人脸|行业|职位|痛点|需求|销售|powerpoint|ppt|teams|onenote|outlook|音量|亮度|音乐|录音|结果中心|company|product|solution|demo|price|cost|booking|contact|privacy|industry/i.test(clean)
+  ) return null
+  if (/打开|关闭|启动|停止|创建|发送|调整|设置|播放|执行|open|close|launch|start|stop|create|send|set|adjust|play/i.test(clean)) return null
+
+  const greetingOrThanks = /^(你好|您好|早上好|下午好|晚上好|谢谢|多谢|hello|hi|hey|good morning|good afternoon|good evening|thanks|thank you)[。.!！]?$/i.test(clean)
+  const standaloneQuestion = /[？?]$/.test(clean)
+    || /^(什么是|为什么|怎么会|如何理解|谁是|哪里|哪一个|多少|请解释|请介绍|告诉我)\S+/u.test(clean)
+    || /^(what|why|how|who|where|when|which|could you explain|tell me about)\b/i.test(clean)
+  if (!greetingOrThanks && !standaloneQuestion) return null
+
+  return {
+    route: 'realtime_direct',
+    scene: 'reception',
+    route_reason: 'local_conservative_non_action_fast_path',
+    conversation_complexity: 'simple',
+    answer_engine: 'realtime',
+    recent_context: '',
+    visit_id: request.visitId,
+    semantic_decision: null,
+    office_delegate_text: null,
+  }
+}
+
+function immediateRoute(
+  request: RouteRequest,
+  text: string,
+  reason: string,
+  purpose: OptimizedContext['purpose'],
+): SalesAwareConversationRoute {
+  return {
+    route: 'realtime_direct',
+    scene: 'office',
+    route_reason: reason,
+    conversation_complexity: 'simple',
+    answer_engine: 'realtime',
+    recent_context: optimizedContext({ text, purpose }),
+    visit_id: request.visitId,
+    semantic_decision: null,
+    office_delegate_text: null,
+  }
+}
+
+export async function previewConversationRoute(
+  request: RouteRequest,
+): Promise<SalesAwareConversationRoute> {
+  const startedAt = performance.now()
+  const volume = clearVolumePercent(request.text)
+  if (volume !== null) {
+    const text = await setVolumeDirect(volume, request)
+    console.info('[ConversationLatency] direct-volume-route-complete', {
+      elapsedMs: Math.round(performance.now() - startedAt),
+      percent: volume,
+      visitId: request.visitId,
+    })
+    return immediateRoute(request, text, 'direct_scoped_volume_action', 'direct_volume_result')
+  }
+
+  const action = managedAction(request.text)
+  if (action) {
+    const acceptance = await startManagedBackgroundAction(action, request)
+    console.info('[ConversationLatency] managed-background-action-accepted', {
+      elapsedMs: Math.round(performance.now() - startedAt),
+      action,
+      taskId: acceptance.taskId,
+      visitId: request.visitId,
+    })
+    return immediateRoute(
+      request,
+      acceptance.acceptedText,
+      `background_managed_action:${action}`,
+      'background_action_accepted',
+    )
+  }
+
+  const local = localGeneralFastPath(request)
+  if (local) {
+    console.info('[ConversationLatency] local-general-fast-path', {
+      elapsedMs: Math.round(performance.now() - startedAt),
+      visitId: request.visitId,
+    })
+    return local
+  }
+  return await previewSalesAwareRoute(request)
+}
+
+export async function generateSimpleRealtimeAnswer(
+  text: string,
+  language: VoiceLanguage,
+  recentContext: string,
+  lease: VisitLease | null,
+): Promise<string> {
+  const optimized = parseOptimizedContext(recentContext)
+  if (optimized) return optimized.text.trim()
+  return await generateSalesAwareAnswer(text, language, recentContext, lease)
+}
