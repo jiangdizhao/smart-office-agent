@@ -67,30 +67,38 @@ def _print_json(value: Any) -> None:
 
 def run_offline_contract() -> None:
     from app.semantic_deterministic_router import classify_deterministic
-    from app.semantic_route_models import SemanticRouteRequest
+    from app.semantic_route_models import SemanticAction, SemanticRoute, SemanticRouteRequest
     from app.semantic_route_policy import semantic_route_policy
     from app.semantic_route_validator import validate_semantic_action_evidence
 
     cases = [
-        ("你是谁", "self_introduction", "answer_only"),
-        ("你的角色是什么", "self_introduction", "answer_only"),
-        ("你在这个展台主要负责什么", "self_introduction", "answer_only"),
-        ("What is your role here?", "self_introduction", "answer_only"),
-        ("打开 Teams", "application_action", "execute"),
-        ("请帮我启动微软团队", "application_action", "execute"),
-        ("Could you open Teams?", "application_action", "execute"),
-        ("能不能帮我打开 OneNote？", "application_action", "execute"),
-        ("停止音乐", "system_action", "execute"),
-        ("音量设置为30%", "system_action", "execute"),
-        ("先不要打开 Teams，介绍一下它能做什么", "capability_explanation", "answer_only"),
-        ("Teams 为什么总是打不开", "capability_explanation", "answer_only"),
-        ("如果打开 Teams 会发生什么", "general_question", "answer_only"),
-        ("我不是要预约，只是想了解会议预约功能", "capability_explanation", "answer_only"),
-        ("我想了解登记表会保存什么", "capability_explanation", "answer_only"),
-        ("他说打开 Teams 是什么意思", "capability_explanation", "answer_only"),
+        ("你是谁", "self_introduction", "answer_only", None),
+        ("你的角色是什么", "self_introduction", "answer_only", None),
+        ("你在这个展台主要负责什么", "self_introduction", "answer_only", None),
+        ("What is your role here?", "self_introduction", "answer_only", None),
+        ("打开 Teams", "application_action", "execute", None),
+        ("请帮我启动微软团队", "application_action", "execute", None),
+        ("麻烦你打开teams", "application_action", "execute", None),
+        ("麻烦您启动 Microsoft Teams", "application_action", "execute", None),
+        ("Could you open Teams?", "application_action", "execute", None),
+        ("能不能帮我打开 OneNote？", "application_action", "execute", None),
+        ("停止音乐", "system_action", "execute", None),
+        ("音量设置为30%", "system_action", "execute", 30),
+        ("音量设置为 30%", "system_action", "execute", 30),
+        ("把音量设置到百分之三十", "system_action", "execute", 30),
+        ("请你把系统声音调为三十", "system_action", "execute", 30),
+        ("麻烦您把扬声器音量调到一半", "system_action", "execute", 50),
+        ("把喇叭声音调到三成", "system_action", "execute", 30),
+        ("先不要打开 Teams，介绍一下它能做什么", "capability_explanation", "answer_only", None),
+        ("Teams 为什么总是打不开", "capability_explanation", "answer_only", None),
+        ("如果打开 Teams 会发生什么", "general_question", "answer_only", None),
+        ("我不是要预约，只是想了解会议预约功能", "capability_explanation", "answer_only", None),
+        ("我想了解登记表会保存什么", "capability_explanation", "answer_only", None),
+        ("他说打开 Teams 是什么意思", "capability_explanation", "answer_only", None),
+        ("比较一下 Teams 和 OneNote，但不要打开它们", "capability_explanation", "answer_only", None),
     ]
     results: list[dict[str, Any]] = []
-    for index, (text, expected_intent, expected_decision) in enumerate(cases):
+    for index, (text, expected_intent, expected_decision, expected_percent) in enumerate(cases):
         request = SemanticRouteRequest(
             conversation_id=f"offline-contract-{index}",
             visit_id=None,
@@ -105,6 +113,9 @@ def run_offline_contract() -> None:
         route, final, reasons = semantic_route_policy.apply(route)
         _assert_equal(route.primary_intent, expected_intent, f"Wrong intent for {text}")
         _assert_equal(final, expected_decision, f"Wrong decision for {text}")
+        if expected_percent is not None:
+            _assert_equal(route.entities.get("percent"), expected_percent, f"Wrong volume for {text}")
+            _assert_equal(route.actions[0].arguments.get("percent"), expected_percent, f"Wrong volume action for {text}")
         results.append(
             {
                 "text": text,
@@ -114,6 +125,31 @@ def run_offline_contract() -> None:
                 "reasons": [*route.reason_codes, *reasons],
             }
         )
+
+    contradictory = SemanticRoute(
+        primary_intent="application_action",
+        domain="office",
+        action_mode="execute",
+        confidence=0.99,
+        actions=[SemanticAction(
+            verb="close",
+            target="teams",
+            polarity="affirmed",
+            speech_act="command",
+            evidence="麻烦你打开teams",
+        )],
+        entities={"language": "zh"},
+        risk="low",
+        reason_codes=[],
+        source="semantic_model",
+        answer_engine="office_interpreter",
+    )
+    checked = validate_semantic_action_evidence(contradictory, "麻烦你打开teams")
+    if checked.actions:
+        raise AssertionError("Explicit open wording incorrectly survived as a close action.")
+    if not any(code.startswith("action_verb_conflict_rejected") for code in checked.reason_codes):
+        raise AssertionError("Verb conflict rejection did not leave a diagnostic reason code.")
+
     _print_json({"ok": True, "mode": "offline-contract", "results": results})
     print("PASS: Encoding-safe offline deterministic semantic contract completed.")
 
@@ -143,15 +179,19 @@ def run_live(base_url: str, skip_model_cases: bool) -> None:
         ("English role", "What is your role here?", "self_introduction", "answer_only"),
         ("Teams command", "打开 Teams", "application_action", "execute"),
         ("Polite Teams command", "请帮我启动微软团队", "application_action", "execute"),
+        ("Natural polite Teams", "麻烦你打开teams", "application_action", "execute"),
         ("English polite command", "Could you open Teams?", "application_action", "execute"),
         ("Chinese polite OneNote", "能不能帮我打开 OneNote？", "application_action", "execute"),
         ("Stop music", "停止音乐", "system_action", "execute"),
         ("Bounded volume", "音量设置为30%", "system_action", "execute"),
+        ("Chinese-number volume", "把音量设置到百分之三十", "system_action", "execute"),
+        ("Half volume", "麻烦您把扬声器音量调到一半", "system_action", "execute"),
         ("Negated Teams explanation", "先不要打开 Teams，介绍一下它能做什么", "capability_explanation", "answer_only"),
         ("Teams troubleshooting", "Teams 为什么总是打不开", "capability_explanation", "answer_only"),
         ("Hypothetical Teams", "如果打开 Teams 会发生什么", "general_question", "answer_only"),
         ("Booking explanation", "我不是要预约，只是想了解会议预约功能", "capability_explanation", "answer_only"),
         ("Registration explanation", "我想了解登记表会保存什么", "capability_explanation", "answer_only"),
+        ("Comparison without execution", "比较一下 Teams 和 OneNote，但不要打开它们", "capability_explanation", "answer_only"),
     ]
 
     print("\n=== Deterministic grammar cases (route preview only) ===")
