@@ -26,6 +26,17 @@ _TARGETS = (
     _Target("onenote", _rx(r"one\s*note", r"onenote", r"微软笔记", r"数字笔记"), "application_action", "office", "low"),
     _Target("powerpoint", _rx(r"power\s*point", r"powerpoint", r"ppt", r"幻灯片", r"演示文稿"), "presentation_action", "office", "low"),
     _Target("music", _rx(r"music", r"song", r"歌曲", r"音乐", r"媒体播放器", r"media\s*player"), "system_action", "office", "low"),
+    _Target(
+        "system_volume",
+        _rx(
+            r"系统音量", r"电脑音量", r"扬声器音量", r"扬声器声音", r"喇叭音量", r"喇叭声音",
+            r"系统声音", r"电脑声音", r"播放音量", r"音量", r"声音大小", r"声音",
+            r"speaker\s+volume", r"system\s+volume", r"sound\s+level", r"volume",
+        ),
+        "system_action",
+        "office",
+        "low",
+    ),
     _Target("meeting_booking", _rx(r"预约(?:会议|演示|时间)?", r"会议预约", r"预约日历", r"会议日历", r"book(?:ing)?\s+(?:a\s+)?meeting", r"schedule\s+(?:a\s+)?meeting", r"appointment"), "open_meeting_booking", "interaction", "business_state"),
     _Target("contact_registration", _rx(r"访客登记", r"登记信息", r"登记表", r"联系信息", r"联系方式", r"个人信息表", r"registration\s+form", r"contact\s+form", r"visitor\s+form"), "open_contact_registration", "interaction", "business_state"),
     _Target("recording", _rx(r"实时录音", r"录音", r"录制", r"recording", r"record\s+(?:this|our)?\s*(?:conversation|discussion)?"), "open_recording", "interaction", "business_state"),
@@ -65,18 +76,36 @@ _CLOSE = _rx(
 )
 _PLAY = _rx(r"播放", r"放一首", r"放点", r"来一首", r"开始音乐", r"play\b")
 _STOP = _rx(r"停止", r"停止播放", r"别放了", r"关音乐", r"stop\b", r"stop\s+playing")
+_VOLUME_SET = _rx(
+    r"设置(?:为|到|成)?", r"设(?:置)?(?:为|到|成)?", r"调(?:整)?(?:为|到|成)?", r"改(?:为|到|成)?",
+    r"变成", r"调节到", r"控制在", r"set(?:\s+the)?", r"change(?:\s+the)?", r"adjust(?:\s+the)?",
+)
 
 _POLITE_REQUEST = _rx(
-    r"请", r"帮我", r"麻烦", r"给我", r"能否", r"能不能", r"可否", r"可以(?:帮我)?",
-    r"请你", r"劳驾", r"please", r"can\s+you", r"could\s+you", r"would\s+you",
-    r"will\s+you", r"i\s+(?:want|need|would\s+like)\s+(?:you\s+)?to",
+    r"请(?:你|您)?", r"麻烦(?:你|您)?", r"劳驾(?:你|您)?", r"拜托(?:你|您)?",
+    r"帮(?:我|忙)?", r"替我", r"给我", r"能否", r"能不能", r"可否",
+    r"你(?:能|可以|可不可以|能不能)", r"您(?:能|可以|可不可以|能不能)", r"可以(?:帮我|替我)?",
+    r"please", r"can\s+you", r"could\s+you", r"would\s+you", r"will\s+you",
+    r"would\s+you\s+mind", r"i\s+(?:want|need|would\s+like)\s+(?:you\s+)?to",
 )
 _FILLER = _rx(
-    r"请", r"请你", r"帮我", r"麻烦", r"给我", r"能否", r"能不能", r"可否", r"可以",
-    r"一下", r"现在", r"立即", r"好吗", r"可以吗", r"行吗", r"吧", r"呢", r"吗",
-    r"please", r"can\s+you", r"could\s+you", r"would\s+you", r"will\s+you",
+    r"请(?:你|您)?", r"麻烦(?:你|您)?", r"劳驾(?:你|您)?", r"拜托(?:你|您)?",
+    r"帮(?:我|忙)?", r"替我", r"给我", r"你", r"您", r"能否", r"能不能", r"可否",
+    r"可不可以", r"可以", r"能", r"我想让", r"我需要你", r"我希望你",
+    r"一下", r"现在", r"立即", r"马上", r"当前", r"目前", r"好吗", r"可以吗", r"行吗", r"吧", r"呢", r"吗",
+    r"please", r"can\s+you", r"could\s+you", r"would\s+you", r"will\s+you", r"would\s+you\s+mind",
     r"for\s+me", r"right\s+now", r"now", r"uh", r"um", r"erm", r"hmm", r"the", r"app",
 )
+
+_CHINESE_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+_ENGLISH_NUMBERS = {
+    "zero": 0, "ten": 10, "twenty": 20, "thirty": 30, "forty": 40,
+    "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "one hundred": 100, "hundred": 100,
+}
 
 
 def _normalise(text: str) -> str:
@@ -105,13 +134,112 @@ def _verb(text: str, target: str) -> str | None:
     return unique[0] if len(unique) == 1 else None
 
 
-def _action(verb: str, target: str, evidence: str, *, negated: bool = False) -> SemanticAction:
+def _action(
+    verb: str,
+    target: str,
+    evidence: str,
+    *,
+    arguments: dict | None = None,
+    negated: bool = False,
+) -> SemanticAction:
     return SemanticAction(
         verb=verb,  # type: ignore[arg-type]
         target=target,
+        arguments=dict(arguments or {}),
         polarity="negated" if negated else "affirmed",
         speech_act="explanation_request" if negated else "command",
         evidence=evidence,
+    )
+
+
+def _parse_chinese_number(value: str) -> int | None:
+    clean = value.strip()
+    if not clean:
+        return None
+    if clean == "百" or clean == "一百":
+        return 100
+    if "十" in clean:
+        left, _, right = clean.partition("十")
+        tens = 1 if left == "" else _CHINESE_DIGITS.get(left)
+        ones = 0 if right == "" else _CHINESE_DIGITS.get(right)
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    if len(clean) == 1:
+        return _CHINESE_DIGITS.get(clean)
+    digits = [_CHINESE_DIGITS.get(char) for char in clean]
+    if any(digit is None for digit in digits):
+        return None
+    return int("".join(str(digit) for digit in digits))
+
+
+def _extract_volume_percent(text: str) -> int | None:
+    if _rx(r"最大", r"最高", r"满格", r"百分之百", r"百分百", r"maximum", r"full\s+volume").search(text):
+        return 100
+    if _rx(r"最小", r"最低", r"完全静音", r"minimum").search(text):
+        return 0
+    if _rx(r"一半", r"半音量", r"half(?:\s+volume)?").search(text):
+        return 50
+
+    arabic = re.search(r"(?:百分之\s*)?(\d{1,3})\s*(?:%|percent|个百分点)?", text, re.IGNORECASE)
+    if arabic:
+        return int(arabic.group(1))
+
+    proportion = re.search(r"([一二两三四五六七八九])成", text)
+    if proportion:
+        value = _CHINESE_DIGITS.get(proportion.group(1))
+        return None if value is None else value * 10
+
+    chinese = re.search(r"(?:百分之\s*)?([零〇一二两三四五六七八九十百]{1,4})", text)
+    if chinese:
+        return _parse_chinese_number(chinese.group(1))
+
+    for word, value in sorted(_ENGLISH_NUMBERS.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(word)}\b", text, re.IGNORECASE):
+            return value
+    return None
+
+
+def _volume_route(request: SemanticRouteRequest, text: str, targets: list[_Target]) -> SemanticRoute | None:
+    if not any(target.name == "system_volume" for target in targets):
+        return None
+    if _NEGATION.search(text) or _CONSULTATION.search(text) or _HYPOTHETICAL.search(text) or _QUOTATION.search(text):
+        return None
+    percent = _extract_volume_percent(text)
+    has_command_shape = bool(_VOLUME_SET.search(text) or _POLITE_REQUEST.search(text) or percent is not None)
+    if percent is None or not has_command_shape:
+        return None
+    if not 0 <= percent <= 100:
+        return SemanticRoute(
+            primary_intent="system_action",
+            domain="office",
+            action_mode="clarify",
+            confidence=1.0,
+            requires_clarification=True,
+            clarification_question=(
+                "请提供 0 到 100 之间的音量百分比。"
+                if request.language == "zh"
+                else "Please provide a volume percentage from 0 to 100."
+            ),
+            entities={"language": request.language, "percent": percent},
+            risk="none",
+            reason_codes=["deterministic_volume_out_of_range"],
+            source="fast_path",
+            complexity="not_applicable",
+            answer_engine="backend",
+        )
+    return SemanticRoute(
+        primary_intent="system_action",
+        domain="office",
+        action_mode="execute",
+        confidence=1.0,
+        actions=[_action("set", "system_volume", request.text, arguments={"percent": percent})],
+        entities={"language": request.language, "percent": percent, "grammar": "high_coverage_volume"},
+        risk="low",
+        reason_codes=["deterministic_high_coverage_volume_grammar"],
+        source="fast_path",
+        complexity="not_applicable",
+        answer_engine="office_interpreter",
     )
 
 
@@ -158,6 +286,8 @@ def _discussion_route(request: SemanticRouteRequest, text: str, targets: list[_T
 def _polite_command_route(request: SemanticRouteRequest, text: str, targets: list[_Target]) -> SemanticRoute | None:
     if len(targets) != 1 or not _POLITE_REQUEST.search(text):
         return None
+    if targets[0].name == "system_volume":
+        return None
     if _NEGATION.search(text) or _CONSULTATION.search(text) or _HYPOTHETICAL.search(text) or _QUOTATION.search(text):
         return None
     target = targets[0]
@@ -191,11 +321,15 @@ def classify_deterministic(request: SemanticRouteRequest) -> SemanticRoute | Non
     text = _normalise(request.text)
     targets = _targets(text)
 
-    # Discussion/negation always wins over command-shaped words. Polite command forms
-    # are then accepted before the base grammar sees their question mark or “能否”.
+    # Negation, consultation, hypothetical wording and quotations always win over
+    # command-shaped words. Volume and polite commands are then handled before the
+    # narrower base grammar so natural exhibition speech does not fall to a model.
     discussion = _discussion_route(request, text, targets)
     if discussion is not None:
         return discussion
+    volume = _volume_route(request, text, targets)
+    if volume is not None:
+        return volume
     polite = _polite_command_route(request, text, targets)
     if polite is not None:
         return polite
