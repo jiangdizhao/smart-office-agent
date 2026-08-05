@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
+import { visitLanguagePreference } from '../voice/visitLanguagePreference'
 import {
   openInteractionWindow,
   type InteractionWindowKind,
@@ -18,16 +19,53 @@ function conversationId(): string {
 type RailAction = {
   kind: InteractionWindowKind
   icon: string
-  label: string
-  description: string
+  labelEn: string
+  labelZh: string
+  descriptionEn: string
+  descriptionZh: string
 }
 
 const ACTIONS: RailAction[] = [
-  { kind: 'contact', icon: '✎', label: '登记信息', description: '填写联系方式' },
-  { kind: 'meeting', icon: '◇', label: '预约会议', description: '选择日期与可用员工' },
-  { kind: 'recording', icon: '●', label: '实时录音', description: '录制现场对话' },
-  { kind: 'transcript', icon: '≡', label: '对话总结', description: '本 Session 要点' },
-  { kind: 'results', icon: '▣', label: '结果中心', description: '管理员密码验证' },
+  {
+    kind: 'contact',
+    icon: '✎',
+    labelEn: 'REGISTRATION',
+    labelZh: '登记信息',
+    descriptionEn: 'Leave your contact details',
+    descriptionZh: '填写联系方式',
+  },
+  {
+    kind: 'meeting',
+    icon: '◇',
+    labelEn: 'BOOK A MEETING',
+    labelZh: '预约会议',
+    descriptionEn: 'Choose a date and available staff',
+    descriptionZh: '选择日期与可用员工',
+  },
+  {
+    kind: 'recording',
+    icon: '●',
+    labelEn: 'LIVE RECORDING',
+    labelZh: '实时录音',
+    descriptionEn: 'Record an on-site conversation',
+    descriptionZh: '录制现场对话',
+  },
+  {
+    kind: 'transcript',
+    icon: '≡',
+    labelEn: 'SESSION SUMMARY',
+    labelZh: '对话总结',
+    descriptionEn: 'View this session’s key points',
+    descriptionZh: '查看本次会话要点',
+  },
+  {
+    kind: 'results',
+    icon: '▣',
+    labelEn: 'RESULT CENTER',
+    labelZh: '结果中心',
+    descriptionEn: 'Manage visitor records',
+    descriptionZh: '管理访客档案',
+  },
 ]
 
 export default function InteractionActionRail() {
@@ -38,22 +76,22 @@ export default function InteractionActionRail() {
       kind,
       conversationId: conversationId(),
       visitId: visitLeaseRegistry.current()?.visitId ?? null,
-      language: 'zh',
+      language: visitLanguagePreference.current(),
     })
     setNotice(
       result.ok
         ? kind === 'results'
-          ? '请输入管理员密码'
-          : '已在 Sara 左侧打开'
-        : '面板打开失败，请刷新主界面',
+          ? 'ADMIN PASSWORD REQUIRED · 需要管理员密码'
+          : 'OPENED BESIDE SARA · 已在 Sara 左侧打开'
+        : 'UNABLE TO OPEN · 面板打开失败',
     )
     window.setTimeout(() => setNotice(''), 4_000)
   }
 
   return (
-    <aside className="interaction-action-rail" aria-label="访客互动功能">
+    <aside className="interaction-action-rail" aria-label="Touch services / 访客服务">
       <div className="interaction-action-heading">
-        <span>Touch Services</span>
+        <span>TOUCH SERVICES</span>
         <strong>访客服务</strong>
       </div>
       <div className="interaction-action-list">
@@ -63,13 +101,18 @@ export default function InteractionActionRail() {
             type="button"
             className="interaction-action-button"
             onClick={() => void launch(action.kind)}
+            aria-label={`${action.labelEn} / ${action.labelZh}`}
           >
             <span className="interaction-action-icon" aria-hidden="true">
               {action.icon}
             </span>
             <span className="interaction-action-copy">
-              <strong>{action.label}</strong>
-              <small>{action.description}</small>
+              <strong>{action.labelEn}</strong>
+              <em>{action.labelZh}</em>
+              <small>
+                <span>{action.descriptionEn}</span>
+                <span>{action.descriptionZh}</span>
+              </small>
             </span>
           </button>
         ))}
