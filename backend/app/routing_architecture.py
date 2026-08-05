@@ -4,7 +4,13 @@ import os
 import re
 from typing import Literal
 
-from app.semantic_route_models import RecentTurn, SemanticRoute, SemanticRouteRequest
+from app.semantic_pending_store import semantic_pending_intents
+from app.semantic_route_models import (
+    RecentTurn,
+    SemanticProfileExtraction,
+    SemanticRoute,
+    SemanticRouteRequest,
+)
 from app.turn_router import classify_turn
 
 RoutingArchitecture = Literal["legacy", "hybrid", "unified"]
@@ -47,6 +53,9 @@ _COMPLEX_EN = re.compile(
     r"detailed\s+analysis|comparative\s+analysis|pros\s+and\s+cons|risk\s+analysis)\b",
     re.IGNORECASE,
 )
+
+_AFFIRM = {"可以", "好", "好的", "行", "愿意", "没问题", "yes", "sure", "okay", "ok", "go ahead"}
+_REJECT = {"不", "不用", "不用了", "不了", "不需要", "算了", "no", "no thanks", "not now"}
 
 
 def routing_architecture(value: str | None = None) -> RoutingArchitecture:
@@ -94,6 +103,47 @@ def attach_recent_context(route: SemanticRoute, request: SemanticRouteRequest) -
     entities["language"] = request.language
     entities["recent_context"] = context
     return route.model_copy(update={"entities": entities})
+
+
+def pending_conversion_route(request: SemanticRouteRequest) -> tuple[SemanticRoute | None, str | None]:
+    if not request.visit_id:
+        return None, None
+    pending = semantic_pending_intents.peek(request.conversation_id, request.visit_id)
+    if pending is None or pending.intent_type not in {"booking_offer", "contact_offer"}:
+        return None, None
+    clean = " ".join(request.text.strip().casefold().strip(" ，。！？!?.,").split())
+    response = "accept" if clean in _AFFIRM else "reject" if clean in _REJECT else None
+    if response is None:
+        return None, None
+    semantic_pending_intents.consume(request.conversation_id, request.visit_id)
+    booking = pending.intent_type == "booking_offer"
+    intent = "booking_response" if booking else "contact_response"
+    return (
+        SemanticRoute(
+            primary_intent=intent,
+            domain="sales",
+            action_mode="delegate",
+            confidence=1.0,
+            entities={
+                "language": request.language,
+                "pending_intent": pending.intent_type,
+                "conversion_response": response,
+            },
+            sales_signals=[f"{'booking' if booking else 'contact'}_{response}"],
+            risk="business_state" if response == "accept" else "none",
+            reason_codes=[f"hybrid_pending_{pending.intent_type}_{response}"],
+            profile_extraction=SemanticProfileExtraction(
+                booking_intent=("accept" if response == "accept" else "reject") if booking else "none",
+                contact_intent=("accept" if response == "accept" else "reject") if not booking else "none",
+                brief_affirmation=response == "accept",
+                brief_rejection=response == "reject",
+                sales_relevant=True,
+            ),
+            source="pending_intent",
+            answer_engine="backend",
+        ),
+        pending.intent_type,
+    )
 
 
 def hybrid_non_action_route(request: SemanticRouteRequest) -> SemanticRoute | None:
