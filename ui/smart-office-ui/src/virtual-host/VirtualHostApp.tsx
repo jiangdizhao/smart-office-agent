@@ -4,6 +4,11 @@ import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
 import { useProximityGreeting } from '../vision/useProximityGreeting'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import {
+  VISIT_LANGUAGE_CHANGED_EVENT,
+  visitLanguagePreference,
+  type VisitLanguageChangeDetail,
+} from '../voice/visitLanguagePreference'
+import {
   useOfficeVoiceController,
   type ConversationPhase,
 } from '../voice/useOfficeVoiceController'
@@ -23,29 +28,28 @@ type VadUiState = 'idle' | 'listening' | 'processing'
 function stateText(
   visualState: VirtualHostVisualState,
   conversationPhase: ConversationPhase,
-  language: VoiceLanguage,
 ): string {
   if (visualState === 'idle') {
-    const idleLabels: Record<ConversationPhase, { zh: string; en: string }> = {
-      standby: { zh: '随时为您服务', en: 'Ready to help' },
-      engaged: { zh: '对话进行中', en: 'Conversation in progress' },
-      awaiting_user: { zh: '等待您继续', en: 'Waiting for you' },
-      task_active: { zh: '正在处理本次对话中的任务', en: 'Working on this conversation' },
-      closing: { zh: '本次服务即将结束', en: 'Closing this conversation' },
+    const idleLabels: Record<ConversationPhase, string> = {
+      standby: 'READY · 就绪',
+      engaged: 'CONVERSATION ACTIVE · 对话进行中',
+      awaiting_user: 'YOUR TURN · 等待您继续',
+      task_active: 'WORKING · 正在处理任务',
+      closing: 'CLOSING · 本次服务即将结束',
     }
-    return idleLabels[conversationPhase][language]
+    return idleLabels[conversationPhase]
   }
-  const labels: Record<VirtualHostVisualState, { zh: string; en: string }> = {
-    idle: { zh: '随时为您服务', en: 'Ready to help' },
-    connecting: { zh: '正在连接语音服务', en: 'Connecting voice service' },
-    listening: { zh: '正在聆听', en: 'Listening' },
-    processing: { zh: '正在理解您的请求', en: 'Understanding your request' },
-    speaking: { zh: '正在为您说明', en: 'Speaking' },
-    executing: { zh: '正在执行办公任务', en: 'Working on your office task' },
-    'waiting-approval': { zh: '等待您的确认', en: 'Waiting for confirmation' },
-    error: { zh: '需要重新尝试', en: 'Please try again' },
+  const labels: Record<VirtualHostVisualState, string> = {
+    idle: 'READY · 就绪',
+    connecting: 'CONNECTING · 正在连接',
+    listening: 'LISTENING · 正在聆听',
+    processing: 'UNDERSTANDING · 正在理解',
+    speaking: 'SPEAKING · 正在说明',
+    executing: 'WORKING · 正在执行办公任务',
+    'waiting-approval': 'CONFIRMATION REQUIRED · 等待确认',
+    error: 'PLEASE TRY AGAIN · 请重试',
   }
-  return labels[visualState][language]
+  return labels[visualState]
 }
 
 function controllerVisualState(
@@ -63,10 +67,8 @@ function controllerVisualState(
   return 'idle'
 }
 
-function welcomeText(language: VoiceLanguage): string {
-  return language === 'zh'
-    ? '您好，我是 Sara，Smart Office 数字管理员与企业解决方案顾问。访客靠近后，手持麦克风会自动进入对话状态。'
-    : 'Hello, I am Sara, your Smart Office Digital Manager and Enterprise Solution Consultant. The handheld microphone activates when a visitor approaches.'
+function welcomeText(): string {
+  return 'Welcome, I’m Sara. I speak English and Chinese. Approach and speak to begin. · 欢迎，我是 Sara。我会英语和中文，靠近后直接说话即可。'
 }
 
 function publicError(message: string, language: VoiceLanguage): string {
@@ -92,6 +94,18 @@ export default function VirtualHostApp() {
   useEffect(() => {
     if (controller.actor !== 'operator') controller.setActor('operator')
   }, [controller.actor])
+
+  useEffect(() => {
+    controller.setLanguage(visitLanguagePreference.current())
+    const onLanguageChanged = (event: Event) => {
+      const detail = event instanceof CustomEvent
+        ? event.detail as VisitLanguageChangeDetail
+        : null
+      if (detail?.language) controller.setLanguage(detail.language)
+    }
+    window.addEventListener(VISIT_LANGUAGE_CHANGED_EVENT, onLanguageChanged)
+    return () => window.removeEventListener(VISIT_LANGUAGE_CHANGED_EVENT, onLanguageChanged)
+  }, [])
 
   useEffect(() => {
     const onSpeechStarted = () => setVadUiState('listening')
@@ -190,17 +204,22 @@ export default function VirtualHostApp() {
     else await document.documentElement.requestFullscreen()
   }
 
+  function toggleLanguage(): void {
+    visitLanguagePreference.force(
+      controller.language === 'zh' ? 'en' : 'zh',
+      'header_language_button',
+    )
+  }
+
   const continuousStatus = controller.runtime.continuousListening
     ? visualState === 'listening'
-      ? controller.language === 'zh' ? '正在听取手持麦克风' : 'Listening to the handheld microphone'
+      ? 'Listening to the handheld microphone'
       : visualState === 'processing'
-        ? controller.language === 'zh' ? '正在理解您的问题' : 'Understanding your question'
+        ? 'Understanding your request'
         : visualState === 'speaking'
-          ? controller.language === 'zh' ? '您可以直接说话打断 Sara' : 'Speak to interrupt Sara at any time'
-          : controller.language === 'zh' ? '手持麦克风已就绪，请直接说话' : 'Handheld microphone ready — just speak'
-    : controller.language === 'zh'
-      ? '访客靠近后自动开启手持麦克风'
-      : 'The handheld microphone activates when a visitor approaches'
+          ? 'Speak at any time to interrupt Sara'
+          : 'Handheld microphone ready — just speak'
+    : 'Approach to activate the handheld microphone'
 
   const shownError = publicError(controller.error, controller.language)
 
@@ -215,27 +234,28 @@ export default function VirtualHostApp() {
       <header className="virtual-host-header">
         <div className="virtual-host-brand">
           <span className="brand-symbol" aria-hidden="true">SO</span>
-          <div><strong>Smart Office</strong><span>{controller.language === 'zh' ? '数字管理员 · 解决方案顾问' : 'Digital Manager · Solution Consultant'}</span></div>
+          <div>
+            <strong>Smart Office</strong>
+            <span>Digital Manager · Solution Consultant / 数字管理员 · 解决方案顾问</span>
+          </div>
         </div>
         <div className="virtual-host-header-actions">
           <span className={`system-ready ${controller.runtime.connected ? 'connected' : ''}`}>
             <i />
-            {controller.runtime.connected
-              ? controller.language === 'zh' ? '语音已连接' : 'Voice connected'
-              : controller.language === 'zh' ? '系统就绪' : 'System ready'}
+            {controller.runtime.connected ? 'VOICE CONNECTED' : 'SYSTEM READY'}
           </span>
-          <button type="button" className="header-button language-button" onClick={() => controller.setLanguage(controller.language === 'zh' ? 'en' : 'zh')} aria-label="切换语言">
+          <button type="button" className="header-button language-button" onClick={toggleLanguage} aria-label="Switch language / 切换语言">
             {controller.language === 'zh' ? '中文' : 'EN'}
           </button>
-          <button type="button" className="header-button" onClick={() => void toggleFullscreen()} aria-label="切换全屏">⛶</button>
-          <button type="button" className="header-button" onClick={() => setDrawerOpen(true)} aria-label="打开控制设置">⚙</button>
+          <button type="button" className="header-button" onClick={() => void toggleFullscreen()} aria-label="Fullscreen / 全屏">⛶</button>
+          <button type="button" className="header-button" onClick={() => setDrawerOpen(true)} aria-label="Settings / 设置">⚙</button>
         </div>
       </header>
 
       <section className="virtual-host-stage">
         <div className="virtual-host-status" aria-live="polite">
           <span className={`status-dot status-${visualState}`} />
-          <span>{stateText(visualState, controller.conversationPhase, controller.language)}</span>
+          <span>{stateText(visualState, controller.conversationPhase)}</span>
         </div>
 
         <VirtualHostAvatar state={visualState} />
@@ -245,7 +265,7 @@ export default function VirtualHostApp() {
           language={controller.language}
           userText={userCaption}
           assistantText={assistantCaption}
-          welcomeText={welcomeText(controller.language)}
+          welcomeText={welcomeText()}
         />
 
         <div className={`continuous-voice-card ${vadUiState}`} aria-live="polite">
