@@ -50,13 +50,17 @@ export default function InteractionPanelHost() {
   }
 
   function finishClose(): void {
-    const panelId = activeRef.current?.request.panelInstanceId
+    const closed = activeRef.current?.request ?? null
+    const panelId = closed?.panelInstanceId
     markInteractionPanelClosed(panelId)
     pendingCommands.current = []
     frameReady.current = false
     updateActive(null)
     setClosing(false)
     closeTimer.current = null
+    window.dispatchEvent(new CustomEvent('smartoffice:interaction-panel-closed', {
+      detail: { request: closed },
+    }))
   }
 
   function closePanel(immediate = false): void {
