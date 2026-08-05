@@ -2,12 +2,12 @@
   position: fixed;
   z-index: 14;
   top: 50%;
-  right: clamp(24px, 3.2vw, 66px);
+  right: clamp(180px, 19vw, 560px);
   display: grid;
-  width: min(250px, 19vw);
-  min-width: 205px;
-  gap: 14px;
-  padding: 18px;
+  width: clamp(286px, 16vw, 330px);
+  min-width: 286px;
+  gap: 16px;
+  padding: 22px;
   border: 1px solid rgba(137, 190, 238, 0.2);
   border-radius: 24px;
   background: linear-gradient(180deg, rgba(11, 26, 48, 0.82), rgba(5, 15, 31, 0.76));
@@ -19,27 +19,27 @@
 .interaction-action-heading,
 .interaction-action-copy {
   display: grid;
-  gap: 3px;
+  gap: 4px;
 }
 
-.interaction-action-heading { padding: 0 3px 3px; }
+.interaction-action-heading { padding: 0 4px 4px; }
 .interaction-action-heading span {
   color: #82b9e8;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 850;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
-.interaction-action-heading strong { color: #f0f7ff; font-size: 17px; }
-.interaction-action-list { display: grid; gap: 10px; }
+.interaction-action-heading strong { color: #f0f7ff; font-size: 21px; }
+.interaction-action-list { display: grid; gap: 12px; }
 
 .interaction-action-button {
   display: grid;
-  min-height: 86px;
-  grid-template-columns: 40px minmax(0, 1fr);
+  min-height: 96px;
+  grid-template-columns: 44px minmax(0, 1fr);
   align-items: center;
-  gap: 11px;
-  padding: 11px 12px;
+  gap: 13px;
+  padding: 14px 15px;
   border: 1px solid rgba(123, 181, 235, 0.18);
   border-radius: 16px;
   background: rgba(20, 45, 75, 0.62);
@@ -56,13 +56,13 @@
 .interaction-action-button:disabled { cursor: default; opacity: 0.42; }
 .interaction-action-icon {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   place-items: center;
   border-radius: 13px;
   background: linear-gradient(135deg, rgba(47, 139, 213, 0.82), rgba(79, 89, 203, 0.76));
   color: #fff;
-  font-size: 17px;
+  font-size: 19px;
   font-weight: 800;
 }
 .interaction-action-copy { min-width: 0; }
@@ -75,42 +75,51 @@
 }
 .interaction-action-copy strong {
   color: #f5f9ff;
-  font-size: 13px;
+  font-size: 15px;
   font-style: normal;
   font-weight: 850;
   letter-spacing: 0.035em;
 }
 .interaction-action-copy em {
   color: #d9eaff;
-  font-size: 13px;
+  font-size: 15px;
   font-style: normal;
   font-weight: 700;
 }
 .interaction-action-copy small {
   display: grid;
-  gap: 1px;
-  margin-top: 2px;
-  color: #92acc4;
-  font-size: 10px;
-  line-height: 1.25;
+  gap: 2px;
+  margin-top: 3px;
+  color: #a5bdd3;
+  font-size: 12px;
+  line-height: 1.35;
 }
-.interaction-action-notice { color: #9fc8e9; font-size: 10px; text-align: center; }
+.interaction-action-notice { color: #9fc8e9; font-size: 12px; text-align: center; }
 
 /* Recording is now entered from this service rail. */
 .virtual-host-shell .voice-primary-row > .conversation-record-button { display: none; }
 
+@media (max-width: 1500px) {
+  .interaction-action-rail {
+    right: clamp(96px, 12vw, 220px);
+    width: 270px;
+    min-width: 270px;
+    padding: 18px;
+  }
+}
+
 @media (max-width: 1180px) {
-  .interaction-action-rail { right: 14px; width: 198px; min-width: 0; padding: 12px; }
+  .interaction-action-rail { right: 28px; width: 220px; min-width: 0; padding: 14px; }
   .interaction-action-copy small { display: none; }
-  .interaction-action-button { min-height: 66px; }
+  .interaction-action-button { min-height: 72px; }
 }
 
 @media (max-width: 920px) {
-  .interaction-action-rail { width: 176px; }
+  .interaction-action-rail { width: 190px; }
   .interaction-action-heading strong,
   .interaction-action-copy em { display: none; }
-  .interaction-action-copy strong { font-size: 12px; }
-  .interaction-action-button { min-height: 58px; }
+  .interaction-action-copy strong { font-size: 13px; }
+  .interaction-action-button { min-height: 62px; }
 }
 
 @media (max-width: 760px) {
