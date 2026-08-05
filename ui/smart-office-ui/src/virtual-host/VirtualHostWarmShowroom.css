@@ -33,6 +33,8 @@ html[data-smart-office-route='virtual-host'] body {
   padding-bottom: 6px !important;
 }
 
+/* Keep status, portrait, caption and microphone prompt as one composition.
+   Top padding lowers the whole group without introducing independent transforms. */
 .virtual-host-stage {
   position: relative;
   z-index: 2;
@@ -46,7 +48,7 @@ html[data-smart-office-route='virtual-host'] body {
   justify-content: flex-start !important;
   gap: clamp(10px, 1.35svh, 18px) !important;
   margin: 0 auto !important;
-  padding: 0 0 18px !important;
+  padding: clamp(22px, 3.2svh, 38px) 0 10px !important;
 }
 
 .virtual-host-status {
@@ -58,14 +60,16 @@ html[data-smart-office-route='virtual-host'] body {
   transform: none !important;
 }
 
+/* Height drives both dimensions. The fixed aspect ratio guarantees that increasing
+   the portrait height also increases its width without stretching Sara. */
 .virtual-host-avatar.video-host-avatar {
   position: relative !important;
   flex: 0 0 auto;
   width: auto !important;
-  height: clamp(440px, 60svh, 650px) !important;
+  height: clamp(480px, 64svh, 700px) !important;
   min-width: 0 !important;
   min-height: 0 !important;
-  max-width: min(46vw, 620px) !important;
+  max-width: min(50vw, 660px) !important;
   max-height: none !important;
   aspect-ratio: 538 / 720 !important;
   margin: 0 !important;
@@ -104,18 +108,24 @@ html[data-smart-office-route='virtual-host'] body {
   transform: none !important;
 }
 
+/* The exhibition screen is short but very wide. This branch is therefore the
+   important real-device layout, not the portrait media query. */
 @media (max-height: 820px) {
-  .virtual-host-avatar.video-host-avatar {
-    height: clamp(390px, 57svh, 520px) !important;
-  }
   .virtual-host-stage {
     gap: 9px !important;
-    padding-bottom: 10px !important;
+    padding: clamp(20px, 3svh, 28px) 0 6px !important;
   }
+
+  .virtual-host-avatar.video-host-avatar {
+    height: clamp(440px, 64svh, 540px) !important;
+    max-width: min(50vw, 610px) !important;
+  }
+
   .live-caption {
     min-height: 64px !important;
     padding-block: 9px 10px !important;
   }
+
   .continuous-voice-card {
     margin-top: 2px !important;
     padding-block: 9px !important;
@@ -125,15 +135,19 @@ html[data-smart-office-route='virtual-host'] body {
 @media (max-width: 980px) {
   .virtual-host-stage {
     width: min(720px, calc(100vw - 24px)) !important;
+    padding-top: 14px !important;
   }
+
   .virtual-host-avatar.video-host-avatar {
-    width: min(78vw, 520px) !important;
+    width: min(82vw, 550px) !important;
     height: auto !important;
-    max-width: min(78vw, 520px) !important;
+    max-width: min(82vw, 550px) !important;
   }
+
   .live-caption {
     width: min(94vw, 680px) !important;
   }
+
   .continuous-voice-card {
     width: min(88vw, 520px) !important;
   }
