@@ -51,8 +51,9 @@ function installIntroVoiceGate(): void {
   globalWindow[INSTALL_KEY] = true
 
   window.addEventListener('smartoffice:host-intro-start', (event) => {
-    const detail = event instanceof CustomEvent
-      ? event.detail as IntroEventDetail & Record<string, unknown>
+    const rawDetail = event instanceof CustomEvent ? event.detail : null
+    const detail = rawDetail && typeof rawDetail === 'object'
+      ? rawDetail as IntroEventDetail & Record<string, unknown>
       : {}
     const requestId = String(detail.requestId ?? crypto.randomUUID())
     detail.requestId = requestId
