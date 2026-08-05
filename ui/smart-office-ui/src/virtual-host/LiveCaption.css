@@ -1,0 +1,73 @@
+.single-line-caption {
+  display: flex;
+  width: min(860px, 76vw);
+  min-height: 66px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 16px;
+  overflow: hidden;
+  padding: 11px 22px;
+  text-align: left;
+}
+
+.single-line-caption .caption-role {
+  flex: 0 0 auto;
+  color: #6fc4ff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.caption-stream-window {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 100%);
+}
+
+.caption-stream-text {
+  width: max-content;
+  min-width: min-content;
+  max-width: none !important;
+  flex: 0 0 auto;
+  margin: 0;
+  overflow: visible;
+  white-space: nowrap;
+  text-align: right;
+  animation: caption-stream-arrive 140ms ease-out;
+}
+
+.user-live-caption .caption-stream-text {
+  color: #f0f6fd;
+}
+
+.assistant-live-caption .caption-stream-text {
+  color: #f5f9ff;
+}
+
+@keyframes caption-stream-arrive {
+  from {
+    opacity: 0.55;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 760px) {
+  .single-line-caption {
+    width: min(92vw, 860px);
+    gap: 10px;
+    padding-inline: 16px;
+  }
+
+  .single-line-caption .caption-role {
+    font-size: 9px;
+  }
+}
