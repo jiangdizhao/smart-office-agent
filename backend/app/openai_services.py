@@ -4,10 +4,13 @@ import json
 import logging
 import mimetypes
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from app.openai_http_client import shared_openai_http_client
 
 _OPENAI_API_URL = "https://api.openai.com/v1"
 LOGGER = logging.getLogger(__name__)
@@ -87,9 +90,34 @@ async def generate_response_text(
         "input": input_text,
         "max_output_tokens": max(128, min(8000, max_output_tokens)),
     }
-    timeout = httpx.Timeout(_timeout_seconds("OPENAI_TEXT_TIMEOUT_SECONDS", 90.0))
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(f"{_base_url()}/responses", headers=headers, json=body)
+    timeout_seconds = _timeout_seconds("OPENAI_TEXT_TIMEOUT_SECONDS", 90.0)
+    timeout = httpx.Timeout(timeout_seconds)
+    client = await shared_openai_http_client()
+    started_at = time.monotonic()
+    try:
+        response = await client.post(
+            f"{_base_url()}/responses",
+            headers=headers,
+            json=body,
+            timeout=timeout,
+        )
+    except httpx.TimeoutException as exc:
+        elapsed_ms = round((time.monotonic() - started_at) * 1000)
+        LOGGER.error(
+            "OPENAI_TEXT_TIMEOUT model=%s elapsed_ms=%s timeout_seconds=%s",
+            selected_model,
+            elapsed_ms,
+            timeout_seconds,
+        )
+        raise RuntimeError(
+            f"OpenAI Responses timed out after {timeout_seconds:.1f}s using {selected_model}."
+        ) from exc
+    elapsed_ms = round((time.monotonic() - started_at) * 1000)
+    LOGGER.info(
+        "OPENAI_TEXT_COMPLETE model=%s elapsed_ms=%s pooled_http=true",
+        selected_model,
+        elapsed_ms,
+    )
     if response.status_code >= 400:
         detail = _safe_preview(response.text, 1600)
         LOGGER.error(
@@ -155,16 +183,36 @@ async def _transcribe_once(
         data["language"] = language
 
     headers = {"Authorization": f"Bearer {_api_key()}"}
-    timeout = httpx.Timeout(_timeout_seconds("OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS", 600.0))
+    timeout_seconds = _timeout_seconds("OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS", 600.0)
+    timeout = httpx.Timeout(timeout_seconds)
+    client = await shared_openai_http_client()
+    started_at = time.monotonic()
     with audio_path.open("rb") as audio_file:
         files = {"file": (audio_path.name, audio_file, media_type)}
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
             response = await client.post(
                 f"{_base_url()}/audio/transcriptions",
                 headers=headers,
                 data=data,
                 files=files,
+                timeout=timeout,
             )
+        except httpx.TimeoutException as exc:
+            elapsed_ms = round((time.monotonic() - started_at) * 1000)
+            LOGGER.error(
+                "OPENAI_TRANSCRIPTION_TIMEOUT model=%s elapsed_ms=%s timeout_seconds=%s",
+                model,
+                elapsed_ms,
+                timeout_seconds,
+            )
+            raise RuntimeError(
+                f"OpenAI transcription timed out after {timeout_seconds:.1f}s using {model}."
+            ) from exc
+    LOGGER.info(
+        "OPENAI_TRANSCRIPTION_COMPLETE model=%s elapsed_ms=%s pooled_http=true",
+        model,
+        round((time.monotonic() - started_at) * 1000),
+    )
     if response.status_code >= 400:
         raise RuntimeError(
             f"OpenAI transcription failed ({response.status_code}) using {model}: "
