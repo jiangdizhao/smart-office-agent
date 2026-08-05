@@ -1,1 +1,135 @@
-PLACEHOLDER
+/* Final warm showroom composition. Static background + one normal-flow central column. */
+html[data-smart-office-route='virtual-host'],
+html[data-smart-office-route='virtual-host'] body {
+  background: #d7b995 !important;
+}
+
+.virtual-host-shell {
+  min-height: 100svh;
+  overflow: hidden;
+  background-color: #d7b995 !important;
+  background-image: url('/smart-office-warm-showroom-background.webp') !important;
+  background-repeat: no-repeat !important;
+  background-position: center center !important;
+  background-size: cover !important;
+}
+
+.virtual-host-background,
+.virtual-host-background::before,
+.virtual-host-background::after,
+.background-glow,
+.background-grid {
+  display: none !important;
+}
+
+.virtual-host-header {
+  position: relative;
+  z-index: 20;
+  min-height: 64px !important;
+  padding-top: 14px !important;
+  padding-bottom: 6px !important;
+}
+
+.virtual-host-stage {
+  position: relative;
+  z-index: 2;
+  display: flex !important;
+  width: min(1180px, calc(100vw - 40px)) !important;
+  height: calc(100svh - 70px) !important;
+  min-height: 0 !important;
+  box-sizing: border-box;
+  align-items: center !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+  gap: clamp(8px, 1.1svh, 14px) !important;
+  margin: 0 auto !important;
+  padding: 0 0 16px !important;
+}
+
+.virtual-host-status {
+  position: static !important;
+  flex: 0 0 auto;
+  align-self: center !important;
+  justify-self: auto !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+
+.virtual-host-avatar.video-host-avatar {
+  position: relative !important;
+  flex: 0 0 auto;
+  width: auto !important;
+  height: clamp(440px, 60svh, 650px) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: min(46vw, 620px) !important;
+  max-height: none !important;
+  aspect-ratio: 538 / 720 !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+
+.live-caption {
+  position: relative !important;
+  flex: 0 0 auto;
+  width: min(760px, 72vw) !important;
+  min-height: 72px !important;
+  max-height: 108px !important;
+  box-sizing: border-box;
+  align-self: center !important;
+  justify-self: auto !important;
+  margin: 0 !important;
+  padding: 12px 24px 14px !important;
+  transform: none !important;
+  border: 1px solid rgba(144, 103, 67, 0.22) !important;
+  border-radius: 22px !important;
+  background: linear-gradient(180deg, rgba(255, 250, 241, 0.94), rgba(238, 217, 190, 0.9)) !important;
+  box-shadow: 0 18px 44px rgba(92, 61, 37, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+.continuous-voice-card {
+  position: static !important;
+  flex: 0 0 auto;
+  width: min(520px, 58vw) !important;
+  min-width: 0 !important;
+  box-sizing: border-box;
+  align-self: center !important;
+  margin: 0 !important;
+  padding: 11px 22px !important;
+  transform: none !important;
+}
+
+@media (max-height: 820px) {
+  .virtual-host-avatar.video-host-avatar {
+    height: clamp(390px, 57svh, 520px) !important;
+  }
+  .virtual-host-stage {
+    gap: 7px !important;
+    padding-bottom: 8px !important;
+  }
+  .live-caption {
+    min-height: 64px !important;
+    padding-block: 9px 10px !important;
+  }
+  .continuous-voice-card {
+    padding-block: 9px !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .virtual-host-stage {
+    width: min(720px, calc(100vw - 24px)) !important;
+  }
+  .virtual-host-avatar.video-host-avatar {
+    width: min(78vw, 520px) !important;
+    height: auto !important;
+    max-width: min(78vw, 520px) !important;
+  }
+  .live-caption {
+    width: min(94vw, 680px) !important;
+  }
+  .continuous-voice-card {
+    width: min(88vw, 520px) !important;
+  }
+}
