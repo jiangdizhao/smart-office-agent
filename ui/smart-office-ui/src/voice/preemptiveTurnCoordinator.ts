@@ -259,7 +259,10 @@ class PreemptiveTurnCoordinator {
         : Promise.resolve(),
     ]).then(() => undefined)
 
-    this.cancelPromise = Promise.resolve()
+    // Every later turn must wait for the real cancellation sequence. The previous
+    // implementation exposed an already-resolved Promise here, allowing the old
+    // answer, Office interpreter and the new command to overlap.
+    this.cancelPromise = interruption
     if (backgroundTaskActive) {
       window.dispatchEvent(new CustomEvent('smartoffice:background-task-preserved-during-barge-in', {
         detail: { taskId, reason, epoch: this.epoch },
