@@ -139,6 +139,12 @@ class SalesExperienceService:
             clean = [" ".join(str(value).strip().split()) for value in questions if str(value).strip()]
             if clean:
                 return clean[0]
+        if field == "role":
+            return (
+                "What kind of work are you mainly responsible for?"
+                if language == "en"
+                else "您主要从事什么工作？"
+            )
         if language == "en":
             return "Which office workflow takes the most time for your team today?"
         return "目前哪一种办公流程最浪费您团队的时间？"
@@ -153,8 +159,6 @@ class SalesExperienceService:
     ) -> tuple[str | None, str | None, SalesSessionState]:
         state = sales_session_store.get_or_create(conversation_id, visit_id, language=language)
         flags = sales_runtime_policy.feature_flags()
-        # Registered-name greetings are identity-sensitive, so they deliberately
-        # remain warm but non-humorous.
         if not flags.humour_enabled or greeting_kind == "registered_identity":
             return None, None, state
         themes = (
@@ -191,14 +195,11 @@ class SalesExperienceService:
         key = self._key(conversation_id, visit_id)
         identity = self._identity(language)
         name = " ".join(str(display_name or "").strip().split())[:80]
-        humour, humour_theme, _ = self._opening_humour(
-            conversation_id=conversation_id,
-            visit_id=visit_id,
-            language=language,
-            greeting_kind=greeting_kind,
-        )
 
-        question_field = "industry" if greeting_kind == "new_anonymous" else "interested_capabilities"
+        # Exhibition visitors have very little time. Ask for their role immediately;
+        # industry, pain points and feature interests remain optional facts that can
+        # be captured naturally rather than becoming a long questionnaire.
+        question_field = "role"
         question = self._question(language, question_field)
         sales_session_store.mark_field_asked(conversation_id, visit_id, question_field)
 
@@ -209,22 +210,18 @@ class SalesExperienceService:
                 lead = f"Welcome back. I am Sara, your {identity}."
             else:
                 lead = f"Welcome to our office. I am Sara, your {identity}."
-            value = (
-                "I help organisations connect meetings, customer follow-up and repetitive office work into practical, controlled workflows."
-            )
-            text = " ".join(part for part in (lead, value, humour, question) if part)
+            text = " ".join((lead, question))
         else:
             if greeting_kind == "registered_identity" and name:
                 lead = f"欢迎回来，{name}。我是 Sara，公司的{identity}。"
             elif greeting_kind == "returning_anonymous":
-                lead = f"欢迎回来。我是 Sara，公司的{identity}。"
+                lead = f"欢迎回来，我是 Sara，公司的{identity}。"
             else:
-                lead = f"您好，欢迎来到我们的办公室。我是 Sara，公司的{identity}。"
-            value = "我主要帮助企业把会议、客户跟进和重复办公工作连接成可控、能落地的流程。"
-            text = "".join(part for part in (lead, value, humour or "", question) if part)
+                lead = f"您好，欢迎来到我们的办公室，我是 Sara，公司的{identity}。"
+            text = f"{lead}{question}"
 
         delivery = VoiceDeliveryPlan(
-            style="light_playful" if humour else "warm_confident",
+            style="light_playful",
             pace="natural_brisk",
             energy="medium_high",
             question_tone="curious",
@@ -233,7 +230,7 @@ class SalesExperienceService:
                 if language == "en"
                 else ["数字管理员", "企业解决方案顾问"]
             ),
-            humour_delivery="light_smile" if humour else "none",
+            humour_delivery="light_smile",
             pause_before_question=True,
         )
         with self._lock:
@@ -243,7 +240,7 @@ class SalesExperienceService:
                 language=language,
                 greeting_kind=greeting_kind,
                 opening_completed=True,
-                opening_humour_used=bool(humour),
+                opening_humour_used=False,
                 pending_question_field=question_field,
                 pending_question_text=question,
                 last_reply_mode="opening",
@@ -260,7 +257,7 @@ class SalesExperienceService:
             fallback_text=text,
             expect_user_response=True,
             question_field=question_field,
-            humour_theme=humour_theme,
+            humour_theme=None,
             delivery=delivery,
         )
 
@@ -313,42 +310,67 @@ class SalesExperienceService:
                 session=session,
             )
 
-        if session.proactive_nudge_count == 1:
-            if request.language == "en":
-                text = (
-                    "You do not need to name the exact industry. You can simply tell me whether meetings, customer follow-up or repetitive administration matters most."
-                )
-            else:
-                text = "不方便说具体行业也没关系，告诉我您更关心会议、客户跟进，还是重复行政工作就可以。"
+        role = str(session.explicit_facts.get("role") or "").strip()
+        contact_can_be_offered = bool(role) and sales_runtime_policy.can_offer_contact(session)
+        offered = False
+        if contact_can_be_offered:
+            offered, session = sales_session_store.offer_contact(
+                request.conversation_id,
+                request.visit_id,
+            )
+
+        if not role:
+            text = (
+                "What kind of work are you mainly responsible for? I can tailor the demonstration to your role."
+                if request.language == "en"
+                else "您主要负责哪类工作？我可以直接按您的岗位来演示。"
+            )
             purpose: Literal["sales_proactive_first", "sales_proactive_second"] = "sales_proactive_first"
             expect_user_response = True
-            question_field = experience.pending_question_field
+            question_field = "role"
             delivery = VoiceDeliveryPlan(
                 style="curious_discovery",
-                pace="natural",
+                pace="natural_brisk",
+                energy="medium",
+                question_tone="inviting",
+                pause_before_question=True,
+            )
+        elif offered:
+            text = (
+                "Shall I open visitor registration so a consultant can follow up on your work scenario?"
+                if request.language == "en"
+                else "需要我打开登记信息表，让顾问根据您的工作场景继续联系吗？"
+            )
+            purpose = "sales_proactive_second"
+            expect_user_response = True
+            question_field = "contact_consent"
+            delivery = VoiceDeliveryPlan(
+                style="warm_confident",
+                pace="natural_brisk",
                 energy="medium",
                 question_tone="inviting",
                 pause_before_question=True,
             )
         else:
-            if request.language == "en":
-                text = (
-                    "Please feel free to continue looking around. When you are ready, I can relate a real office scenario to your needs or help arrange a complete demonstration."
-                )
-            else:
-                text = "您也可以先自由参观。需要时，我可以结合一个真实办公场景为您说明，也可以帮您安排一次完整体验。"
+            text = (
+                "You can say ‘open PowerPoint’ or ‘start the presentation’ and I will demonstrate it directly."
+                if request.language == "en"
+                else "您可以直接说“打开 PPT”或“播放演示”，我会马上操作。"
+            )
             purpose = "sales_proactive_second"
             expect_user_response = False
             question_field = None
             delivery = VoiceDeliveryPlan(
                 style="calm_reassuring",
-                pace="natural",
+                pace="natural_brisk",
                 energy="low",
                 question_tone="none",
                 pause_before_question=False,
             )
 
         with self._lock:
+            experience.pending_question_field = question_field
+            experience.pending_question_text = text if expect_user_response else None
             experience.last_reply_mode = "proactive_sales"
             experience.last_delivery_style = delivery.style
             experience.last_output_result = "planned"
