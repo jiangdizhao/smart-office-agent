@@ -150,6 +150,11 @@ function parseSemanticAnswerContext(value: string): SemanticAnswerContext | null
   }
 }
 
+function semanticRecentContext(route: UnifiedSemanticRoute): string {
+  const value = route.entities?.recent_context
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function interactionReply(context: InteractionContext, language: VoiceLanguage): string {
   const labels: Record<InteractionWindowKind, { zh: string; en: string }> = {
     contact: { zh: '登记信息', en: 'contact registration' },
@@ -412,10 +417,12 @@ export async function previewConversationRoute(
   })
   const route = semantic.route
   const finalDecision = semantic.final_policy_decision
+  const routingArchitecture = String(route.entities?.routing_architecture ?? 'unknown')
 
   console.info('[SemanticRoute]', {
     decisionId: semantic.decision_id,
     mode: semantic.mode,
+    routingArchitecture,
     source: route.source,
     intent: route.primary_intent,
     domain: route.domain,
@@ -520,12 +527,15 @@ export async function previewConversationRoute(
 
   const answerEngine = route.answer_engine
   const realtimeRoute = answerEngine === 'terra' ? 'general_chat' : 'realtime_direct'
-  console.info('[ConversationLatency] unified-route-complete', {
+  const recentContext = semanticRecentContext(route)
+  console.info('[ConversationLatency] semantic-route-complete', {
     elapsedMs: Math.round(performance.now() - startedAt),
     semanticElapsedMs: semantic.elapsed_ms,
+    routingArchitecture,
     domain: route.domain,
     intent: route.primary_intent,
     answerEngine,
+    recentContextCharacters: recentContext.length,
     visitId: request.visitId,
   })
   return {
@@ -534,7 +544,7 @@ export async function previewConversationRoute(
     route_reason: `semantic_${route.domain}:${route.primary_intent}`,
     conversation_complexity: route.complexity,
     answer_engine: answerEngine,
-    recent_context: '',
+    recent_context: recentContext,
     visit_id: request.visitId,
     semantic_decision: semantic,
   }
@@ -548,8 +558,8 @@ function directInstructions(
   if (language === 'en') {
     return `
 You are Sara, the Smart Office Digital Manager and Enterprise Solution Consultant.
-Answer the current visitor directly in natural spoken English. This request has already passed the unified semantic router and deterministic policy engine as an answer-only conversation. Do not call tools and do not claim an Office action was executed.
-Distinguish explaining a capability from performing it. Respect every negation and condition in the visitor's wording. Keep the answer concise unless detailed analysis was requested. State uncertainty rather than inventing facts.
+Answer the current visitor directly in natural spoken English. The routing layer classified this as an answer-only conversation, not an Office execution request. Do not call tools and do not claim an Office action was executed.
+Use the recent conversation when it is relevant, especially for references such as this industry, that option, the second one, or what we just discussed. Distinguish explaining a capability from performing it. Respect every negation and condition in the visitor's wording. Keep the answer concise unless detailed analysis was requested. State uncertainty rather than inventing facts.
 Return only plain final text without labels or Markdown.
 
 Recent conversation:
@@ -561,8 +571,8 @@ ${text}
   }
   return `
 你是 Sara，公司的 Smart Office 数字管理员与企业解决方案顾问。
-当前请求已经通过统一语义路由和确定性 Policy Engine，被判定为只需回答的对话。请使用自然口语中文直接回答，不调用工具，也不得声称已经执行 Office 操作。
-必须区分“介绍或讨论功能”和“要求执行功能”，并严格尊重用户表达中的否定、条件和假设。除非用户要求详细分析，否则保持简洁；无法确定时明确说明，不得编造。
+路由层已经把当前请求判定为只需回答的自然对话，而不是 Office 执行指令。请使用自然口语中文直接回答，不调用工具，也不得声称已经执行 Office 操作。
+在相关时必须使用最近对话，尤其要理解“这个行业”“刚才那个”“第二种”“那你觉得呢”等承接表达。必须区分“介绍或讨论功能”和“要求执行功能”，并严格尊重用户表达中的否定、条件和假设。除非用户要求详细分析，否则保持简洁；无法确定时明确说明，不得编造。
 只输出最终答复纯文本，不要输出标签或 Markdown。
 
 最近对话：
@@ -601,6 +611,7 @@ export async function generateSimpleRealtimeAnswer(
   console.info('[ConversationLatency] realtime-simple-answer-complete', {
     elapsedMs: Math.round(performance.now() - startedAt),
     answerLength: answer.length,
+    recentContextCharacters: recentContext.length,
     visitId: lease?.visitId ?? null,
   })
   return answer
