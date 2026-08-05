@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -55,21 +56,66 @@ def _require_configuration() -> None:
         )
 
 
-def _append_question(text: str, question: str, language: str) -> str:
-    base = " ".join(str(text or "").strip().split()).rstrip("。.!！?？")
-    prompt = " ".join(str(question or "").strip().split())
-    if not base:
-        return prompt
-    separator = ". " if language == "en" else "。"
-    return f"{base}{separator}{prompt}"
+def _sentences(text: str) -> list[str]:
+    clean = " ".join(str(text or "").strip().split())
+    if not clean:
+        return []
+    return [item.strip() for item in re.split(r"(?<=[。！？.!?])\s*", clean) if item.strip()]
+
+
+def _compact_text(text: str, language: str, maximum_sentences: int = 2) -> str:
+    pieces = _sentences(text)[:maximum_sentences]
+    if not pieces:
+        return ""
+    joined = " ".join(pieces) if language == "en" else "".join(pieces)
+    maximum = 280 if language == "en" else 150
+    return joined[:maximum].rstrip()
+
+
+def _compact_response(response: SalesTurnResponse) -> SalesTurnResponse:
+    plan = response.reply_plan
+    if plan is not None and plan.maximum_sentences != 2:
+        plan = plan.model_copy(update={"maximum_sentences": 2})
+    fallback = _compact_text(response.fallback_text, response.session.language, 2)
+    return response.model_copy(update={"reply_plan": plan, "fallback_text": fallback})
+
+
+def _first_value_sentence(text: str, language: str) -> str:
+    pieces = _sentences(text)
+    for piece in pieces:
+        if not re.search(r"[？?]", piece):
+            return piece
+    return pieces[0] if pieces else (
+        "Smart Office can be tailored to your actual work."
+        if language == "en"
+        else "Smart Office 可以直接结合您的实际工作。"
+    )
+
+
+def _role_question(language: str) -> str:
+    return (
+        "What kind of work are you mainly responsible for?"
+        if language == "en"
+        else "您主要从事什么工作？"
+    )
+
+
+def _contact_value(role: str, language: str) -> str:
+    clean_role = " ".join(str(role or "").split())[:80]
+    if language == "en":
+        return (
+            f"For {clean_role}, Smart Office can connect follow-up, meetings and repetitive office work into one practical workflow."
+        )
+    return f"哦，{clean_role}这类工作很适合把客户跟进、会议和重复办公流程串起来。"
 
 
 def _maybe_offer_contact(response: SalesTurnResponse) -> SalesTurnResponse:
-    """Add the single contact invitation only after useful discovery is complete.
+    """Implement the short exhibition funnel without touching Office routing.
 
-    This post-policy runs after the main reply planner so it cannot interfere with
-    Office actions, privacy/cost answers, booking decisions, failures or explicit
-    demonstrations. The store remains the authoritative one-off counter.
+    The opening asks for role. A sales turn that still lacks role asks only that one
+    question. As soon as an explicit role is available, the same response gives one
+    concise value sentence and the visit's single contact invitation. Explicit
+    acceptance continues through the existing open_contact action.
     """
 
     plan = response.reply_plan
@@ -79,31 +125,48 @@ def _maybe_offer_contact(response: SalesTurnResponse) -> SalesTurnResponse:
         or plan is None
         or response.reason != "explicit_sales_context_processed"
         or response.ui_action is not None
-        or plan.suggested_question is not None
-        or state.stage not in {"recommend", "handle_objection"}
-        or state.booking_rejected
-        or state.booking_opened
-        or not (state.interested_capabilities or state.pain_points)
-        or not sales_runtime_policy.can_offer_contact(state)
     ):
-        return response
+        return _compact_response(response)
+
+    role = " ".join(str(state.explicit_facts.get("role") or "").split())[:80]
+    if not role:
+        question = _role_question(state.language)
+        plan = plan.model_copy(
+            update={
+                "suggested_question": question,
+                "recommended_action": None,
+                "maximum_sentences": 2,
+            }
+        )
+        fallback = _compact_text(
+            f"{_first_value_sentence(response.fallback_text, state.language)} {question}",
+            state.language,
+            2,
+        )
+        return response.model_copy(
+            update={"reply_plan": plan, "fallback_text": fallback}
+        )
+
+    if not sales_runtime_policy.can_offer_contact(state):
+        return _compact_response(response)
 
     allowed, state = sales_session_store.offer_contact(
         state.conversation_id,
         state.visit_id,
     )
     if not allowed:
-        return response
+        return _compact_response(response)
 
     question = (
-        "需要我打开登记信息表，方便顾问根据您刚才的需求继续联系吗？"
-        if state.language == "zh"
-        else "Shall I open visitor registration so a consultant can follow up on the needs you just described?"
+        "Shall I open visitor registration so a consultant can follow up on your work scenario?"
+        if state.language == "en"
+        else "需要我打开登记信息表，让顾问根据您的工作场景继续联系吗？"
     )
     plan = plan.model_copy(
         update={
             "suggested_question": question,
             "recommended_action": "offer_contact",
+            "maximum_sentences": 2,
         }
     )
     sales_telemetry.emit(
@@ -111,15 +174,15 @@ def _maybe_offer_contact(response: SalesTurnResponse) -> SalesTurnResponse:
         conversation_id=state.conversation_id,
         visit_id=state.visit_id,
         stage=state.stage,
-        data={"source": "post_value_complete_discovery"},
+        data={"source": "fast_role_to_contact_funnel"},
     )
     return response.model_copy(
         update={
             "reply_plan": plan,
-            "fallback_text": _append_question(
-                response.fallback_text,
-                question,
+            "fallback_text": _compact_text(
+                f"{_contact_value(role, state.language)} {question}",
                 state.language,
+                2,
             ),
             "session": state,
         }
@@ -157,7 +220,8 @@ def sales_status() -> dict:
             "consent_gated_sales_profile_persistence",
             "visit_scoped_invitation_limits",
             "allowlisted_repeated_demo_delegation",
-            "single_post_value_contact_offer",
+            "fast_role_to_contact_funnel",
+            "two_sentence_sales_limit",
         ],
         "deferred_components": [
             "mini_model_ab_test",
@@ -186,7 +250,21 @@ def sales_turn(req: SalesTurnRequest) -> SalesTurnResponse:
 def sales_proactive(req: SalesProactiveRequest) -> SalesProactiveResponse:
     _require_configuration()
     try:
-        return sales_reply_planner.plan_proactive(req)
+        response = sales_reply_planner.plan_proactive(req)
+        if response.reply_plan is not None and response.reply_plan.maximum_sentences != 2:
+            response = response.model_copy(
+                update={
+                    "reply_plan": response.reply_plan.model_copy(
+                        update={"maximum_sentences": 2}
+                    ),
+                    "fallback_text": _compact_text(
+                        response.fallback_text,
+                        response.session.language,
+                        2,
+                    ),
+                }
+            )
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
