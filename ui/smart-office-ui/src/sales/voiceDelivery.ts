@@ -37,7 +37,7 @@ function key(text: string): string {
 export function defaultVoiceDelivery(): VoiceDeliveryPlan {
   return {
     schema_version: 'voice-delivery-v1',
-    style: 'light_playful',
+    style: 'warm_confident',
     pace: 'natural',
     energy: 'medium',
     question_tone: 'none',
