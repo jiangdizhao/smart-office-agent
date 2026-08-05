@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import type { VirtualHostVisualState } from './VirtualHostAvatar'
+import './LiveCaption.css'
 
 type LiveCaptionProps = {
   state: VirtualHostVisualState
