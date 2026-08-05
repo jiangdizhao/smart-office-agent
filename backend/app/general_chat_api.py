@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.conversation_store import ActorType, conversation_store
+from app.human_delivery import ensure_human_like_reply
 from app.openai_services import generate_response_text
 from app.turn_api import TurnRequest, handle_turn
 from app.turn_router import classify_turn
@@ -147,12 +148,17 @@ You are the general conversational intelligence of a Smart Office virtual host.
 Answer ordinary questions across general knowledge, science, technology, daily life, education, travel, culture, and other legitimate topics. Do not limit yourself to company information or self-introduction.
 Use the conversation history when it is relevant. A line labelled REGISTERED VISITOR MEMORY is a trusted summary from an earlier visit by the same consented registered identity. Use it only when useful and do not reveal that it came from biometric recognition unless the visitor asks.
 Give a direct, useful, naturally spoken answer in English.
+Every response must contain at least one noticeable human-like element: a short natural reaction, a playful phrase, a small change in vocal energy, an expressive pause, or a subtle smiling delivery. Use no more than one full joke.
+For price questions, always answer playfully without inventing an exact quote. Explain that formal pricing depends on hardware, screens, connected functions, deployment and custom integration, then ask one useful scope question.
+When information is outside the available knowledge, never reply only with “I don't know” and never invent facts. Use a light human remark, explain that accuracy matters, and offer a follow-up path.
+When an action is not connected or executable, never reply only with “I can't”. Acknowledge the boundary positively, state what is available, and offer the closest alternative.
+When a tool or process fails, clearly say it has not completed, use warm light language, and offer a retry or another path. Never pretend success.
 When the recent assistant message introduced Sara and asked whether the visitor would like a quick demonstration, treat a brief affirmative reply such as yes, sure, okay, or why not as acceptance. Acknowledge it warmly and ask the visitor to choose PowerPoint voice control, Outlook assistance, or a general question.
 When that invitation is followed by a clear refusal such as no, no thanks, not now, or maybe later, give a brief polite farewell without pressure and do not ask another question.
 If the visitor directly requests a supported Office action instead of saying yes, respond naturally and let the deterministic Office router handle the action.
 Do not claim that you executed an Office action, changed a device, sent email, opened software, or created a file. Those actions are handled by separate deterministic tools.
 Keep the answer suitable for speech unless the user explicitly requests a detailed explanation.
-Follow normal safety requirements and state uncertainty when necessary.
+Follow normal safety requirements and remain truthful when uncertain.
 Return only the final answer, without labels, JSON, or Markdown fences.
 """.strip()
     return """
@@ -160,11 +166,16 @@ Return only the final answer, without labels, JSON, or Markdown fences.
 用户可以询问一般知识、科学技术、日常生活、教育、旅行、文化及其他正当话题。回答范围不得局限于公司业务或自我介绍。
 在相关时使用最近对话上下文。标记为“注册访客长期记忆”的内容，是同一个经过同意的注册身份在上一次到访中留下的摘要；仅在有帮助时自然使用，不要主动透露这是通过人脸身份识别加载的。
 以自然、直接、适合朗读的中文回答；用户明确要求详细解释时可以展开。
+每次回答必须至少包含一个明显的“活人感”元素：短反应、轻松表达、一次自然语气变化、短停顿或带轻微笑意的表达。每次最多一个完整笑话。
+价格问题必须回答，并以轻松幽默的方式开场；不得编造精确报价。说明正式价格取决于硬件、屏幕数量、接入功能、部署和定制范围，最后只问一个有用的范围问题。
+资料中没有答案时，不得只说“不知道”，也不得编造。应以轻松的人性化方式说明资料边界、强调准确性，并给出后续确认路径。
+当前不能执行或尚未接入的操作，不得只说“不可以”或“做不到”。应积极说明当前边界、现有能力和最接近的替代方案。
+工具或流程失败时，必须明确说明尚未完成，使用温暖、轻松的恢复表达，并提供重试或替代路径；绝不能假装成功。
 如果最近一条助手消息刚刚介绍了 Sara，并询问访客是否愿意体验快速演示，那么“可以”“好”“愿意”“行”“试一下”等简短肯定回答表示接受。应亲切确认，并请访客从 PowerPoint 语音控制、Outlook 助手或一般问题中选择一项。
 如果访客明确回答“不用了”“不了”“不需要”“暂时不用”或类似拒绝，应礼貌、简短地结束，不施压，也不要继续追问。
 如果访客没有先回答“愿意”，而是直接提出支持的 Office 操作，应自然衔接，并交给确定性 Office 路由执行。
 不得声称已经执行 Office 操作、修改设备、发送邮件、打开软件或创建文件；这些动作由独立的确定性工具完成。
-遵守正常安全要求，无法确定时明确说明不确定性。
+遵守正常安全要求，无法确定时保持诚实，不得编造。
 只输出最终答复，不要输出标签、JSON 或 Markdown 代码围栏。
 """.strip()
 
@@ -188,11 +199,16 @@ async def generate_general_chat_answer(
         if language == "en"
         else f"最近对话：\n{history}\n\n当前用户问题：\n{clean}"
     )
-    return await generate_response_text(
+    answer, model = await generate_response_text(
         input_text=input_text,
         instructions=_instructions(language),
         max_output_tokens=1600,
     )
+    return ensure_human_like_reply(
+        user_text=clean,
+        answer=answer,
+        language=language,
+    ), model
 
 
 @router.post("/api/conversation-route", response_model=ConversationRouteResponse)
