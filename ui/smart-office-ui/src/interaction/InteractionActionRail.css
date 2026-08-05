@@ -4,8 +4,8 @@
   top: 50%;
   right: clamp(24px, 3.2vw, 66px);
   display: grid;
-  width: min(220px, 17vw);
-  min-width: 178px;
+  width: min(250px, 19vw);
+  min-width: 205px;
   gap: 14px;
   padding: 18px;
   border: 1px solid rgba(137, 190, 238, 0.2);
@@ -19,23 +19,23 @@
 .interaction-action-heading,
 .interaction-action-copy {
   display: grid;
-  gap: 4px;
+  gap: 3px;
 }
 
 .interaction-action-heading { padding: 0 3px 3px; }
 .interaction-action-heading span {
-  color: #6e9bc5;
-  font-size: 10px;
-  font-weight: 800;
+  color: #82b9e8;
+  font-size: 11px;
+  font-weight: 850;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
-.interaction-action-heading strong { color: #f0f7ff; font-size: 18px; }
+.interaction-action-heading strong { color: #f0f7ff; font-size: 17px; }
 .interaction-action-list { display: grid; gap: 10px; }
 
 .interaction-action-button {
   display: grid;
-  min-height: 70px;
+  min-height: 86px;
   grid-template-columns: 40px minmax(0, 1fr);
   align-items: center;
   gap: 11px;
@@ -67,22 +67,49 @@
 }
 .interaction-action-copy { min-width: 0; }
 .interaction-action-copy strong,
-.interaction-action-copy small {
+.interaction-action-copy em,
+.interaction-action-copy small span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.interaction-action-copy strong { font-size: 15px; }
-.interaction-action-copy small { color: #92acc4; font-size: 11px; }
-.interaction-action-notice { color: #9fc8e9; font-size: 11px; text-align: center; }
+.interaction-action-copy strong {
+  color: #f5f9ff;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 850;
+  letter-spacing: 0.035em;
+}
+.interaction-action-copy em {
+  color: #d9eaff;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 700;
+}
+.interaction-action-copy small {
+  display: grid;
+  gap: 1px;
+  margin-top: 2px;
+  color: #92acc4;
+  font-size: 10px;
+  line-height: 1.25;
+}
+.interaction-action-notice { color: #9fc8e9; font-size: 10px; text-align: center; }
 
 /* Recording is now entered from this service rail. */
 .virtual-host-shell .voice-primary-row > .conversation-record-button { display: none; }
 
-@media (max-width: 1050px) {
-  .interaction-action-rail { right: 14px; width: 176px; min-width: 0; padding: 12px; }
-  .interaction-action-heading span,
+@media (max-width: 1180px) {
+  .interaction-action-rail { right: 14px; width: 198px; min-width: 0; padding: 12px; }
   .interaction-action-copy small { display: none; }
+  .interaction-action-button { min-height: 66px; }
+}
+
+@media (max-width: 920px) {
+  .interaction-action-rail { width: 176px; }
+  .interaction-action-heading strong,
+  .interaction-action-copy em { display: none; }
+  .interaction-action-copy strong { font-size: 12px; }
   .interaction-action-button { min-height: 58px; }
 }
 
@@ -94,4 +121,6 @@
     transform: none;
   }
   .interaction-action-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .interaction-action-heading strong,
+  .interaction-action-copy em { display: block; }
 }
