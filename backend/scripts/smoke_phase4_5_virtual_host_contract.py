@@ -78,9 +78,12 @@ def main() -> None:
     overlay_source = read("ui/smart-office-ui/src/virtual-host/ApprovalOverlay.tsx")
     drawer_source = read("ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx")
     caption_source = read("ui/smart-office-ui/src/virtual-host/LiveCaption.tsx")
+    caption_css = read("ui/smart-office-ui/src/virtual-host/LiveCaption.css")
     phase4_css = read("ui/smart-office-ui/src/virtual-host/VirtualHostPhase4.css")
     controller_source = read("ui/smart-office-ui/src/voice/useOfficeVoiceController.ts")
     realtime_source = read("ui/smart-office-ui/src/voice/realtimeAgentRuntime.ts")
+    voice_output_source = read("ui/smart-office-ui/src/voice/voiceOutputManager.ts")
+    interruption_diagnostics_source = read("ui/smart-office-ui/src/voice/voiceInterruptionDiagnostics.ts")
     liveness_source = read("ui/smart-office-ui/src/voice/realtimeLivenessPatch.ts")
     nonblocking_error_css = read("ui/smart-office-ui/src/voice/nonBlockingTurnErrors.css")
     visit_bridge_source = read("ui/smart-office-ui/src/voice/visitRealtimeLeaseBridge.ts")
@@ -141,7 +144,42 @@ def main() -> None:
         "controller.verified",
     )
 
-    assert_contains(caption_source, "splitLyrics", "lyric-current", "user-live-caption")
+    assert_contains(
+        caption_source,
+        "single-line-caption",
+        "caption-stream-window",
+        "smartoffice:voice-chunk-start",
+        "user-live-caption",
+        "assistant-live-caption",
+    )
+    assert_not_contains(
+        caption_source,
+        "splitLyrics",
+        "segmentDurationMs",
+        "lyric-current",
+        "lyric-previous",
+        "lyric-next",
+    )
+    assert_contains(
+        caption_css,
+        ".single-line-caption",
+        ".caption-stream-window",
+        "overflow: hidden",
+        "white-space: nowrap",
+    )
+    assert_contains(
+        voice_output_source,
+        "recordVoiceInterruptionDiagnostic",
+        "visitor-barge-in-interruption",
+        "chunk-aborted-without-barge-in",
+        "output-failed",
+    )
+    assert_contains(
+        interruption_diagnostics_source,
+        "__SMART_OFFICE_VOICE_INTERRUPTION_DIAGNOSTICS__",
+        "__SMART_OFFICE_EXPORT_VOICE_INTERRUPTION_DIAGNOSTICS__",
+        "[VoiceInterruptionDiagnostic]",
+    )
     assert_contains(phase4_css, "exhibition-approval-card", "exhibition-operator-drawer")
 
     assert_contains(
@@ -308,8 +346,9 @@ def main() -> None:
     print(
         "PASS: Phase 4-5 includes Visit-scoped result protection, registration/result "
         "disambiguation, nonblocking turn recovery, bounded VAD liveness, one Unified "
-        "Router owner for continuous voice, duplicate suppression, full panel actions, "
-        "latest-command preemption, and policy-gated execution."
+        "Router owner for continuous voice, duplicate suppression, single-line live "
+        "captions, temporary interruption diagnostics, full panel actions, latest-command "
+        "preemption, and policy-gated execution."
     )
     print(
         "NOTE: Windows Office, Outlook, rightmost-display placement, real microphone "
