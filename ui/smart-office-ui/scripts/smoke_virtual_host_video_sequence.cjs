@@ -18,12 +18,30 @@ requireText(avatar, "loop: true,\n          mode: 'talk-loop'", 'native talk-2 l
 requireText(avatar, 'holdFirstFrame: true', 'visitor listening hold')
 requireText(avatar, 'smartoffice:realtime-vad-speech-started', 'barge-in event')
 requireText(avatar, 'smartoffice:host-intro-playback-started', 'intro playback acknowledgement')
+requireText(avatar, 'transitionWorkerRunningRef', 'single transition worker')
+requireText(avatar, 'queuedTransitionRef', 'latest queued transition')
+requireText(avatar, 'currentTransitionRef', 'current transition owner')
+requireText(avatar, 'initialStateEffectRef', 'duplicate mount transition guard')
+requireText(avatar, 'if (code === 1) return', 'normal media abort suppression')
+requireText(avatar, 'Virtual host video could not be loaded', 'truthful media failure copy')
 requireText(gate, 'await gate.promise', 'intro voice synchronisation')
 requireText(gate, "releaseGate('timeout'", 'intro fail-open timeout')
 requireText(css, 'transition: none !important', 'flash-free layer switch')
 
-for (const removed of ['CROSSFADE_MS', 'talk-a.mp4', 'talk-b.mp4', 'talk-c.mp4', 'idle-primary.mp4', 'idle-rare.mp4']) {
-  if (avatar.includes(removed)) throw new Error(`Legacy transition token remains: ${removed}`)
+for (const removed of [
+  'CROSSFADE_MS',
+  'talk-a.mp4',
+  'talk-b.mp4',
+  'talk-c.mp4',
+  'idle-primary.mp4',
+  'idle-rare.mp4',
+  'transitionSerialRef',
+  'preloadersRef',
+  "document.createElement('video')",
+  'setAssetError(true)',
+  'Virtual host video assets are not installed',
+]) {
+  if (avatar.includes(removed)) throw new Error(`Legacy or race-prone token remains: ${removed}`)
 }
 
-console.log('PASS: virtual-host seamless video sequence contract')
+console.log('PASS: virtual-host seamless video sequence and transition ownership contract')
