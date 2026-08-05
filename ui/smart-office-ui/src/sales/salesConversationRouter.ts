@@ -18,6 +18,7 @@ import {
 import { queueSalesOfficeDelegate } from './salesOfficeDelegate'
 import { fetchPhase2ASelfIntroduction } from './salesPhase2AClient'
 import { renderSalesReply, type SalesUiResult } from './salesReplyRenderer'
+import { ensureHumanLikeReply } from './humanLikeReply'
 import { registerVoiceOutputContext } from './voiceDelivery'
 
 const SALES_CONTEXT_PREFIX = '__SMART_OFFICE_SALES_CONTEXT__:'
@@ -156,11 +157,34 @@ function uiFailureFallback(
     : `The ${label} did not open. Please refresh the main display and try again.`
 }
 
+function officeExecutionHasPriority(base: FastConversationRoute): boolean {
+  return (
+    base.answer_engine === 'office_interpreter'
+    || ['office_direct', 'office_planned_task', 'approval_action'].includes(base.route)
+    || (base.scene === 'office'
+      && ['execute', 'delegate'].includes(base.semantic_decision?.final_policy_decision ?? ''))
+  )
+}
+
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<SalesAwareConversationRoute> {
   const base = await previewBaseConversationRoute(request)
   const semantic = base.semantic_decision?.route
+
+  // Explicit Office execution always wins over sales interpretation. This prevents
+  // words such as “演示/demo” in “演示 PPT” from being mistaken for a sales-demo
+  // request. The command still passes through the deterministic Office interpreter,
+  // verification and approval gates; only the competing sales reply is bypassed.
+  if (officeExecutionHasPriority(base)) {
+    console.info('[SalesRuntime] office-execution-priority-preserved', {
+      route: base.route,
+      reason: base.route_reason,
+      semanticIntent: semantic?.primary_intent ?? null,
+      visitId: request.visitId,
+    })
+    return { ...base, office_delegate_text: null }
+  }
 
   if (semantic?.primary_intent === 'self_introduction') {
     const text = await fetchPhase2ASelfIntroduction(request.language, request.lease)
@@ -266,18 +290,22 @@ export async function generateSimpleRealtimeAnswer(
 ): Promise<string> {
   const selfIntroduction = parseSelfIntroductionContext(recentContext)
   if (selfIntroduction) {
-    const answer = selfIntroduction.text.trim()
+    const answer = ensureHumanLikeReply({
+      userText: text,
+      answer: selfIntroduction.text.trim(),
+      language,
+    })
     registerVoiceOutputContext(answer, {
       delivery: {
         schema_version: 'voice-delivery-v1',
-        style: 'warm_confident',
+        style: 'light_playful',
         pace: 'natural_brisk',
         energy: 'medium_high',
         question_tone: 'none',
         emphasis_terms: language === 'zh'
           ? ['数字管理员', '企业解决方案顾问']
           : ['Digital Manager', 'Enterprise Solution Consultant'],
-        humour_delivery: 'none',
+        humour_delivery: 'light_smile',
         pause_before_question: false,
       },
       purpose: 'sales_self_introduction',
@@ -290,9 +318,10 @@ export async function generateSimpleRealtimeAnswer(
 
   const sales = parseSalesContext(recentContext)
   if (!sales) {
-    return await generateBaseRealtimeAnswer(text, language, recentContext, lease)
+    const answer = await generateBaseRealtimeAnswer(text, language, recentContext, lease)
+    return ensureHumanLikeReply({ userText: text, answer, language })
   }
-  return await renderSalesReply({
+  const answer = await renderSalesReply({
     userText: text,
     language,
     plan: sales.turn.reply_plan,
@@ -300,4 +329,5 @@ export async function generateSimpleRealtimeAnswer(
     lease,
     uiResult: sales.uiResult,
   })
+  return ensureHumanLikeReply({ userText: text, answer, language })
 }
