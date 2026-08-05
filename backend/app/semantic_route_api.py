@@ -12,6 +12,8 @@ from fastapi import APIRouter, HTTPException, Query
 from app.conversation_store import conversation_store
 from app.routing_architecture import (
     attach_recent_context,
+    has_action_candidate,
+    hybrid_conversation_route,
     hybrid_non_action_route,
     legacy_route,
     pending_conversion_route,
@@ -149,6 +151,28 @@ async def _classify_with_layers(
             return conversational, None, None, architecture
 
     route, model, pending_used = await _model_route(request)
+
+    # Hybrid still uses structured semantic interpretation for explicit customer
+    # context, sales intent and difficult language. However, if that model fails or
+    # asks for an action-style clarification when there is no action candidate, the
+    # customer must still receive a normal answer. Profile enrichment may be lost
+    # for that turn, but conversation continuity is never lost.
+    if (
+        architecture == "hybrid"
+        and not has_action_candidate(request.text)
+        and (
+            route.source == "safe_fallback"
+            or route.action_mode == "clarify"
+            or route.requires_clarification
+        )
+    ):
+        fallback = hybrid_conversation_route(
+            request,
+            reason="hybrid_semantic_failure_conversation_fail_open",
+        )
+        if fallback is not None:
+            return fallback, model, None, architecture
+
     return route, model, pending_used, architecture
 
 
@@ -288,6 +312,7 @@ def semantic_route_contracts() -> dict[str, Any]:
             "structured_pending_conversion_intent",
             "hybrid_non_action_conversation_fail_open",
             "structured_terra_semantic_model_for_action_or_sales_candidates",
+            "hybrid_semantic_failure_conversation_fail_open",
             "action_evidence_validator",
             "profile_evidence_validator",
             "deterministic_policy_engine",
@@ -296,7 +321,7 @@ def semantic_route_contracts() -> dict[str, Any]:
             "response_renderer",
         ],
         "execution_rule": "No model-proposed tool name is accepted. Only evidence-backed, allowlisted structured actions may reach a domain executor.",
-        "conversation_rule": "A non-action ordinary question is answerable even when the semantic model is unavailable.",
+        "conversation_rule": "A non-action question remains answerable even when structured semantic interpretation is unavailable.",
         "semantic_timeout_seconds": _semantic_timeout_seconds(),
     }
 
