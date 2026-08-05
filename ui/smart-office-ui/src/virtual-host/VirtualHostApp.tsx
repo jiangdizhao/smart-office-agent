@@ -41,73 +41,147 @@ function stateText(
     idle: 'READY · 就绪',
     connecting: 'CONNECTING · 正在连接',
     listening: 'LISTENING · 正在聆听',
-    processing: 'THINKING · 正在思考',
-    speaking: 'SPEAKING · 正在回答',
-    executing: 'WORKING · 正在执行',
-    'waiting-approval': 'CONFIRMATION NEEDED · 等待确认',
-    error: 'PLEASE RETRY · 请重试',
+    processing: 'UNDERSTANDING · 正在理解',
+    speaking: 'SPEAKING · 正在说明',
+    executing: 'WORKING · 正在执行办公任务',
+    'waiting-approval': 'CONFIRMATION REQUIRED · 等待确认',
+    error: 'PLEASE TRY AGAIN · 请重试',
   }
   return labels[visualState]
 }
 
-function publicError(error: string | null, language: VoiceLanguage): string | null {
-  if (!error) return null
-  const text = error.trim()
-  if (!text) return null
-  if (/aborted|cancelled|canceled|interrupted|stopped/i.test(text)) return null
-  return language === 'zh'
-    ? `本轮没有完成：${text}`
-    : `This turn was not completed: ${text}`
+function controllerVisualState(
+  panel: string,
+  taskStatus: string | null,
+  active: boolean,
+): VirtualHostVisualState {
+  if (panel === 'error') return 'error'
+  if (taskStatus === 'waiting_approval') return 'waiting-approval'
+  if (panel === 'connecting') return 'connecting'
+  if (panel === 'listening') return 'listening'
+  if (panel === 'processing') return 'processing'
+  if (panel === 'speaking') return 'speaking'
+  if (active || (taskStatus !== null && ACTIVE_TASK_STATUSES.includes(taskStatus))) return 'executing'
+  return 'idle'
+}
+
+function welcomeText(): string {
+  return 'Welcome, I’m Sara. I speak English and Chinese. Approach and speak to begin. · 欢迎，我是 Sara。我会英语和中文，靠近后直接说话即可。'
+}
+
+function publicError(message: string, language: VoiceLanguage): string {
+  const clean = message.trim()
+  if (!clean) return ''
+  if (/GPT Realtime|audio did not|response timed out|data channel/i.test(clean)) {
+    return language === 'zh'
+      ? '语音服务刚才没有顺利完成，系统已经恢复。请直接对着手持麦克风再说一次。'
+      : 'The voice service did not complete that turn and has recovered. Please speak into the handheld microphone again.'
+  }
+  return clean
 }
 
 export default function VirtualHostApp() {
-  const controller = useVisitLanguageAwareOfficeVoiceController(useOfficeVoiceController())
+  const baseController = useOfficeVoiceController()
+  const controller = useVisitLanguageAwareOfficeVoiceController(baseController)
+  const proximity = useProximityGreeting(controller)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [userCaption, setUserCaption] = useState('')
-  const [assistantCaption, setAssistantCaption] = useState('')
+  const [lastUserText, setLastUserText] = useState('')
+  const [lastAssistantText, setLastAssistantText] = useState('')
   const [vadUiState, setVadUiState] = useState<VadUiState>('idle')
-  const closeTimerRef = useRef<number | null>(null)
-  const proximity = useProximityGreeting({
-    onVisitStart: (visit) => {
-      controller.beginVisit(visit)
-    },
-    onVisitEnd: () => {
-      controller.endVisit()
-    },
-  })
+  const lastPublishedAnswer = useRef('')
 
   useEffect(() => {
-    const unsubscribe = publishSessionMessage.subscribe((message) => {
-      if (message.role === 'user') setUserCaption(message.text)
-      if (message.role === 'assistant') setAssistantCaption(message.text)
-    })
-    return unsubscribe
-  }, [])
+    if (controller.actor !== 'operator') controller.setActor('operator')
+  }, [controller.actor])
 
   useEffect(() => {
-    const onVadStarted = () => setVadUiState('listening')
-    const onVadStopped = () => setVadUiState('processing')
-    const onOutputStarted = () => setVadUiState('idle')
-    const onOutputCompleted = () => setVadUiState('idle')
-    window.addEventListener('smartoffice:realtime-vad-speech-started', onVadStarted)
-    window.addEventListener('smartoffice:realtime-vad-speech-stopped', onVadStopped)
-    window.addEventListener('smartoffice:assistant-output-started', onOutputStarted)
-    window.addEventListener('smartoffice:assistant-output-completed', onOutputCompleted)
+    const onSpeechStarted = () => setVadUiState('listening')
+    const onSpeechStopped = () => setVadUiState('processing')
+    const onUtterance = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null
+      const transcript = String(detail?.transcript ?? '').trim()
+      if (transcript) setLastUserText(transcript)
+      setVadUiState('processing')
+    }
+    const onDirectAssistant = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null
+      const text = String(detail?.text ?? '').trim()
+      if (text) setLastAssistantText(text)
+    }
+    const onSpeakingStopped = () => setVadUiState('idle')
+    const onContinuousStopped = () => setVadUiState('idle')
+    window.addEventListener('smartoffice:realtime-vad-speech-started', onSpeechStarted)
+    window.addEventListener('smartoffice:realtime-vad-speech-stopped', onSpeechStopped)
+    window.addEventListener('smartoffice:realtime-continuous-utterance', onUtterance)
+    window.addEventListener('smartoffice:continuous-user-transcript', onUtterance)
+    window.addEventListener('smartoffice:direct-assistant-caption', onDirectAssistant)
+    window.addEventListener('smartoffice:realtime-speaking-stop', onSpeakingStopped)
+    window.addEventListener('smartoffice:realtime-continuous-listening-stop', onContinuousStopped)
     return () => {
-      window.removeEventListener('smartoffice:realtime-vad-speech-started', onVadStarted)
-      window.removeEventListener('smartoffice:realtime-vad-speech-stopped', onVadStopped)
-      window.removeEventListener('smartoffice:assistant-output-started', onOutputStarted)
-      window.removeEventListener('smartoffice:assistant-output-completed', onOutputCompleted)
+      window.removeEventListener('smartoffice:realtime-vad-speech-started', onSpeechStarted)
+      window.removeEventListener('smartoffice:realtime-vad-speech-stopped', onSpeechStopped)
+      window.removeEventListener('smartoffice:realtime-continuous-utterance', onUtterance)
+      window.removeEventListener('smartoffice:continuous-user-transcript', onUtterance)
+      window.removeEventListener('smartoffice:direct-assistant-caption', onDirectAssistant)
+      window.removeEventListener('smartoffice:realtime-speaking-stop', onSpeakingStopped)
+      window.removeEventListener('smartoffice:realtime-continuous-listening-stop', onContinuousStopped)
     }
   }, [])
 
+  const baseVisualState = controllerVisualState(
+    controller.panel,
+    controller.taskStatus,
+    controller.active,
+  )
+  const visualState: VirtualHostVisualState = baseVisualState === 'idle'
+    ? vadUiState === 'listening'
+      ? 'listening'
+      : vadUiState === 'processing'
+        ? 'processing'
+        : 'idle'
+    : baseVisualState
+
+  const isWaitingApproval = controller.taskStatus === 'waiting_approval'
+  const isSendApproval = controller.pendingApprovalTool === 'outlook_send_approved_draft'
+  const currentTranscript = controller.transcript.trim()
+  const userCaption = currentTranscript || lastUserText
+  const assistantCaption = controller.answer.trim() || lastAssistantText
+  const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
+  const recipientName = useMemo(() => {
+    const key = controller.pendingRecipientKey
+    const entry = controller.office?.recipient_catalog?.find((item) => item.key === key)
+    return entry?.name ?? controller.office?.recipient_name ?? key ?? 'Rico'
+  }, [controller.office, controller.pendingRecipientKey])
+
   useEffect(() => {
+    const transcript = controller.transcript.trim()
+    if (transcript) setLastUserText(transcript)
+  }, [controller.transcript])
+
+  useEffect(() => {
+    const answer = controller.answer.trim()
+    if (!answer) return
+    setLastAssistantText(answer)
+    if (answer === lastPublishedAnswer.current) return
+    lastPublishedAnswer.current = answer
+    publishSessionMessage({
+      conversationId: controller.conversationId,
+      visitId: visitLeaseRegistry.current()?.visitId ?? null,
+      role: 'assistant',
+      text: answer,
+      source: 'virtual_host_answer',
+    })
+  }, [controller.answer, controller.conversationId])
+
+  useEffect(() => {
+    if (!drawerOpen) return
+    const closeTimer = window.setTimeout(() => setDrawerOpen(false), 30_000)
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && drawerOpen) setDrawerOpen(false)
+      if (event.key === 'Escape') setDrawerOpen(false)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => {
-      if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current)
+      window.clearTimeout(closeTimer)
       window.removeEventListener('keydown', onKeyDown)
     }
   }, [drawerOpen])
@@ -122,24 +196,6 @@ export default function VirtualHostApp() {
       controller.language === 'zh' ? 'en' : 'zh',
       'header_language_button',
     )
-  }
-
-  const visualState = useMemo<VirtualHostVisualState>(() => {
-    if (controller.error) return 'error'
-    if (controller.approval) return 'waiting-approval'
-    if (ACTIVE_TASK_STATUSES.includes(controller.runtime.taskStatus ?? '')) return 'executing'
-    return controller.visualState
-  }, [controller.approval, controller.error, controller.runtime.taskStatus, controller.visualState])
-
-  const voiceActive = visualState === 'speaking'
-  const isWaitingApproval = Boolean(controller.approval)
-  const recipientName = controller.approval?.recipientName ?? ''
-  const isSendApproval = controller.approval?.kind === 'send'
-
-  function welcomeText(): string {
-    return controller.language === 'zh'
-      ? '欢迎，我是 Sara。我会英语和中文，靠近后直接说话即可。'
-      : 'Approach and speak to begin. I am Sara and I can help in English or Chinese.'
   }
 
   const continuousStatus = controller.runtime.continuousListening
