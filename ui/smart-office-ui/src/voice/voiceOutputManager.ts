@@ -6,6 +6,7 @@ import {
   type VoiceOutputContext,
 } from '../sales/voiceDelivery'
 import { speakExpressiveExact } from './expressiveRealtimeSpeech'
+import { recordVoiceInterruptionDiagnostic } from './voiceInterruptionDiagnostics'
 
 export type VoiceOutputProvider = 'realtime' | 'none'
 export type AssistantOutputResult = 'started' | 'completed' | 'interrupted' | 'failed'
@@ -83,9 +84,6 @@ function speechChunks(text: string, language: VoiceLanguage): string[] {
   const maxChars = language === 'zh' ? MAX_CHINESE_CHUNK_CHARS : MAX_ENGLISH_CHUNK_CHARS
   if (clean.length <= maxChars) return [clean]
 
-  // Sentence boundaries preserve the opening/value/humour/question cadence better
-  // than raw character splitting. The final question remains its own chunk when
-  // possible so its delivery can retain a natural inviting intonation.
   const sentenceParts = clean.match(/[^。！？!?\n]+[。！？!?]?/g) ?? [clean]
   const chunks: string[] = []
   let current = ''
@@ -149,7 +147,7 @@ export class VoiceOutputManager {
 
   async setProvider(provider: VoiceOutputProvider): Promise<void> {
     if (provider === this.provider) return
-    await this.stop()
+    await this.stop('provider-change')
     this.provider = provider
     localStorage.setItem(STORAGE_KEY, provider)
     window.dispatchEvent(
@@ -193,7 +191,7 @@ export class VoiceOutputManager {
       text: clean,
     }
     const generation = ++this.speechGeneration
-    await this.stopInternal(true)
+    await this.stopInternal(true, 'superseded-before-new-output')
     const chunks = speechChunks(clean, detectedSpeechLanguage(clean, language))
     console.info('[RealtimeDiagnostics] speech-chunk-plan', {
       generation,
@@ -204,6 +202,16 @@ export class VoiceOutputManager {
       chunkCount: chunks.length,
       chunkLengths: chunks.map((chunk) => chunk.length),
     })
+    recordVoiceInterruptionDiagnostic('output-started', {
+      outputId,
+      generation,
+      visitId: lease?.visitId ?? null,
+      purpose: context.purpose,
+      textLength: clean.length,
+      chunkCount: chunks.length,
+      chunkLengths: chunks.map((chunk) => chunk.length),
+      continuousListening: realtimeAgent.status().continuousListening ?? false,
+    })
     this.dispatchLifecycle('started', lifecycleBase)
 
     try {
@@ -211,16 +219,31 @@ export class VoiceOutputManager {
         const chunk = chunks[index]
         this.assertSpeechCurrent(generation, lease, signal)
         const chunkLanguage = detectedSpeechLanguage(chunk, language)
+        recordVoiceInterruptionDiagnostic('chunk-started', {
+          outputId,
+          generation,
+          chunkIndex: index,
+          chunkCount: chunks.length,
+          chunkLength: chunk.length,
+          chunkPreview: chunk,
+          runtime: realtimeAgent.status(),
+        })
         window.dispatchEvent(new CustomEvent('smartoffice:voice-chunk-start', {
           detail: { index, count: chunks.length, text: chunk, outputId },
         }))
         if (options.fixedLocal) {
           await this.speakLocal(chunk, chunkLanguage, generation, signal)
+          recordVoiceInterruptionDiagnostic('chunk-completed', {
+            outputId, generation, chunkIndex: index, provider: 'local',
+          })
           continue
         }
         try {
           await speakExpressiveExact(chunk, chunkLanguage, context.delivery, signal)
           this.assertSpeechCurrent(generation, lease, signal)
+          recordVoiceInterruptionDiagnostic('chunk-completed', {
+            outputId, generation, chunkIndex: index, provider: 'realtime', runtime: realtimeAgent.status(),
+          })
         } catch (error) {
           const audioStarted = error instanceof RealtimeSpeechError && error.audioStarted
           const aborted = error instanceof Error && error.name === 'AbortError'
@@ -239,17 +262,70 @@ export class VoiceOutputManager {
               interruptedChunkIndex: index,
               chunkCount: chunks.length,
             })
+            recordVoiceInterruptionDiagnostic('visitor-barge-in-interruption', {
+              outputId,
+              generation,
+              interruptedChunkIndex: index,
+              chunkCount: chunks.length,
+              audioStarted,
+              signalAborted: signal?.aborted ?? false,
+              errorName: error instanceof Error ? error.name : typeof error,
+              errorMessage: error instanceof Error ? error.message : String(error),
+              runtime,
+            })
             this.dispatchLifecycle('interrupted', lifecycleBase)
             return
           }
-          if (aborted || signal?.aborted || generation !== this.speechGeneration) throw error
-          if (audioStarted || options.allowLocalFallback === false) throw error
+          if (aborted || signal?.aborted || generation !== this.speechGeneration) {
+            recordVoiceInterruptionDiagnostic('chunk-aborted-without-barge-in', {
+              outputId,
+              generation,
+              interruptedChunkIndex: index,
+              currentGeneration: this.speechGeneration,
+              audioStarted,
+              signalAborted: signal?.aborted ?? false,
+              errorName: error instanceof Error ? error.name : typeof error,
+              errorMessage: error instanceof Error ? error.message : String(error),
+              runtime,
+            })
+            throw error
+          }
+          if (audioStarted || options.allowLocalFallback === false) {
+            recordVoiceInterruptionDiagnostic('chunk-failed-no-fallback', {
+              outputId,
+              generation,
+              chunkIndex: index,
+              audioStarted,
+              allowLocalFallback: options.allowLocalFallback ?? true,
+              errorMessage: error instanceof Error ? error.message : String(error),
+              runtime,
+            })
+            throw error
+          }
+          recordVoiceInterruptionDiagnostic('chunk-local-fallback', {
+            outputId,
+            generation,
+            chunkIndex: index,
+            errorMessage: error instanceof Error ? error.message : String(error),
+          })
           await this.speakLocal(chunk, chunkLanguage, generation, signal)
         }
       }
+      recordVoiceInterruptionDiagnostic('output-completed', {
+        outputId, generation, chunkCount: chunks.length, runtime: realtimeAgent.status(),
+      })
       this.dispatchLifecycle('completed', lifecycleBase)
     } catch (error) {
       const aborted = error instanceof Error && error.name === 'AbortError'
+      recordVoiceInterruptionDiagnostic(aborted ? 'output-aborted' : 'output-failed', {
+        outputId,
+        generation,
+        currentGeneration: this.speechGeneration,
+        signalAborted: signal?.aborted ?? false,
+        errorName: error instanceof Error ? error.name : typeof error,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        runtime: realtimeAgent.status(),
+      })
       this.dispatchLifecycle(aborted ? 'interrupted' : 'failed', {
         ...lifecycleBase,
         error: error instanceof Error ? error.message : String(error),
@@ -275,14 +351,37 @@ export class VoiceOutputManager {
     })
   }
 
-  async stop(): Promise<void> {
+  async stop(reason = 'external-stop'): Promise<void> {
+    const previousGeneration = this.speechGeneration
     this.speechGeneration += 1
-    await this.stopInternal(true)
+    recordVoiceInterruptionDiagnostic('stop-requested', {
+      reason,
+      previousGeneration,
+      currentGeneration: this.speechGeneration,
+      runtime: realtimeAgent.status(),
+    })
+    await this.stopInternal(true, reason)
   }
 
-  private async stopInternal(cancelLocal: boolean): Promise<void> {
+  private async stopInternal(cancelLocal: boolean, reason: string): Promise<void> {
+    const runtimeBefore = realtimeAgent.status()
     if (cancelLocal && 'speechSynthesis' in window) window.speechSynthesis.cancel()
-    await realtimeAgent.stopOutput().catch(() => undefined)
+    await realtimeAgent.stopOutput().catch((error) => {
+      recordVoiceInterruptionDiagnostic('stop-output-error', {
+        reason,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        runtimeBefore,
+      })
+      return undefined
+    })
+    if (runtimeBefore.outputActive || runtimeBefore.responseActive) {
+      recordVoiceInterruptionDiagnostic('active-output-stopped', {
+        reason,
+        cancelLocal,
+        runtimeBefore,
+        runtimeAfter: realtimeAgent.status(),
+      })
+    }
   }
 
   private assertSpeechCurrent(
