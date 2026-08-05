@@ -3,15 +3,12 @@ import { publishSessionMessage } from '../interaction/sessionEventBus'
 import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
 import { useProximityGreeting } from '../vision/useProximityGreeting'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
-import {
-  VISIT_LANGUAGE_CHANGED_EVENT,
-  visitLanguagePreference,
-  type VisitLanguageChangeDetail,
-} from '../voice/visitLanguagePreference'
+import { visitLanguagePreference } from '../voice/visitLanguagePreference'
 import {
   useOfficeVoiceController,
   type ConversationPhase,
 } from '../voice/useOfficeVoiceController'
+import { useVisitLanguageAwareOfficeVoiceController } from '../voice/useVisitLanguageAwareOfficeVoiceController'
 import ApprovalOverlay from './ApprovalOverlay'
 import LiveCaption from './LiveCaption'
 import OperatorDrawer from './OperatorDrawer'
@@ -83,7 +80,8 @@ function publicError(message: string, language: VoiceLanguage): string {
 }
 
 export default function VirtualHostApp() {
-  const controller = useOfficeVoiceController()
+  const baseController = useOfficeVoiceController()
+  const controller = useVisitLanguageAwareOfficeVoiceController(baseController)
   const proximity = useProximityGreeting(controller)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [lastUserText, setLastUserText] = useState('')
@@ -94,18 +92,6 @@ export default function VirtualHostApp() {
   useEffect(() => {
     if (controller.actor !== 'operator') controller.setActor('operator')
   }, [controller.actor])
-
-  useEffect(() => {
-    controller.setLanguage(visitLanguagePreference.current())
-    const onLanguageChanged = (event: Event) => {
-      const detail = event instanceof CustomEvent
-        ? event.detail as VisitLanguageChangeDetail
-        : null
-      if (detail?.language) controller.setLanguage(detail.language)
-    }
-    window.addEventListener(VISIT_LANGUAGE_CHANGED_EVENT, onLanguageChanged)
-    return () => window.removeEventListener(VISIT_LANGUAGE_CHANGED_EVENT, onLanguageChanged)
-  }, [])
 
   useEffect(() => {
     const onSpeechStarted = () => setVadUiState('listening')
