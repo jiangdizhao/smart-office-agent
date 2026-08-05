@@ -5,10 +5,18 @@ import os
 import time
 import unicodedata
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.conversation_store import conversation_store
+from app.routing_architecture import (
+    attach_recent_context,
+    hybrid_non_action_route,
+    legacy_route,
+    pending_conversion_route,
+    routing_architecture,
+)
 from app.sales_api import _maybe_offer_contact
 from app.sales_models import SalesTurnRequest, SalesTurnResponse
 from app.sales_reply_planner import sales_reply_planner
@@ -79,9 +87,9 @@ def _semantic_timeout_seconds() -> float:
 
 def _timeout_route(language: str) -> SemanticRoute:
     text = (
-        "这句话需要更明确的目标或动作。请用一句话说明要我执行什么，或者说明您只是想了解功能。"
+        "这条潜在操作指令需要更明确的目标或动作。请用一句话说明要我执行什么，或者说明您只是想了解功能。"
         if language == "zh"
-        else "This request needs a clearer target or action. Please state what to perform, or say that you only want an explanation."
+        else "This possible action request needs a clearer target or action. Please state what to perform, or say that you only want an explanation."
     )
     return SemanticRoute(
         primary_intent="unknown",
@@ -92,19 +100,16 @@ def _timeout_route(language: str) -> SemanticRoute:
         clarification_question=text,
         entities={"language": language},
         risk="none",
-        reason_codes=["semantic_model_timeout_fail_closed"],
+        reason_codes=["semantic_model_timeout_fail_closed_for_action_candidate"],
         source="safe_fallback",
         complexity="not_applicable",
         answer_engine="backend",
     )
 
 
-async def _classify_with_layers(
+async def _model_route(
     request: SemanticRouteRequest,
 ) -> tuple[SemanticRoute, str | None, str | None]:
-    deterministic = classify_deterministic(request)
-    if deterministic is not None:
-        return deterministic, None, None
     try:
         return await asyncio.wait_for(
             unified_semantic_router.classify(request),
@@ -113,6 +118,38 @@ async def _classify_with_layers(
     except TimeoutError:
         model = os.getenv("OPENAI_SEMANTIC_ROUTER_MODEL", "").strip() or None
         return _timeout_route(request.language), model, None
+
+
+async def _classify_with_layers(
+    request: SemanticRouteRequest,
+) -> tuple[SemanticRoute, str | None, str | None, str]:
+    architecture = routing_architecture()
+
+    # Low-ambiguity commands, negations, explanations and identity questions retain
+    # the deterministic fast path in every architecture mode.
+    deterministic = classify_deterministic(request)
+    if deterministic is not None:
+        return deterministic, None, None, architecture
+
+    # A one-turn booking/contact response is structured conversational state, not
+    # an open-language classification problem. Preserve it in all modes.
+    pending, pending_used = pending_conversion_route(request)
+    if pending is not None:
+        return pending, None, pending_used, architecture
+
+    if architecture == "legacy":
+        return legacy_route(request), None, None, architecture
+
+    if architecture == "hybrid":
+        # Ordinary non-action conversation fails open. It never waits for Terra and
+        # never becomes an action-safety clarification because a model was slow or
+        # returned invalid structured output.
+        conversational = hybrid_non_action_route(request)
+        if conversational is not None:
+            return conversational, None, None, architecture
+
+    route, model, pending_used = await _model_route(request)
+    return route, model, pending_used, architecture
 
 
 @router.post("", response_model=SemanticRouteResponse)
@@ -128,15 +165,31 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
         raise HTTPException(status_code=400, detail="empty_text_after_normalisation")
     request = request.model_copy(update={"text": normalised_text})
     request = request.model_copy(update={"recent_turns": _context_turns(request)})
-    mode = semantic_route_policy.mode(
-        os.getenv("SMART_OFFICE_SEMANTIC_ROUTER_MODE")
-    )
-    route, model, pending_used = await _classify_with_layers(request)
+
+    route, model, pending_used, architecture = await _classify_with_layers(request)
+    route = attach_recent_context(route, request)
     route = validate_semantic_action_evidence(route, request.text)
     route, final_decision, policy_reasons = semantic_route_policy.apply(route)
-    legacy = _legacy_comparison(request) if mode in {"legacy", "shadow"} else None
+
+    semantic_mode = semantic_route_policy.mode(
+        os.getenv("SMART_OFFICE_SEMANTIC_ROUTER_MODE")
+    )
+    legacy = _legacy_comparison(request) if semantic_mode in {"legacy", "shadow"} else None
     decision_id = unified_semantic_router.new_decision_id()
     elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))
+
+    route = route.model_copy(
+        update={
+            "entities": {
+                **route.entities,
+                "routing_architecture": architecture,
+            },
+            "reason_codes": [
+                *route.reason_codes,
+                f"routing_architecture:{architecture}",
+            ][:20],
+        }
+    )
 
     unified_semantic_router.record(
         request=request,
@@ -149,7 +202,7 @@ async def semantic_route(request: SemanticRouteRequest) -> SemanticRouteResponse
         legacy_comparison=legacy,
     )
     return SemanticRouteResponse(
-        mode=mode,  # type: ignore[arg-type]
+        mode=semantic_mode,  # type: ignore[arg-type]
         route=route,
         final_policy_decision=final_decision,
         policy_reason_codes=policy_reasons,
@@ -203,7 +256,9 @@ def clear_pending_intent(conversation_id: str, visit_id: str) -> dict[str, Any]:
 def semantic_route_status() -> dict[str, Any]:
     return {
         "ok": True,
-        "phase": "unified_semantic_routing",
+        "phase": "phase2b_hybrid_routing_foundation",
+        "routing_architecture": routing_architecture(),
+        "available_architectures": ["legacy", "hybrid", "unified"],
         "mode": semantic_route_policy.mode(
             os.getenv("SMART_OFFICE_SEMANTIC_ROUTER_MODE")
         ),
@@ -225,10 +280,14 @@ def semantic_route_contracts() -> dict[str, Any]:
         "ok": True,
         "route_schema": "semantic-route-v1",
         "configuration_schema": "semantic-router-config-v1",
+        "routing_architecture": routing_architecture(),
+        "available_architectures": ["legacy", "hybrid", "unified"],
         "pipeline": [
             "input_normalizer",
             "broad_deterministic_grammar",
-            "structured_terra_semantic_model",
+            "structured_pending_conversion_intent",
+            "hybrid_non_action_conversation_fail_open",
+            "structured_terra_semantic_model_for_action_or_sales_candidates",
             "action_evidence_validator",
             "profile_evidence_validator",
             "deterministic_policy_engine",
@@ -237,6 +296,7 @@ def semantic_route_contracts() -> dict[str, Any]:
             "response_renderer",
         ],
         "execution_rule": "No model-proposed tool name is accepted. Only evidence-backed, allowlisted structured actions may reach a domain executor.",
+        "conversation_rule": "A non-action ordinary question is answerable even when the semantic model is unavailable.",
         "semantic_timeout_seconds": _semantic_timeout_seconds(),
     }
 
@@ -245,9 +305,8 @@ def semantic_route_contracts() -> dict[str, Any]:
 async def semantic_route_self_test() -> dict[str, Any]:
     cases = [
         ("你是谁", "self_introduction", "answer_only"),
-        ("你的角色是什么", "self_introduction", "answer_only"),
-        ("你在这个展台主要负责什么", "self_introduction", "answer_only"),
-        ("What is your role here?", "self_introduction", "answer_only"),
+        ("你对建筑行业有什么了解", "general_question", "answer_only"),
+        ("What do you know about the construction industry?", "general_question", "answer_only"),
         ("打开 Teams", "application_action", "execute"),
         ("请帮我启动微软团队", "application_action", "execute"),
         ("Could you open Teams?", "application_action", "execute"),
@@ -261,13 +320,14 @@ async def semantic_route_self_test() -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for index, (text, expected_intent, expected_mode) in enumerate(cases):
         request = SemanticRouteRequest(
-            conversation_id=f"semantic-self-test-{index}",
+            conversation_id=f"semantic-self-test-{uuid4().hex[:8]}-{index}",
             visit_id=None,
             text=text,
             language="zh" if any("\u3400" <= char <= "\u9fff" for char in text) else "en",
             actor_type="visitor",
         )
-        route, _, _ = await _classify_with_layers(request)
+        route, _, _, architecture = await _classify_with_layers(request)
+        route = attach_recent_context(route, request)
         route = validate_semantic_action_evidence(route, request.text)
         route, final, _ = semantic_route_policy.apply(route)
         passed = route.primary_intent == expected_intent and final == expected_mode
@@ -279,10 +339,12 @@ async def semantic_route_self_test() -> dict[str, Any]:
                 "expected_decision": expected_mode,
                 "actual_decision": final,
                 "source": route.source,
+                "architecture": architecture,
                 "passed": passed,
             }
         )
     return {
         "ok": all(item["passed"] for item in results),
+        "routing_architecture": routing_architecture(),
         "results": results,
     }
