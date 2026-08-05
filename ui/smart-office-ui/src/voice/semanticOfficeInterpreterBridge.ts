@@ -8,6 +8,7 @@ import type {
   UnifiedSemanticRouteResponse,
 } from '../routing/unifiedSemanticRouterClient'
 import { installOfficeTaskEventObserver } from './officeTaskEventObserver'
+import { installConversationWriteBehind } from './conversationWriteBehind'
 
 const SLOW_PRESENTATION_STEPS = new Set([
   'presentation_open_configured',
@@ -139,6 +140,7 @@ function decisionFromLatestSemanticRoute(text: string): RealtimeOfficeDecision |
 
 export function installSemanticOfficeInterpreterBridge(): void {
   installOfficeTaskEventObserver()
+  installConversationWriteBehind()
   if (window.__SMART_OFFICE_SEMANTIC_OFFICE_BRIDGE_INSTALLED__) return
   window.__SMART_OFFICE_SEMANTIC_OFFICE_BRIDGE_INSTALLED__ = true
   const originalInterpret = realtimeOfficeInterpreter.interpret.bind(realtimeOfficeInterpreter)
