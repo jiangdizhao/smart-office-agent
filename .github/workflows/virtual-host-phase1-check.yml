@@ -34,6 +34,7 @@ jobs:
             backend/scripts/test_unified_semantic_router_live.py \
             backend/scripts/smoke_single_activation_contract.py \
             backend/scripts/smoke_backend_env_config_contract.py \
+            backend/scripts/smoke_latency_optimization_contract.py \
             backend/scripts/smoke_sales_phase0_contract.py \
             backend/scripts/smoke_sales_phase1_runtime_contract.py \
             backend/scripts/smoke_sales_experience_phase1_contract.py \
@@ -62,6 +63,8 @@ jobs:
             backend/scripts/setup_gmail_oauth.py
       - name: Run Backend env configuration contract
         run: python backend/scripts/smoke_backend_env_config_contract.py
+      - name: Run latency optimization backend contract
+        run: python backend/scripts/smoke_latency_optimization_contract.py
       - name: Run portable path contract
         run: python backend/scripts/smoke_portable_paths_contract.py
       - name: Run encoding-safe deterministic semantic contract
@@ -156,6 +159,8 @@ jobs:
             --lib ES2022,DOM
           printf '{"type":"commonjs"}\n' > .contract-build/package.json
           node scripts/smoke_voice_command_integrity.cjs
+      - name: Run latency optimization frontend contract
+        run: node scripts/smoke_latency_optimization_frontend.cjs
       - name: Run Phase 1 customer experience frontend contract
         run: node scripts/smoke_sales_experience_frontend.cjs
       - name: Run Phase 2B engagement frontend contract
