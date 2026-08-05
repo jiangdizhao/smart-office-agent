@@ -10,8 +10,11 @@ html[data-smart-office-route='virtual-host'] body {
   background-color: #d7b995 !important;
   background-image: url('/smart-office-warm-showroom-background.webp') !important;
   background-repeat: no-repeat !important;
-  background-position: center center !important;
-  background-size: cover !important;
+  background-position: center top !important;
+  /* The generated background is already matched to the exhibition viewport ratio.
+     Stretching to both viewport dimensions preserves the complete plate instead of
+     letting cover crop the architectural side and floor details. */
+  background-size: 100% 100% !important;
 }
 
 .virtual-host-background,
@@ -41,9 +44,9 @@ html[data-smart-office-route='virtual-host'] body {
   align-items: center !important;
   flex-direction: column !important;
   justify-content: flex-start !important;
-  gap: clamp(8px, 1.1svh, 14px) !important;
+  gap: clamp(10px, 1.35svh, 18px) !important;
   margin: 0 auto !important;
-  padding: 0 0 16px !important;
+  padding: 0 0 18px !important;
 }
 
 .virtual-host-status {
@@ -75,6 +78,7 @@ html[data-smart-office-route='virtual-host'] body {
   width: min(760px, 72vw) !important;
   min-height: 72px !important;
   max-height: 108px !important;
+  overflow: hidden !important;
   box-sizing: border-box;
   align-self: center !important;
   justify-self: auto !important;
@@ -95,7 +99,7 @@ html[data-smart-office-route='virtual-host'] body {
   min-width: 0 !important;
   box-sizing: border-box;
   align-self: center !important;
-  margin: 0 !important;
+  margin: 2px 0 0 !important;
   padding: 11px 22px !important;
   transform: none !important;
 }
@@ -105,14 +109,15 @@ html[data-smart-office-route='virtual-host'] body {
     height: clamp(390px, 57svh, 520px) !important;
   }
   .virtual-host-stage {
-    gap: 7px !important;
-    padding-bottom: 8px !important;
+    gap: 9px !important;
+    padding-bottom: 10px !important;
   }
   .live-caption {
     min-height: 64px !important;
     padding-block: 9px 10px !important;
   }
   .continuous-voice-card {
+    margin-top: 2px !important;
     padding-block: 9px !important;
   }
 }
