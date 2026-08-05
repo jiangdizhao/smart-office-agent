@@ -1,0 +1,32 @@
+/* The animation clips are authored with matching boundary frames. A hard cut after
+   the next video has decoded its first frame is less visible than the old glow /
+   scale crossfade and never exposes the frame background. */
+.video-avatar-layer {
+  z-index: 1;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateZ(0);
+  transition: none !important;
+  backface-visibility: hidden;
+  contain: paint;
+  will-change: auto;
+}
+
+.video-avatar-layer.active {
+  z-index: 2;
+  visibility: visible;
+  opacity: 1;
+  transform: translateZ(0);
+}
+
+.avatar-sequence-arrival-ready .video-avatar-layer.active,
+.avatar-sequence-visitor-hold .video-avatar-layer.active {
+  image-rendering: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-avatar-layer,
+  .video-avatar-layer.active {
+    transition: none !important;
+  }
+}
