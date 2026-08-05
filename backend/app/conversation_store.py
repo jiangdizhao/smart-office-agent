@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import RLock
@@ -16,6 +17,7 @@ MessageRole = Literal["user", "assistant", "system"]
 
 _MAX_MESSAGES = 16
 _MAX_REPLACED_VISIT_ARCHIVES = 128
+_MAX_SUMMARY_POINTS = 6
 
 
 def _now() -> datetime:
@@ -48,6 +50,126 @@ def _visit_id(detection: dict[str, Any], conversation_id: str) -> str:
         or ""
     ).strip()
     return value[:160] or f"local-{conversation_id}"
+
+
+def _summary_clean(text: str, maximum: int = 120) -> str:
+    clean = " ".join(str(text or "").strip().split())
+    clean = re.sub(
+        r"^(?:啊|哦|嗯哼?|好嘞|好的|好[，,]|行[，,]|当然可以[，,]?|让我来[，,]?|"
+        r"ah|oh|mm-hm|right|well|all right|certainly)[\s，,。.!-]*",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    return clean[:maximum].rstrip(" ，,。.!！?")
+
+
+def _append_unique(points: list[str], value: str) -> None:
+    clean = _summary_clean(value)
+    if not clean:
+        return
+    fingerprint = re.sub(r"[\W_]+", "", clean).casefold()
+    if not fingerprint:
+        return
+    for existing in points:
+        existing_fingerprint = re.sub(r"[\W_]+", "", existing).casefold()
+        if fingerprint == existing_fingerprint or fingerprint in existing_fingerprint or existing_fingerprint in fingerprint:
+            return
+    points.append(clean)
+
+
+def _role_point(text: str, language: Language) -> str | None:
+    if language == "zh":
+        match = re.search(
+            r"(?:我是|我做|我从事|我主要做|我主要负责|我负责)(?:一名|一个)?\s*([^，。！？]{2,36})",
+            text,
+        )
+        if match:
+            return f"职业/职责：{_summary_clean(match.group(1), 50)}"
+        return None
+    match = re.search(
+        r"\b(?:I am|I'm|I work as|I mainly work as|I am responsible for)\s+(?:an?\s+)?([^,.!?]{2,48})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return f"Role: {_summary_clean(match.group(1), 60)}"
+    return None
+
+
+def _key_point_summary(state: "ConversationState") -> str:
+    points: list[str] = []
+    language = state.language
+
+    if state.display_name:
+        _append_unique(
+            points,
+            f"访客：{state.display_name}" if language == "zh" else f"Visitor: {state.display_name}",
+        )
+
+    for message in state.messages:
+        text = _summary_clean(message.text, 180)
+        if not text:
+            continue
+        lower = text.casefold()
+
+        if message.role == "user":
+            role = _role_point(text, language)
+            if role:
+                _append_unique(points, role)
+                continue
+
+            if re.search(r"价格|报价|多少钱|费用|成本|price|pricing|quote|cost|how much", text, re.IGNORECASE):
+                _append_unique(points, "关注价格与方案范围" if language == "zh" else "Asked about price and solution scope")
+                continue
+            if re.search(r"隐私|个人信息|人脸|录音|数据|privacy|personal information|face data|recording", text, re.IGNORECASE):
+                _append_unique(points, "关注隐私与数据处理" if language == "zh" else "Asked about privacy and data handling")
+                continue
+            if re.search(r"联系方式|登记|联系我|可以联系|contact|registration|follow up", text, re.IGNORECASE):
+                _append_unique(points, "讨论了后续联系或信息登记" if language == "zh" else "Discussed follow-up contact or registration")
+                continue
+            if re.search(r"预约|会议时间|book|booking|appointment", text, re.IGNORECASE):
+                _append_unique(points, "讨论了会议预约" if language == "zh" else "Discussed meeting booking")
+                continue
+            if re.search(
+                r"需要|想要|希望|关注|痛点|问题|客户跟进|邮件|会议|重复|自动化|"
+                r"need|want|would like|interested|pain point|follow-up|email|meeting|automation",
+                text,
+                re.IGNORECASE,
+            ):
+                label = "需求：" if language == "zh" else "Need: "
+                _append_unique(points, f"{label}{text}")
+                continue
+
+        if message.role == "assistant":
+            is_operational = bool(
+                message.task_id
+                or (message.route and "office" in message.route.casefold())
+                or re.search(
+                    r"已(?:经)?(?:打开|播放|开始|关闭|调整|设置|生成|创建|发送|跳转|翻到)|"
+                    r"演示已经开始|PowerPoint.*(?:打开|开始)|"
+                    r"(?:opened|started|closed|adjusted|set|created|sent|moved to slide|verified)",
+                    text,
+                    re.IGNORECASE,
+                )
+            )
+            if is_operational:
+                label = "已演示：" if language == "zh" else "Demonstrated: "
+                _append_unique(points, f"{label}{text}")
+                continue
+            if re.search(r"打开登记信息表|打开登记|visitor registration|registration form", text, re.IGNORECASE):
+                _append_unique(points, "已打开联系方式登记表" if language == "zh" else "Opened contact registration")
+                continue
+            if re.search(r"打开.*预约|预约日历|booking calendar", text, re.IGNORECASE):
+                _append_unique(points, "已打开会议预约" if language == "zh" else "Opened meeting booking")
+                continue
+
+        if len(points) >= _MAX_SUMMARY_POINTS:
+            break
+
+    if not points:
+        return "暂无有效要点" if language == "zh" else "No substantive points yet"
+    return "\n".join(f"• {point}" for point in points[:_MAX_SUMMARY_POINTS])
 
 
 @dataclass
@@ -459,10 +581,7 @@ class ConversationStore:
             del state.messages[:-_MAX_MESSAGES]
 
     def _refresh_summary_locked(self, state: ConversationState) -> None:
-        recent = state.messages[-6:]
-        state.conversation_summary = " | ".join(
-            f"{message.role}: {message.text[:180]}" for message in recent
-        )
+        state.conversation_summary = _key_point_summary(state)
 
     def _archive_state_locked(self, state: ConversationState) -> dict[str, Any]:
         return {
