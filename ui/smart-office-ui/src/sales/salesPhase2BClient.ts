@@ -1,4 +1,5 @@
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
+import { visitLanguagePreference } from '../voice/visitLanguagePreference'
 import type { VisitLease } from '../vision/visitLeaseRegistry'
 import type { VoiceDeliveryPlan } from './voiceDelivery'
 
@@ -111,10 +112,11 @@ export async function observePhase2BTurn(input: {
   recentContext?: string
   lease?: VisitLease | null
 }): Promise<{ engagement: Phase2BStatus; session: Record<string, unknown> }> {
+  const language = visitLanguagePreference.resolve(input.text, input.language)
   return await postJson('/api/sales/phase2b/observe-turn', {
     conversation_id: input.conversationId,
     visit_id: input.visitId,
-    language: input.language,
+    language,
     text: input.text,
     recent_context: input.recentContext ?? '',
   }, input.lease)
@@ -179,7 +181,7 @@ export async function requestPhase2BProactive(input: {
   return await postJson('/api/sales/phase2b/proactive', {
     conversation_id: input.conversationId,
     visit_id: input.visitId,
-    language: input.language,
+    language: visitLanguagePreference.current(),
     user_speaking: input.userSpeaking,
     agent_speaking: input.agentSpeaking,
     tool_active: input.toolActive,
