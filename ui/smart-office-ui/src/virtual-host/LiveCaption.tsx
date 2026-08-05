@@ -26,7 +26,7 @@ function currentTextTail(text: string): string {
   const clean = cleanCaption(text)
   if (!clean) return ''
   const hasCjk = /[\u3400-\u9fff]/.test(clean)
-  const limit = hasCjk ? 46 : 110
+  const limit = hasCjk ? 64 : 160
   return clean.length <= limit ? clean : clean.slice(-limit)
 }
 
