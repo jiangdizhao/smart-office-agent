@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -34,14 +35,14 @@ def _json_request(url: str, *, method: str = "GET", body: dict[str, Any] | None 
     return value
 
 
-def _route_body(text: str) -> dict[str, Any]:
+def _route_body(text: str, recent_turns: list[dict[str, str]] | None = None) -> dict[str, Any]:
     return {
         "conversation_id": "semantic-live-acceptance",
         "visit_id": None,
         "language": "zh" if any("\u3400" <= char <= "\u9fff" for char in text) else "en",
         "actor_type": "visitor",
         "text": text,
-        "recent_turns": [],
+        "recent_turns": recent_turns or [],
         "runtime_context": {
             "interaction_panel": None,
             "active_tool": None,
@@ -66,8 +67,20 @@ def _print_json(value: Any) -> None:
 
 
 def run_offline_contract() -> None:
+    from app.routing_architecture import (
+        attach_recent_context,
+        has_action_candidate,
+        has_sales_candidate,
+        hybrid_non_action_route,
+        routing_architecture,
+    )
     from app.semantic_deterministic_router import classify_deterministic
-    from app.semantic_route_models import SemanticAction, SemanticRoute, SemanticRouteRequest
+    from app.semantic_route_models import (
+        RecentTurn,
+        SemanticAction,
+        SemanticRoute,
+        SemanticRouteRequest,
+    )
     from app.semantic_route_policy import semantic_route_policy
     from app.semantic_route_validator import validate_semantic_action_evidence
 
@@ -150,27 +163,101 @@ def run_offline_contract() -> None:
     if not any(code.startswith("action_verb_conflict_rejected") for code in checked.reason_codes):
         raise AssertionError("Verb conflict rejection did not leave a diagnostic reason code.")
 
-    _print_json({"ok": True, "mode": "offline-contract", "results": results})
-    print("PASS: Encoding-safe offline deterministic semantic contract completed.")
+    previous = os.environ.get("SMART_OFFICE_ROUTING_ARCHITECTURE")
+    try:
+        os.environ.pop("SMART_OFFICE_ROUTING_ARCHITECTURE", None)
+        _assert_equal(routing_architecture(), "hybrid", "Hybrid must be the default architecture.")
+        os.environ["SMART_OFFICE_ROUTING_ARCHITECTURE"] = "legacy"
+        _assert_equal(routing_architecture(), "legacy", "Legacy rollback selection failed.")
+        os.environ["SMART_OFFICE_ROUTING_ARCHITECTURE"] = "unified"
+        _assert_equal(routing_architecture(), "unified", "Unified comparison selection failed.")
+        os.environ["SMART_OFFICE_ROUTING_ARCHITECTURE"] = "invalid"
+        _assert_equal(routing_architecture(), "hybrid", "Invalid architecture must fail safe to hybrid.")
+    finally:
+        if previous is None:
+            os.environ.pop("SMART_OFFICE_ROUTING_ARCHITECTURE", None)
+        else:
+            os.environ["SMART_OFFICE_ROUTING_ARCHITECTURE"] = previous
+
+    construction = SemanticRouteRequest(
+        conversation_id="phase2b-construction",
+        visit_id=None,
+        language="zh",
+        actor_type="visitor",
+        text="你对建筑行业有什么了解",
+        recent_turns=[
+            RecentTurn(role="assistant", text="我们刚才在讨论不同行业的办公流程。"),
+            RecentTurn(role="user", text="你对建筑行业有什么了解"),
+        ],
+    )
+    route = hybrid_non_action_route(construction)
+    if route is None:
+        raise AssertionError("Construction-industry knowledge question was not accepted by hybrid conversation gate.")
+    route = attach_recent_context(route, construction)
+    _assert_equal(route.primary_intent, "general_question", "Construction question intent is wrong.")
+    _assert_equal(route.action_mode, "answer_only", "Construction question must be answer-only.")
+    _assert_equal(route.answer_engine, "realtime", "Short construction question should use Realtime.")
+    _assert_equal(route.source, "fast_path", "Construction question must not require Terra routing.")
+    context = str(route.entities.get("recent_context") or "")
+    if "我们刚才在讨论" not in context or "你对建筑行业有什么了解" in context:
+        raise AssertionError(f"Recent conversation context was not packed correctly: {context!r}")
+
+    english = SemanticRouteRequest(
+        conversation_id="phase2b-construction-en",
+        visit_id=None,
+        language="en",
+        actor_type="visitor",
+        text="What do you know about the construction industry?",
+    )
+    route_en = hybrid_non_action_route(english)
+    if route_en is None or route_en.action_mode != "answer_only":
+        raise AssertionError("English construction-industry question did not fail open to conversation.")
+
+    if hybrid_non_action_route(SemanticRouteRequest(
+        conversation_id="phase2b-sales",
+        visit_id=None,
+        language="zh",
+        actor_type="visitor",
+        text="我在建筑行业做项目经理，最麻烦的是会后行动项整理。",
+    )) is not None:
+        raise AssertionError("Explicit customer context must still reach structured sales interpretation.")
+    if not has_sales_candidate("我在建筑行业做项目经理，最麻烦的是会后行动项整理。"):
+        raise AssertionError("Explicit customer context was not recognised as a sales candidate.")
+    if not has_action_candidate("麻烦你打开 Teams"):
+        raise AssertionError("Office command was not recognised as an action candidate.")
+
+    _print_json({
+        "ok": True,
+        "mode": "offline-contract",
+        "phase2b": {
+            "default_architecture": "hybrid",
+            "construction_question": route.model_dump(mode="json"),
+            "english_construction_question": route_en.model_dump(mode="json"),
+        },
+        "results": results,
+    })
+    print("PASS: Encoding-safe Phase 2B hybrid routing contract completed.")
 
 
 def run_live(base_url: str, skip_model_cases: bool) -> None:
     base = base_url.rstrip("/")
-    print("=== Unified Semantic Router status ===")
+    print("=== Phase 2B routing status ===")
     status = _json_request(f"{base}/api/semantic-route/status")
     _print_json(status)
     _assert_equal(status.get("ok"), True, "Semantic router status is not healthy.")
-    _assert_equal(status.get("mode"), "unified", "Semantic router is not in unified mode.")
+    _assert_equal(status.get("routing_architecture"), "hybrid", "Phase 2B hybrid architecture is not active.")
+    _assert_equal(status.get("mode"), "unified", "Deterministic semantic policy is not active.")
 
     print("\n=== Contracts ===")
     contracts = _json_request(f"{base}/api/semantic-route/contracts")
     _print_json(contracts)
     _assert_equal(contracts.get("route_schema"), "semantic-route-v1", "Unexpected route schema.")
+    _assert_equal(contracts.get("routing_architecture"), "hybrid", "Unexpected routing architecture.")
 
-    print("\n=== Deterministic self-test ===")
+    print("\n=== Backend self-test ===")
     self_test = _json_request(f"{base}/api/semantic-route/self-test", method="POST", body={})
     _print_json(self_test)
-    _assert_equal(self_test.get("ok"), True, "Backend deterministic self-test failed.")
+    _assert_equal(self_test.get("ok"), True, "Backend routing self-test failed.")
 
     deterministic_cases = [
         ("Canonical identity", "你是谁", "self_introduction", "answer_only"),
@@ -194,7 +281,7 @@ def run_live(base_url: str, skip_model_cases: bool) -> None:
         ("Comparison without execution", "比较一下 Teams 和 OneNote，但不要打开它们", "capability_explanation", "answer_only"),
     ]
 
-    print("\n=== Deterministic grammar cases (route preview only) ===")
+    print("\n=== Deterministic action-safety cases ===")
     for name, text, intent, decision in deterministic_cases:
         response = _json_request(f"{base}/api/semantic-route", method="POST", body=_route_body(text))
         route = response.get("route") or {}
@@ -203,8 +290,42 @@ def run_live(base_url: str, skip_model_cases: bool) -> None:
         _assert_equal(route.get("source"), "fast_path", f"{name}: should not call Terra.")
         print(f"PASS: {name} ({response.get('elapsed_ms')} ms)")
 
+    print("\n=== Hybrid ordinary-conversation fail-open cases ===")
+    ordinary_cases = [
+        ("Construction industry", "你对建筑行业有什么了解"),
+        ("Education industry", "你对教育行业有哪些了解？"),
+        ("English construction", "What do you know about the construction industry?"),
+        ("General science", "木星为什么有那么多卫星？"),
+    ]
+    for name, text in ordinary_cases:
+        response = _json_request(f"{base}/api/semantic-route", method="POST", body=_route_body(text))
+        route = response.get("route") or {}
+        _assert_equal(route.get("primary_intent"), "general_question", f"{name}: wrong intent.")
+        _assert_equal(response.get("final_policy_decision"), "answer_only", f"{name}: should be answer-only.")
+        _assert_equal(route.get("source"), "fast_path", f"{name}: ordinary conversation called semantic model.")
+        _assert_equal(response.get("model"), None, f"{name}: ordinary conversation should not use Terra for routing.")
+        if route.get("requires_clarification"):
+            raise AssertionError(f"{name}: harmless question incorrectly requested clarification.")
+        print(f"PASS: {name} ({response.get('elapsed_ms')} ms)")
+
+    contextual = _json_request(
+        f"{base}/api/semantic-route",
+        method="POST",
+        body=_route_body(
+            "这个行业最适合先改善什么？",
+            recent_turns=[
+                {"role": "user", "text": "你对建筑行业有什么了解？"},
+                {"role": "assistant", "text": "建筑行业通常涉及多方协作和复杂的版本管理。"},
+            ],
+        ),
+    )
+    context = str((contextual.get("route") or {}).get("entities", {}).get("recent_context") or "")
+    if "建筑行业通常涉及" not in context:
+        raise AssertionError(f"Recent context was not returned to the Realtime answer path: {context!r}")
+    print("PASS: recent conversation context is returned for Realtime follow-up.")
+
     if not skip_model_cases:
-        print("\n=== Terra open-language cases (route preview only) ===")
+        print("\n=== Structured sales candidates ===")
         model_cases = [
             "我在建筑行业做项目经理，最麻烦的是会后行动项整理。",
             "我们是一家跨国制造企业，想减少不同地区团队之间的信息遗漏。",
@@ -214,14 +335,14 @@ def run_live(base_url: str, skip_model_cases: bool) -> None:
             _assert_not_execute(response, text)
             route = response.get("route") or {}
             print(
-                f"PASS: Terra case source={route.get('source')} model={response.get('model')} "
+                f"PASS: structured case source={route.get('source')} model={response.get('model')} "
                 f"elapsed_ms={response.get('elapsed_ms')}"
             )
 
     print("\n=== Recent decisions ===")
     recent = _json_request(f"{base}/api/semantic-route/recent-decisions?limit=20")
     _print_json(recent)
-    print("\nPASS: Unified semantic router live acceptance completed.")
+    print("\nPASS: Phase 2B-0 and Phase 2B-1 live acceptance completed.")
     print("This test previews routes only; it does not launch desktop applications.")
 
 
