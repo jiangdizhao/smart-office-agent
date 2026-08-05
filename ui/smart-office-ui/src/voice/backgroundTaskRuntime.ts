@@ -6,6 +6,7 @@ const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 const NOTIFICATION_IDLE_POLL_MS = 250
 const NOTIFICATION_IDLE_TIMEOUT_MS = 20_000
+const USER_TURN_QUIET_MS = 1_200
 
 export type ManagedBackgroundAction =
   | 'music_play_random'
@@ -46,6 +47,40 @@ type StartRequest = {
   language: VoiceLanguage
   lease: VisitLease | null
 }
+
+let conversationBusy = false
+let lastUserActivityAt = 0
+let busyReleaseTimer: number | null = null
+
+function releaseConversationBusySoon(): void {
+  if (busyReleaseTimer !== null) window.clearTimeout(busyReleaseTimer)
+  busyReleaseTimer = window.setTimeout(() => {
+    conversationBusy = false
+    busyReleaseTimer = null
+  }, 250)
+}
+
+function installConversationActivityTracking(): void {
+  const userActivity = () => {
+    lastUserActivityAt = performance.now()
+    conversationBusy = true
+  }
+  window.addEventListener('smartoffice:continuous-user-transcript', userActivity)
+  window.addEventListener('smartoffice:realtime-continuous-utterance', userActivity)
+  window.addEventListener('smartoffice:assistant-output-started', () => {
+    conversationBusy = true
+  })
+  window.addEventListener('smartoffice:assistant-output-completed', releaseConversationBusySoon)
+  window.addEventListener('smartoffice:assistant-output-interrupted', releaseConversationBusySoon)
+  window.addEventListener('smartoffice:assistant-output-failed', releaseConversationBusySoon)
+  window.addEventListener('smartoffice:turn-ready', releaseConversationBusySoon)
+  window.addEventListener('smartoffice:visit-revoked', () => {
+    conversationBusy = false
+    lastUserActivityAt = 0
+  })
+}
+
+installConversationActivityTracking()
 
 function canonicalCommand(action: ManagedBackgroundAction): string {
   const commands: Record<ManagedBackgroundAction, string> = {
@@ -136,7 +171,14 @@ async function speakWhenIdle(
     if (lease?.signal.aborted) return
     if (lease && !visitLeaseRegistry.isCurrent(lease)) return
     const runtime = realtimeAgent.status()
-    if (!runtime.outputActive && !runtime.responseActive && !runtime.speechDetected) {
+    const userTurnQuiet = performance.now() - lastUserActivityAt >= USER_TURN_QUIET_MS
+    if (
+      !conversationBusy
+      && userTurnQuiet
+      && !runtime.outputActive
+      && !runtime.responseActive
+      && !runtime.speechDetected
+    ) {
       await voiceOutputManager.speak(text, language, {
         lease,
         signal: lease?.signal,
@@ -206,8 +248,16 @@ function subscribe(
     }
   }
   source.addEventListener('completed', () => void finish('completed'))
-  source.addEventListener('error', () => {
-    if (source.readyState === EventSource.CLOSED) void finish('error')
+  source.addEventListener('error', (event) => {
+    if (event instanceof MessageEvent && event.data) {
+      void finish('error')
+      return
+    }
+    console.info('[BackgroundTask] event-stream-reconnecting', {
+      taskId,
+      action,
+      readyState: source.readyState,
+    })
   })
   source.addEventListener('cancelled', () => void finish('cancelled'))
   source.addEventListener('verification_result', (event) => {
