@@ -32,6 +32,7 @@ from app.recipient_api import router as recipient_router
 from app.result_center_api import router as result_center_router
 from app.sales_api import router as sales_router
 from app.sales_config import sales_config
+from app.sales_phase2b import router as sales_phase2b_router
 from app.sales_policy import sales_runtime_policy
 from app.semantic_route_api import router as semantic_route_router
 from app.semantic_route_policy import semantic_route_policy
@@ -75,6 +76,7 @@ app.include_router(contact_record_router)
 app.include_router(result_center_router)
 app.include_router(display_role_router)
 app.include_router(sales_router)
+app.include_router(sales_phase2b_router)
 app.include_router(semantic_route_router)
 
 
@@ -199,6 +201,13 @@ def health_check():
             "sales_repeated_demo_allowlist": sales_flags.agent_enabled,
             "sales_quality_baseline": "gpt-realtime-2.1",
             "sales_runtime_default_unchanged": not sales_flags.agent_enabled,
+            "sales_phase2b_engagement_orchestrator": sales_flags.agent_enabled,
+            "sales_phase2b_all_output_rearm": sales_flags.proactive_enabled,
+            "sales_phase2b_busy_defer_not_cancel": sales_flags.proactive_enabled,
+            "sales_phase2b_contextual_recommendation": sales_flags.agent_enabled,
+            "sales_phase2b_verified_booking_contact_conversion": sales_flags.agent_enabled,
+            "sales_phase2b_warm_conversational_style": sales_flags.agent_enabled,
+            "sales_phase2b_contextual_humour": sales_flags.humour_enabled,
         },
     }
 
