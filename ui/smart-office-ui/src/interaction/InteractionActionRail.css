@@ -8,12 +8,16 @@
   min-width: 286px;
   gap: 16px;
   padding: 22px;
-  border: 1px solid rgba(137, 190, 238, 0.2);
+  border: 1px solid rgba(137, 96, 56, 0.22);
   border-radius: 24px;
-  background: linear-gradient(180deg, rgba(11, 26, 48, 0.82), rgba(5, 15, 31, 0.76));
-  box-shadow: 0 28px 75px rgba(0, 6, 20, 0.34);
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255, 251, 241, 0.92), transparent 34%),
+    linear-gradient(180deg, rgba(251, 239, 218, 0.94), rgba(229, 202, 168, 0.9));
+  box-shadow:
+    0 28px 75px rgba(91, 59, 35, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
   transform: translateY(-50%);
-  backdrop-filter: blur(22px);
+  backdrop-filter: blur(16px);
 }
 
 .interaction-action-heading,
@@ -24,13 +28,13 @@
 
 .interaction-action-heading { padding: 0 4px 4px; }
 .interaction-action-heading span {
-  color: #82b9e8;
+  color: #8c653b;
   font-size: 13px;
   font-weight: 850;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
-.interaction-action-heading strong { color: #f0f7ff; font-size: 21px; }
+.interaction-action-heading strong { color: #3a2c22; font-size: 21px; }
 .interaction-action-list { display: grid; gap: 12px; }
 
 .interaction-action-button {
@@ -40,17 +44,18 @@
   align-items: center;
   gap: 13px;
   padding: 14px 15px;
-  border: 1px solid rgba(123, 181, 235, 0.18);
+  border: 1px solid rgba(149, 104, 59, 0.16);
   border-radius: 16px;
-  background: rgba(20, 45, 75, 0.62);
-  color: #edf7ff;
+  background: rgba(255, 249, 238, 0.76);
+  color: #3c2e24;
   font: inherit;
   text-align: left;
-  transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+  transition: transform 150ms ease, border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
 }
 .interaction-action-button:hover:not(:disabled) {
-  border-color: rgba(101, 191, 255, 0.52);
-  background: rgba(31, 76, 119, 0.78);
+  border-color: rgba(184, 127, 66, 0.42);
+  background: rgba(255, 253, 247, 0.94);
+  box-shadow: 0 12px 28px rgba(116, 78, 45, 0.12);
   transform: translateX(-3px);
 }
 .interaction-action-button:disabled { cursor: default; opacity: 0.42; }
@@ -60,8 +65,9 @@
   height: 42px;
   place-items: center;
   border-radius: 13px;
-  background: linear-gradient(135deg, rgba(47, 139, 213, 0.82), rgba(79, 89, 203, 0.76));
-  color: #fff;
+  background: linear-gradient(145deg, #e7bd82, #bd8245);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48);
+  color: #fffdf8;
   font-size: 19px;
   font-weight: 800;
 }
@@ -74,14 +80,14 @@
   white-space: nowrap;
 }
 .interaction-action-copy strong {
-  color: #f5f9ff;
+  color: #34271f;
   font-size: 15px;
   font-style: normal;
   font-weight: 850;
   letter-spacing: 0.035em;
 }
 .interaction-action-copy em {
-  color: #d9eaff;
+  color: #5d4939;
   font-size: 15px;
   font-style: normal;
   font-weight: 700;
@@ -90,11 +96,11 @@
   display: grid;
   gap: 2px;
   margin-top: 3px;
-  color: #a5bdd3;
+  color: #7d6857;
   font-size: 12px;
   line-height: 1.35;
 }
-.interaction-action-notice { color: #9fc8e9; font-size: 12px; text-align: center; }
+.interaction-action-notice { color: #8b6339; font-size: 12px; text-align: center; }
 
 /* Recording is now entered from this service rail. */
 .virtual-host-shell .voice-primary-row > .conversation-record-button { display: none; }
