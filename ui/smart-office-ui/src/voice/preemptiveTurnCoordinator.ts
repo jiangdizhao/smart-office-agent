@@ -66,8 +66,9 @@ class PreemptiveTurnCoordinator {
     // Only requests that belong to one conversational turn inherit the turn signal.
     // Unified semantic routing, general answers and Office interpretation are all
     // cancelled immediately when a newer visitor utterance supersedes the turn.
-    // Task polling, recording upload/summary, and panel data requests keep their own
-    // explicit lifecycle and are never cancelled by an unrelated new utterance.
+    // Background Office tasks are deliberately outside this scope: ordinary barge-in
+    // must never mean "cancel the task". Explicit task cancellation remains available
+    // through the task approval/cancel commands and UI.
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const turnSignal = this.turnAbort?.signal
       if (!turnSignal || turnSignal.aborted || !isTurnScoped(input)) {
@@ -204,9 +205,10 @@ class PreemptiveTurnCoordinator {
           reason,
           attempt: attempt + 1,
           epoch: this.epoch,
+          backgroundTaskActive: Boolean(after.active),
         })
         window.dispatchEvent(new CustomEvent('smartoffice:turn-ready', {
-          detail: { reason, epoch: this.epoch },
+          detail: { reason, epoch: this.epoch, backgroundTaskActive: Boolean(after.active) },
         }))
         return true
       }
@@ -219,6 +221,7 @@ class PreemptiveTurnCoordinator {
       epoch: this.epoch,
       panel: controller?.panel ?? 'unavailable',
       connected: realtimeAgent.status().connected,
+      backgroundTaskActive: Boolean(controller?.active),
     })
     return false
   }
@@ -227,8 +230,8 @@ class PreemptiveTurnCoordinator {
     const previous = this.turnAbort
     const controller = this.controllerGetter?.()
     const taskId = controller?.taskId ?? null
-    const shouldCancelTask = Boolean(controller?.active && taskId)
     const hadTurn = Boolean(previous && !previous.signal.aborted)
+    const backgroundTaskActive = Boolean(controller?.active && taskId)
 
     if (hadTurn) previous?.abort()
     this.turnAbort = null
@@ -238,13 +241,17 @@ class PreemptiveTurnCoordinator {
       reason,
       epoch: this.epoch,
       taskId,
-      shouldCancelTask,
+      backgroundTaskActive,
+      backgroundTaskPreserved: true,
       hadTurn,
       panel: controller?.panel ?? null,
     })
 
+    // Barge-in has the highest conversational priority: stop audio and the current
+    // LLM/Office interpretation immediately. It must not cancel an already accepted
+    // background Office task. Task cancellation is an explicit user action only.
     const interruption = Promise.allSettled([
-      voiceOutputManager.stop(),
+      voiceOutputManager.stop(reason),
       realtimeAgent.stopOutput(),
       controller?.stopSpeaking() ?? Promise.resolve(),
       controller?.panel === 'processing'
@@ -252,15 +259,11 @@ class PreemptiveTurnCoordinator {
         : Promise.resolve(),
     ]).then(() => undefined)
 
-    if (shouldCancelTask && taskId) {
-      const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '')
-        ?? 'http://127.0.0.1:8000'
-      this.cancelPromise = nativeFetch(
-        `${apiBase}/agent/tasks/${encodeURIComponent(taskId)}/cancel`,
-        { method: 'POST', keepalive: true },
-      ).then(() => undefined).catch(() => undefined)
-    } else {
-      this.cancelPromise = Promise.resolve()
+    this.cancelPromise = Promise.resolve()
+    if (backgroundTaskActive) {
+      window.dispatchEvent(new CustomEvent('smartoffice:background-task-preserved-during-barge-in', {
+        detail: { taskId, reason, epoch: this.epoch },
+      }))
     }
 
     await interruption
@@ -270,6 +273,7 @@ class PreemptiveTurnCoordinator {
   reset(reason: string): void {
     this.turnAbort?.abort()
     this.turnAbort = null
+    this.cancelPromise = Promise.resolve()
     this.epoch += 1
     console.info('[PreemptiveTurn] reset', { reason, epoch: this.epoch })
   }
