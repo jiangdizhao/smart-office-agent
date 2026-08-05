@@ -10,6 +10,7 @@ function requireText(source, text, label) {
 }
 
 const manager = read('src/voice/visitLanguagePreference.ts')
+const wrapper = read('src/voice/useVisitLanguageAwareOfficeVoiceController.ts')
 const main = read('src/main.tsx')
 const host = read('src/virtual-host/VirtualHostApp.tsx')
 const rail = read('src/interaction/InteractionActionRail.tsx')
@@ -26,15 +27,21 @@ requireText(manager, "return this.force('en', 'explicit_english_request')", 'Exp
 requireText(manager, 'SHORT_CHINESE_GREETING', 'Short Chinese greeting allowance')
 requireText(manager, 'teams|onenote|outlook|powerpoint|ppt|word|excel|smart|office|sara', 'Product-name exclusion')
 
+requireText(wrapper, 'useVisitLanguageAwareOfficeVoiceController', 'Visit-language controller wrapper')
+requireText(wrapper, 'await synchronise(visitLanguagePreference.current())', 'Pre-capture and pre-greeting language synchronization')
+requireText(wrapper, 'visitLanguagePreference.resolve(', 'Sticky submission language resolution')
+requireText(wrapper, 'await controllerRef.current.submit(text, source)', 'Delegated Office submission after synchronization')
+requireText(wrapper, 'triggerProximityGreeting', 'English-first proximity greeting synchronization')
+
 const languageInstall = main.indexOf('installVisitLanguagePreference()')
 const phase2bInstall = main.indexOf('installSalesPhase2BEngagementOrchestrator()')
 if (languageInstall < 0 || phase2bInstall < 0 || languageInstall > phase2bInstall) {
   throw new Error('Visit language preference must be installed before Phase 2B orchestration.')
 }
 
+requireText(host, 'useVisitLanguageAwareOfficeVoiceController', 'Host sticky-language controller usage')
 requireText(host, 'I speak English and Chinese', 'Bilingual welcome text')
 requireText(host, '我会英语和中文', 'Chinese bilingual welcome text')
-requireText(host, 'VISIT_LANGUAGE_CHANGED_EVENT', 'Host language synchronization')
 requireText(host, 'Digital Manager · Solution Consultant / 数字管理员 · 解决方案顾问', 'Bilingual host identity')
 requireText(host, 'READY · 就绪', 'Bilingual host status')
 
@@ -64,4 +71,4 @@ if (!introduction.self_introduction.zh.includes('英语和中文')) {
   throw new Error('Canonical Chinese introduction must announce both supported languages.')
 }
 
-console.log('PASS: The exhibition UI is English-first bilingual, new Visits default to English, substantial Chinese speech switches the Visit to Chinese, explicit language requests override it, and Phase 2B follows the same Visit language.')
+console.log('PASS: The exhibition UI is English-first bilingual, new Visits default to English, capture and greetings synchronise before use, substantial Chinese speech switches the Visit to Chinese, product-only utterances do not flip it back, explicit language requests override it, and Phase 2B follows the same Visit language.')
