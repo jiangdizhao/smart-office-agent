@@ -163,9 +163,10 @@ function explicitPriorityOfficeAction(text: string): PriorityOfficeKind | null {
   if (!clean) return null
 
   // Discussion, hypothetical and negated wording must never execute. These guards
-  // intentionally run before the positive action patterns.
+  // intentionally run before the positive action patterns. Polite requests such as
+  // “能不能打开 PPT” and “Can you open PowerPoint?” remain executable requests.
   if (
-    /不要|别|无需|不用|仅介绍|只介绍|解释|比较|对比|假设|如果|为什么|怎么实现|如何实现|能否|能不能|是否|是什么|有什么|do not|don't|without|explain|compare|imagine|hypothetical|what is|how does|can you|could you/i.test(clean)
+    /不要|别|无需|不用|仅介绍|只介绍|解释|比较|对比|假设|如果|为什么|怎么实现|如何实现|是什么|有什么|do not|don't|without|explain|compare|imagine|hypothetical|what is|how does/i.test(clean)
   ) return null
 
   const volumeMentioned = /音量|系统声音|电脑声音|扬声器声音|\bvolume\b|\baudio volume\b/i.test(clean)
@@ -338,11 +339,17 @@ export async function generateSimpleRealtimeAnswer(
   lease: VisitLease | null,
 ): Promise<string> {
   const optimized = parseOptimizedContext(recentContext)
-  if (optimized) return ensureOptimizedHumanLikeText(optimized.text.trim(), language)
+  if (optimized) {
+    return ensureOptimizedHumanLikeText(optimized.text.trim(), language, optimized.purpose)
+  }
   return await generateSalesAwareAnswer(text, language, recentContext, lease)
 }
 
-function ensureOptimizedHumanLikeText(text: string, language: VoiceLanguage): string {
+function ensureOptimizedHumanLikeText(
+  text: string,
+  language: VoiceLanguage,
+  purpose: OptimizedContext['purpose'],
+): string {
   if (!text) return text
   if (/^(?:啊|哦|嗯|好嘞|好的|好，|行，|ah|oh|mm|right|well|all right|there we go)/i.test(text)) {
     return text
@@ -352,6 +359,11 @@ function ensureOptimizedHumanLikeText(text: string, language: VoiceLanguage): st
     return language === 'zh'
       ? `嗯，后台刚才眨了一下眼睛。${text} 我可以再试一次。`
       : `Mm, the backend blinked for a moment. ${text} I can try again.`
+  }
+  if (purpose === 'background_action_accepted') {
+    return language === 'zh'
+      ? `好嘞，交给我。${text}`
+      : `Right, leave it with me. ${text}`
   }
   return language === 'zh' ? `啊，搞定了。${text}` : `Ah, there we go. ${text}`
 }
