@@ -27,7 +27,7 @@ const ZH_GENERAL_REACTIONS = [
   '嗯哼，我来看看。',
   '哦，这就有意思了。',
   '啊，这就说得通了。',
-  '好，我大概抓到重点了。',
+  '嗯，明白了。',
   '对，就是这个点。',
 ]
 
@@ -35,7 +35,7 @@ const EN_GENERAL_REACTIONS = [
   'Mm-hm, let me see.',
   'Oh, now this is interesting.',
   'Ah, that makes sense.',
-  'Right, I think I have the picture.',
+  'Right, I understand.',
   "Now we're talking.",
 ]
 
