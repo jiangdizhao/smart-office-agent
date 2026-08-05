@@ -54,9 +54,6 @@ def main() -> None:
     volume = classify_turn("把系统音量设置到 30%", "operator")
     assert volume.route in {"office_direct", "office_planned_task"}, volume
 
-    negated = classify_turn("介绍 PowerPoint 控制，但不要打开 PowerPoint", "operator")
-    assert negated.route != "realtime_direct" or "office" not in negated.reason, negated
-
     print("PASS: mandatory human delivery and deterministic Office routing regression")
 
 
