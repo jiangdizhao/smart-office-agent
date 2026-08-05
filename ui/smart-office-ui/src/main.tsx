@@ -15,7 +15,7 @@ import './interaction/interactionPanelCommandBridge'
 import './interaction/sessionSummaryLifecycle'
 import './interaction/contactConsentProfilePatch'
 import './interaction/meetingWizardProgressiveFlow'
-import { installSalesPhase2AProactiveScheduler } from './sales/salesPhase2AProactiveScheduler'
+import { installSalesPhase2BEngagementOrchestrator } from './sales/salesPhase2BEngagementOrchestrator'
 import DebugApp from './debug/DebugApp.tsx'
 import InteractionActionRail from './interaction/InteractionActionRail.tsx'
 import InteractionApp from './interaction/InteractionApp.tsx'
@@ -85,7 +85,7 @@ function installProximityTerminalForwarding(): void {
 }
 
 installProximityTerminalForwarding()
-installSalesPhase2AProactiveScheduler()
+installSalesPhase2BEngagementOrchestrator()
 
 localStorage.setItem('smartoffice_actor_type', 'operator')
 
