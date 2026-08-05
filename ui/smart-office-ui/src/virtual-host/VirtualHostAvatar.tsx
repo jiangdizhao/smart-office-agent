@@ -50,6 +50,15 @@ type TransitionOptions = {
   mode: SequenceMode
 }
 
+type TransitionRequest = {
+  key: string
+  clip: VideoClip
+  options: TransitionOptions
+  generation: number
+  promise: Promise<boolean>
+  resolve: (result: boolean) => void
+}
+
 type IntroRequest = {
   requestId: string
   visitId: string | null
@@ -60,6 +69,13 @@ type IntroEventDetail = {
   requestId?: string
   visitId?: string | null
   epoch?: number | null
+}
+
+type AssetFailure = {
+  clipId: string
+  src: string
+  message: string
+  mediaCode: number | null
 }
 
 const VIDEO_BASE =
@@ -119,7 +135,6 @@ const CLIPS: Record<ClipKind, VideoClip> = {
   'talk-2': { id: 'talk-2', kind: 'talk-2', src: `${VIDEO_BASE}/talk-2.mp4` },
   'talk-3': { id: 'talk-3', kind: 'talk-3', src: `${VIDEO_BASE}/talk-3.mp4` },
 }
-const ALL_CLIPS = Object.values(CLIPS)
 
 function stateLabel(state: VirtualHostVisualState): string {
   const labels: Record<VirtualHostVisualState, string> = {
@@ -135,62 +150,105 @@ function stateLabel(state: VirtualHostVisualState): string {
   return labels[state]
 }
 
-function waitForLoadedData(video: HTMLVideoElement): Promise<void> {
+function abortError(message: string): Error {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function waitForLoadedData(video: HTMLVideoElement, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError('Video transition was cancelled.'))
   if (video.readyState >= 2) return Promise.resolve()
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => finish(new Error('Video asset did not become ready.')), MEDIA_READY_TIMEOUT_MS)
+    const timer = window.setTimeout(
+      () => finish(new Error('Video asset did not become ready.')),
+      MEDIA_READY_TIMEOUT_MS,
+    )
     const onReady = () => finish()
-    const onError = () => finish(new Error('Video asset failed to load.'))
+    const onError = () => {
+      const code = video.error?.code ?? null
+      finish(new Error(`Video asset failed to load${code ? ` (media code ${code})` : ''}.`))
+    }
+    const onAbort = () => finish(abortError('Video transition was cancelled.'))
     const finish = (error?: Error) => {
       window.clearTimeout(timer)
       video.removeEventListener('loadeddata', onReady)
       video.removeEventListener('error', onError)
+      signal.removeEventListener('abort', onAbort)
       if (error) reject(error)
       else resolve()
     }
     video.addEventListener('loadeddata', onReady, { once: true })
     video.addEventListener('error', onError, { once: true })
+    signal.addEventListener('abort', onAbort, { once: true })
   })
 }
 
-function seekToStart(video: HTMLVideoElement): Promise<void> {
+function seekToStart(video: HTMLVideoElement, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError('Video transition was cancelled.'))
   if (!video.seeking && video.currentTime <= 0.001) return Promise.resolve()
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => finish(new Error('Video asset did not seek to its first frame.')), 1_000)
+    const timer = window.setTimeout(
+      () => finish(new Error('Video asset did not seek to its first frame.')),
+      1_000,
+    )
     const onSeeked = () => finish()
-    const onError = () => finish(new Error('Video asset failed while seeking.'))
+    const onError = () => {
+      const code = video.error?.code ?? null
+      finish(new Error(`Video asset failed while seeking${code ? ` (media code ${code})` : ''}.`))
+    }
+    const onAbort = () => finish(abortError('Video transition was cancelled.'))
     const finish = (error?: Error) => {
       window.clearTimeout(timer)
       video.removeEventListener('seeked', onSeeked)
       video.removeEventListener('error', onError)
+      signal.removeEventListener('abort', onAbort)
       if (error) reject(error)
       else resolve()
     }
     video.addEventListener('seeked', onSeeked, { once: true })
     video.addEventListener('error', onError, { once: true })
+    signal.addEventListener('abort', onAbort, { once: true })
     video.currentTime = 0
   })
 }
 
-function waitForPresentedFrame(video: HTMLVideoElement): Promise<void> {
+function waitForPresentedFrame(video: HTMLVideoElement, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError('Video transition was cancelled.'))
   const frameVideo = video as unknown as {
     requestVideoFrameCallback?: (callback: () => void) => number
   }
   if (frameVideo.requestVideoFrameCallback) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false
-      const finish = () => {
+      const finish = (error?: Error) => {
         if (settled) return
         settled = true
         window.clearTimeout(timer)
-        resolve()
+        signal.removeEventListener('abort', onAbort)
+        if (error) reject(error)
+        else resolve()
       }
-      const timer = window.setTimeout(finish, 350)
-      frameVideo.requestVideoFrameCallback?.(finish)
+      const onAbort = () => finish(abortError('Video transition was cancelled.'))
+      const timer = window.setTimeout(() => finish(), 350)
+      signal.addEventListener('abort', onAbort, { once: true })
+      frameVideo.requestVideoFrameCallback?.(() => finish())
     })
   }
-  return new Promise((resolve) => {
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError('Video transition was cancelled.'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        signal.removeEventListener('abort', onAbort)
+        if (signal.aborted) reject(abortError('Video transition was cancelled.'))
+        else resolve()
+      })
+    })
   })
 }
 
@@ -200,6 +258,25 @@ function isIdleClip(clip: VideoClip | null): boolean {
 
 function isTalkClip(clip: VideoClip | null): boolean {
   return Boolean(clip && clip.kind.startsWith('talk-'))
+}
+
+function transitionKey(clip: VideoClip, options: TransitionOptions): string {
+  return [
+    clip.id,
+    options.mode,
+    options.holdFirstFrame ? 'hold' : 'play',
+    options.loop ? 'loop' : 'once',
+    String(options.playbackRate ?? 1),
+  ].join('|')
+}
+
+function mediaFailure(clip: VideoClip, video: HTMLVideoElement, error: unknown): AssetFailure {
+  return {
+    clipId: clip.id,
+    src: clip.src,
+    message: error instanceof Error ? error.message : String(error),
+    mediaCode: video.error?.code ?? null,
+  }
 }
 
 export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
@@ -215,14 +292,24 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
   const introRequestRef = useRef<IntroRequest | null>(null)
   const introActiveRef = useRef(false)
   const introStartingRef = useRef(false)
-  const transitionSerialRef = useRef(0)
+  const transitionGenerationRef = useRef(0)
+  const transitionWorkerRunningRef = useRef(false)
+  const currentTransitionRef = useRef<TransitionRequest | null>(null)
+  const queuedTransitionRef = useRef<TransitionRequest | null>(null)
+  const lifecycleAbortRef = useRef(new AbortController())
+  const mountedRef = useRef(false)
+  const initialStateEffectRef = useRef(true)
   const sequenceModeRef = useRef<SequenceMode>('idle-cycle')
   const idle2PlayCountRef = useRef(0)
-  const preloadersRef = useRef<HTMLVideoElement[]>([])
   const [activeLayer, setActiveLayer] = useState<0 | 1>(0)
   const [introActive, setIntroActive] = useState(false)
-  const [sequenceMode, setSequenceMode] = useState<SequenceMode>('idle-cycle')
-  const [assetError, setAssetError] = useState(false)
+  const [sequenceMode, setSequenceModeState] = useState<SequenceMode>('idle-cycle')
+  const [assetFailure, setAssetFailure] = useState<AssetFailure | null>(null)
+
+  const setSequenceMode = useCallback((mode: SequenceMode) => {
+    sequenceModeRef.current = mode
+    setSequenceModeState(mode)
+  }, [])
 
   const videoAt = useCallback(
     (layer: 0 | 1): HTMLVideoElement | null =>
@@ -235,73 +322,138 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
     [videoAt],
   )
 
-  const transitionTo = useCallback(
-    async (clip: VideoClip, options: TransitionOptions): Promise<boolean> => {
-      const serial = transitionSerialRef.current + 1
-      transitionSerialRef.current = serial
+  const performTransition = useCallback(
+    async (request: TransitionRequest): Promise<boolean> => {
       const previousLayer = activeLayerRef.current
       const nextLayer: 0 | 1 = previousLayer === 0 ? 1 : 0
       const previousVideo = videoAt(previousLayer)
       const nextVideo = videoAt(nextLayer)
-      if (!nextVideo) return false
+      const signal = lifecycleAbortRef.current.signal
+      if (!nextVideo || signal.aborted || request.generation !== transitionGenerationRef.current) {
+        return false
+      }
 
       nextVideo.pause()
-      nextVideo.loop = Boolean(options.loop)
-      nextVideo.playbackRate = options.playbackRate ?? 1
-      nextVideo.defaultPlaybackRate = options.playbackRate ?? 1
+      nextVideo.loop = Boolean(request.options.loop)
+      nextVideo.playbackRate = request.options.playbackRate ?? 1
+      nextVideo.defaultPlaybackRate = request.options.playbackRate ?? 1
       nextVideo.muted = true
       nextVideo.playsInline = true
       nextVideo.preload = 'auto'
+      nextVideo.dataset.clipId = request.clip.id
+      nextVideo.dataset.transitionKey = request.key
 
-      if (nextVideo.dataset.clipId !== clip.id || nextVideo.src !== new URL(clip.src, window.location.href).href) {
-        nextVideo.dataset.clipId = clip.id
-        nextVideo.src = clip.src
+      const expectedSrc = new URL(request.clip.src, window.location.href).href
+      if (nextVideo.src !== expectedSrc) {
+        nextVideo.src = request.clip.src
         nextVideo.load()
       }
 
       try {
-        await waitForLoadedData(nextVideo)
-        if (transitionSerialRef.current !== serial) return false
-        await seekToStart(nextVideo)
+        await waitForLoadedData(nextVideo, signal)
+        if (request.generation !== transitionGenerationRef.current) return false
+        await seekToStart(nextVideo, signal)
+        if (request.generation !== transitionGenerationRef.current) return false
 
-        if (options.holdFirstFrame) {
+        if (request.options.holdFirstFrame) {
           nextVideo.pause()
         } else {
           await nextVideo.play()
-          await waitForPresentedFrame(nextVideo)
+          await waitForPresentedFrame(nextVideo, signal)
         }
-        if (transitionSerialRef.current !== serial) {
-          nextVideo.pause()
-          return false
-        }
+        if (signal.aborted || request.generation !== transitionGenerationRef.current) return false
 
         activeLayerRef.current = nextLayer
-        activeClipRef.current = clip
+        activeClipRef.current = request.clip
         setActiveLayer(nextLayer)
-        sequenceModeRef.current = options.mode
-        setSequenceMode(options.mode)
-        setAssetError(false)
+        setSequenceMode(request.options.mode)
+        setAssetFailure(null)
 
         window.requestAnimationFrame(() => {
-          if (activeLayerRef.current === nextLayer) {
-            previousVideo?.pause()
-            if (previousVideo) {
-              previousVideo.loop = false
-              previousVideo.playbackRate = 1
-              previousVideo.defaultPlaybackRate = 1
-            }
+          if (!mountedRef.current || activeLayerRef.current !== nextLayer) return
+          previousVideo?.pause()
+          if (previousVideo) {
+            previousVideo.loop = false
+            previousVideo.playbackRate = 1
+            previousVideo.defaultPlaybackRate = 1
           }
         })
         return true
       } catch (error) {
-        if (transitionSerialRef.current !== serial) return false
-        console.error('[VirtualHostVideo] could not prepare clip', clip.src, error)
-        setAssetError(true)
+        if (
+          isAbortError(error)
+          || signal.aborted
+          || request.generation !== transitionGenerationRef.current
+        ) {
+          return false
+        }
+        const failure = mediaFailure(request.clip, nextVideo, error)
+        console.error('[VirtualHostVideo] could not prepare clip', failure)
+        setAssetFailure(failure)
         return false
       }
     },
-    [videoAt],
+    [setSequenceMode, videoAt],
   )
+
+  const drainTransitions = useCallback(async (): Promise<void> => {
+    if (transitionWorkerRunningRef.current) return
+    transitionWorkerRunningRef.current = true
+    try {
+      while (mountedRef.current && queuedTransitionRef.current) {
+        const request = queuedTransitionRef.current
+        queuedTransitionRef.current = null
+        currentTransitionRef.current = request
+        const result = await performTransition(request)
+        request.resolve(result)
+        if (currentTransitionRef.current === request) currentTransitionRef.current = null
+      }
+    } finally {
+      transitionWorkerRunningRef.current = false
+      if (mountedRef.current && queuedTransitionRef.current) void drainTransitions()
+    }
+  }, [performTransition])
+
+  const transitionTo = useCallback(
+    (clip: VideoClip, options: TransitionOptions): Promise<boolean> => {
+      const key = transitionKey(clip, options)
+      const current = currentTransitionRef.current
+      if (current?.key === key && current.generation === transitionGenerationRef.current) {
+        return current.promise
+      }
+      const queued = queuedTransitionRef.current
+      if (queued?.key === key && queued.generation === transitionGenerationRef.current) {
+        return queued.promise
+      }
+
+      let resolveRequest: (result: boolean) => void = () => undefined
+      const promise = new Promise<boolean>((resolve) => {
+        resolveRequest = resolve
+      })
+      const request: TransitionRequest = {
+        key,
+        clip,
+        options,
+        generation: transitionGenerationRef.current,
+        promise,
+        resolve: resolveRequest,
+      }
+
+      if (queuedTransitionRef.current) queuedTransitionRef.current.resolve(false)
+      queuedTransitionRef.current = request
+      void drainTransitions()
+      return promise
+    },
+    [drainTransitions],
+  )
+
+  const invalidateTransitions = useCallback(() => {
+    transitionGenerationRef.current += 1
+    if (queuedTransitionRef.current) {
+      queuedTransitionRef.current.resolve(false)
+      queuedTransitionRef.current = null
+    }
+  }, [])
 
   const startIdleCycle = useCallback(() => {
     if (visitorPresentRef.current || introActiveRef.current || arrivalPendingRef.current) return
@@ -344,7 +496,6 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
     if (current?.kind === 'talk-3') return
 
     if (current?.kind === 'talk-1' && !interrupted) {
-      sequenceModeRef.current = 'talk-out'
       setSequenceMode('talk-out')
       return
     }
@@ -360,11 +511,19 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
       }
     }
 
+    if (interrupted) invalidateTransitions()
     void transitionTo(CLIPS['talk-3'], {
       playbackRate: interrupted ? INTERRUPTED_TALK_OUT_RATE : 1,
       mode: 'talk-out',
     })
-  }, [activeVideo, holdVisitorPose, startIdleCycle, transitionTo])
+  }, [
+    activeVideo,
+    holdVisitorPose,
+    invalidateTransitions,
+    setSequenceMode,
+    startIdleCycle,
+    transitionTo,
+  ])
 
   const startIntro = useCallback(async (): Promise<void> => {
     const request = introRequestRef.current
@@ -377,7 +536,7 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
     introStartingRef.current = false
 
     if (!started || !introActiveRef.current || introRequestRef.current?.requestId !== request.requestId) {
-      if (!started) {
+      if (!started && introRequestRef.current?.requestId === request.requestId) {
         introActiveRef.current = false
         setIntroActive(false)
         window.dispatchEvent(new CustomEvent('smartoffice:host-intro-playback-failed', {
@@ -405,43 +564,38 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
     video.playbackRate = clip.kind === 'idle-3' ? ARRIVAL_IDLE_3_RATE : ARRIVAL_CURRENT_RATE
     video.defaultPlaybackRate = video.playbackRate
     setSequenceMode('arrival-winddown')
-    if (clip.kind === 'idle-3' && (video.ended || (video.duration > 0 && video.currentTime >= video.duration - 0.05))) {
+    if (
+      clip.kind === 'idle-3'
+      && (video.ended || (video.duration > 0 && video.currentTime >= video.duration - 0.05))
+    ) {
       void startIntro()
     }
-  }, [activeVideo, startIntro, transitionTo])
+  }, [activeVideo, setSequenceMode, startIntro, transitionTo])
 
   useEffect(() => {
-    const preloaders = ALL_CLIPS.map((clip) => {
-      const video = document.createElement('video')
-      video.muted = true
-      video.playsInline = true
-      video.preload = 'auto'
-      video.src = clip.src
-      video.load()
-      return video
-    })
-    preloadersRef.current = preloaders
-    return () => {
-      preloaders.forEach((video) => {
-        video.pause()
-        video.removeAttribute('src')
-        video.load()
-      })
-      preloadersRef.current = []
-    }
-  }, [])
-
-  useEffect(() => {
+    mountedRef.current = true
+    lifecycleAbortRef.current = new AbortController()
     if (visitorPresentRef.current) holdVisitorPose()
     else startIdleCycle()
+
     return () => {
-      transitionSerialRef.current += 1
+      mountedRef.current = false
+      lifecycleAbortRef.current.abort()
+      invalidateTransitions()
+      currentTransitionRef.current?.resolve(false)
+      currentTransitionRef.current = null
       firstVideoRef.current?.pause()
       secondVideoRef.current?.pause()
     }
-  }, [holdVisitorPose, startIdleCycle])
+  }, [holdVisitorPose, invalidateTransitions, startIdleCycle])
 
   useEffect(() => {
+    if (initialStateEffectRef.current) {
+      initialStateEffectRef.current = false
+      stateRef.current = state
+      return
+    }
+
     const previous = stateRef.current
     stateRef.current = state
 
@@ -480,6 +634,7 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
       introActiveRef.current = false
       introStartingRef.current = false
       setIntroActive(false)
+      invalidateTransitions()
       startIdleCycle()
     }
     const onIntroStart = (event: Event) => {
@@ -501,12 +656,12 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
       if (clip?.kind === 'idle-3' && video && (video.ended || video.paused)) void startIntro()
     }
     const onIntroCancel = () => {
-      transitionSerialRef.current += 1
       arrivalPendingRef.current = false
       introRequestRef.current = null
       introActiveRef.current = false
       introStartingRef.current = false
       setIntroActive(false)
+      invalidateTransitions()
       if (visitorPresentRef.current) holdVisitorPose()
       else startIdleCycle()
     }
@@ -548,7 +703,16 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
       window.removeEventListener('smartoffice:realtime-vad-speech-started', onUserSpeechStarted)
       window.removeEventListener('smartoffice:realtime-vad-speech-stopped', onUserSpeechStopped)
     }
-  }, [accelerateArrival, activeVideo, holdVisitorPose, startIdleCycle, startIntro, startTalkIn, startTalkOut])
+  }, [
+    accelerateArrival,
+    activeVideo,
+    holdVisitorPose,
+    invalidateTransitions,
+    startIdleCycle,
+    startIntro,
+    startTalkIn,
+    startTalkOut,
+  ])
 
   function handleEnded(layer: 0 | 1): void {
     if (layer !== activeLayerRef.current) return
@@ -629,6 +793,30 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
     else startIdleCycle()
   }
 
+  function handleVideoError(layer: 0 | 1, video: HTMLVideoElement): void {
+    const code = video.error?.code ?? null
+    if (code === 1) return
+
+    const clipId = String(video.dataset.clipId ?? '').trim()
+    const relevant =
+      layer === activeLayerRef.current
+      || currentTransitionRef.current?.clip.id === clipId
+    if (!clipId || !relevant) return
+
+    const clip = CLIPS[clipId as ClipKind]
+    if (!clip) return
+    const failure: AssetFailure = {
+      clipId,
+      src: clip.src,
+      message: code
+        ? `Browser media error ${code}.`
+        : 'The browser could not load this video.',
+      mediaCode: code,
+    }
+    console.error('[VirtualHostVideo] media element error', failure)
+    setAssetFailure(failure)
+  }
+
   return (
     <div
       className={`virtual-host-avatar video-host-avatar avatar-${state} avatar-sequence-${sequenceMode} ${introActive ? 'avatar-introducing' : ''}`}
@@ -647,7 +835,7 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
             preload="auto"
             aria-hidden="true"
             onEnded={() => handleEnded(layer)}
-            onError={() => setAssetError(true)}
+            onError={(event) => handleVideoError(layer, event.currentTarget)}
           />
         ))}
 
@@ -657,10 +845,13 @@ export default function VirtualHostAvatar({ state }: VirtualHostAvatarProps) {
           <span>{introActive ? 'Welcoming visitor' : stateLabel(state)}</span>
         </div>
 
-        {assetError ? (
+        {assetFailure ? (
           <div className="video-avatar-fallback" role="status">
-            <strong>Virtual host video assets are not installed</strong>
-            <span>Install idle-1/2/3, intro and talk-1/2/3 MP4 files in public/virtual-host-video.</span>
+            <strong>Virtual host video could not be loaded</strong>
+            <span>
+              {assetFailure.clipId}.mp4 · {assetFailure.message}
+              {assetFailure.mediaCode ? ` Media code: ${assetFailure.mediaCode}.` : ''}
+            </span>
           </div>
         ) : null}
       </div>
