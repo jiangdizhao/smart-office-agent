@@ -51,8 +51,9 @@ for (const [english, chinese] of [
 requireText(rail, 'visitLanguagePreference.current()', 'Interaction panel Visit language')
 requireText(railCss, '@media (max-width: 920px)', 'English-only compact fallback breakpoint')
 requireText(railCss, '.interaction-action-copy em { display: none; }', 'Compact Chinese secondary hiding')
-requireText(panel, 'Registration ·', 'English-first panel title rendering')
-requireText(panel, 'titleZh', 'Panel Chinese subtitle')
+requireText(panel, "title: 'Registration'", 'English panel title')
+requireText(panel, "titleZh: '访客登记'", 'Chinese panel subtitle')
+requireText(panel, '{label.title} · {label.titleZh}', 'English-first panel title rendering')
 requireText(phase2b, 'visitLanguagePreference.current()', 'Phase 2B proactive Visit language')
 requireText(phase2b, 'visitLanguagePreference.resolve(input.text', 'Phase 2B observation language resolution')
 
