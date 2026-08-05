@@ -17,6 +17,20 @@ export type FastConversationRoute = SalesAwareConversationRoute
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 const OPTIMIZED_CONTEXT_PREFIX = '__SMART_OFFICE_OPTIMIZED_CONTEXT__:'
+const CHINESE_DIGITS: Record<string, number> = {
+  零: 0,
+  〇: 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+}
 
 installSemanticOfficeInterpreterBridge()
 
@@ -58,14 +72,17 @@ function normalize(text: string): string {
 
 function stripPoliteness(text: string): string {
   return normalize(text)
-    .replace(/^(?:请|请你|请您|麻烦|麻烦你|麻烦您|帮我|帮忙|可以帮我|你能|您能)\s*/u, '')
-    .replace(/(?:一下|吧|谢谢|thank you|please)[。.!！]?$/iu, '')
+    .replace(
+      /^(?:可以麻烦你|可以麻烦您|可以帮我|麻烦你|麻烦您|请你|请您|帮我|帮忙|你能|您能|麻烦|请)\s*/u,
+      '',
+    )
+    .replace(/(?:帮我|帮忙)?(?:一下|吧|谢谢|thank you|please)[。.!！]?$/iu, '')
     .trim()
 }
 
 function managedAction(text: string): ManagedBackgroundAction | null {
   const clean = stripPoliteness(text).replace(/[。.!！]/g, '').trim()
-  if (/不要|别|无需|不用|是否|能否|能不能|为什么|怎么|如何|if\b|do not|don't|without/i.test(clean)) {
+  if (/不要|别|无需|不用|是否|能否|能不能|为什么|怎么|如何|比较|对比|if\b|do not|don't|without/i.test(clean)) {
     return null
   }
   const exact: Record<string, ManagedBackgroundAction> = {
@@ -101,17 +118,42 @@ function managedAction(text: string): ManagedBackgroundAction | null {
   return exact[clean] ?? null
 }
 
+function parseChineseInteger(token: string): number | null {
+  if (/^\d+$/.test(token)) return Number(token)
+  if (!/^[零〇一二两三四五六七八九十百]+$/.test(token)) return null
+  let total = 0
+  let digit = 0
+  for (const char of token) {
+    if (char in CHINESE_DIGITS) {
+      digit = CHINESE_DIGITS[char]
+      continue
+    }
+    if (char === '十') {
+      total += (digit || 1) * 10
+      digit = 0
+      continue
+    }
+    if (char === '百') {
+      total += (digit || 1) * 100
+      digit = 0
+      continue
+    }
+    return null
+  }
+  return total + digit
+}
+
 function clearVolumePercent(text: string): number | null {
   const clean = stripPoliteness(text)
   if (/不要|别|无需|不用|是否|能否|能不能|为什么|怎么|如何|多少|几|if\b|do not|don't/i.test(clean)) {
     return null
   }
   const match = clean.match(
-    /^(?:把|将)?(?:系统|电脑|扬声器)?(?:音量|声音)(?:调到|调至|调整到|调整为|设置为|设为|改为|变成)\s*(?:百分之\s*)?(\d{1,3})\s*(?:%|％|percent)?$/iu,
+    /^(?:把|将)?(?:系统|电脑|扬声器)?(?:音量|声音)(?:调到|调至|调成|调整到|调整为|设置为|设为|改为|变成)\s*(?:百分之\s*)?([零〇一二两三四五六七八九十百\d]{1,6})\s*(?:%|％|percent)?$/iu,
   ) ?? clean.match(/^set\s+(?:the\s+)?volume\s+to\s+(\d{1,3})\s*(?:%|percent)?$/i)
   if (!match) return null
-  const value = Number(match[1])
-  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : null
+  const value = parseChineseInteger(match[1])
+  return value !== null && Number.isInteger(value) && value >= 0 && value <= 100 ? value : null
 }
 
 async function setVolumeDirect(percent: number, request: RouteRequest): Promise<string> {
