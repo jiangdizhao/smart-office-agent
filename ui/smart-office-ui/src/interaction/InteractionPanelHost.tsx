@@ -22,12 +22,12 @@ type ActivePanel = {
   instanceId: number
 }
 
-const PANEL_LABELS: Record<InteractionWindowKind, { eyebrow: string; title: string }> = {
-  contact: { eyebrow: 'Visitor Registration', title: '登记信息' },
-  meeting: { eyebrow: 'Meeting Scheduler', title: '预约会议' },
-  recording: { eyebrow: 'Conversation Recording', title: '实时录音' },
-  transcript: { eyebrow: 'Current Session Summary', title: '对话总结' },
-  results: { eyebrow: 'Visitor Profiles', title: '结果中心' },
+const PANEL_LABELS: Record<InteractionWindowKind, { eyebrow: string; title: string; titleZh: string }> = {
+  contact: { eyebrow: 'VISITOR REGISTRATION', title: 'Registration', titleZh: '访客登记' },
+  meeting: { eyebrow: 'MEETING SCHEDULER', title: 'Book a Meeting', titleZh: '预约会议' },
+  recording: { eyebrow: 'CONVERSATION RECORDING', title: 'Live Recording', titleZh: '实时录音' },
+  transcript: { eyebrow: 'CURRENT SESSION', title: 'Session Summary', titleZh: '对话总结' },
+  results: { eyebrow: 'VISITOR PROFILES', title: 'Result Center', titleZh: '结果中心' },
 }
 
 export default function InteractionPanelHost() {
@@ -192,25 +192,26 @@ export default function InteractionPanelHost() {
 
   if (!active) return null
   const label = PANEL_LABELS[active.request.kind]
+  const accessibleTitle = `${label.title} / ${label.titleZh}`
 
   return (
     <aside
       className={`interaction-panel-host ${closing ? 'is-closing' : 'is-open'}`}
-      aria-label={label.title}
+      aria-label={accessibleTitle}
     >
       <section className="interaction-panel-surface" role="dialog" aria-modal="false">
         <header className="interaction-panel-chrome">
           <div>
             <span>{label.eyebrow}</span>
-            <strong>{label.title}</strong>
+            <strong>{label.title} · {label.titleZh}</strong>
           </div>
-          <button type="button" onClick={() => closePanel()} aria-label="关闭交互面板">×</button>
+          <button type="button" onClick={() => closePanel()} aria-label="Close panel / 关闭面板">×</button>
         </header>
         <div className="interaction-panel-frame-wrap">
           <iframe
             key={active.instanceId}
             ref={iframeRef}
-            title={label.title}
+            title={accessibleTitle}
             src={interactionPanelUrl(active.request)}
             allow="microphone"
           />
