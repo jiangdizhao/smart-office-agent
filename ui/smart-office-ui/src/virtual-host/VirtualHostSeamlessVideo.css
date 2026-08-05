@@ -25,11 +25,23 @@
   image-rendering: auto;
 }
 
-/* Keep the video portrait as the only visual enclosure. The former blurred halo
-   and floor shadow created the large egg-shell silhouette around the rectangle. */
+/* Keep the video portrait as the only visual enclosure. The former avatar halo,
+   floor shadow and Phase 3 stage pseudo-element all created overlapping egg-shell
+   silhouettes around the rectangular video. The stage pseudo-element must be
+   disabled globally because the exhibition viewport can be wider than 980px even
+   when the physical main-screen composition is portrait-oriented. */
 .video-avatar-halo,
 .video-avatar-shadow {
   display: none !important;
+}
+
+.virtual-host-stage::before {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  filter: none !important;
 }
 
 .video-avatar-frame {
