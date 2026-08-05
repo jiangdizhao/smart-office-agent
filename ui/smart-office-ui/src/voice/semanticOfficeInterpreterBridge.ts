@@ -7,6 +7,7 @@ import type {
   SemanticAction,
   UnifiedSemanticRouteResponse,
 } from '../routing/unifiedSemanticRouterClient'
+import { installOfficeTaskEventObserver } from './officeTaskEventObserver'
 
 const SLOW_PRESENTATION_STEPS = new Set([
   'presentation_open_configured',
@@ -42,6 +43,16 @@ function numeric(value: unknown): number | null {
 function semanticStep(action: SemanticAction): Record<string, unknown> | null {
   if (action.polarity !== 'affirmed') return null
   if (action.target === 'powerpoint') {
+    if (action.verb === 'go_to') {
+      const slideNumber = numeric(action.arguments.slide_number)
+      if (slideNumber !== null && slideNumber >= 1) {
+        return { name: 'presentation_go_to_slide', slide_number: slideNumber }
+      }
+      if (action.arguments.slide_target === 'last') {
+        return { name: 'presentation_go_to_slide', slide_target: 'last' }
+      }
+      return null
+    }
     const mapping: Record<string, string> = {
       open: 'presentation_open_configured',
       start: 'presentation_start_slideshow',
@@ -53,18 +64,7 @@ function semanticStep(action: SemanticAction): Record<string, unknown> | null {
       get: 'presentation_get_status',
     }
     const name = mapping[action.verb]
-    if (!name) return null
-    if (action.verb === 'go_to') {
-      const slideNumber = numeric(action.arguments.slide_number)
-      if (slideNumber !== null && slideNumber >= 1) {
-        return { name: 'presentation_go_to_slide', slide_number: slideNumber }
-      }
-      if (action.arguments.slide_target === 'last') {
-        return { name: 'presentation_go_to_slide', slide_target: 'last' }
-      }
-      return null
-    }
-    return { name }
+    return name ? { name } : null
   }
 
   if (action.target === 'system_volume') {
@@ -138,6 +138,7 @@ function decisionFromLatestSemanticRoute(text: string): RealtimeOfficeDecision |
 }
 
 export function installSemanticOfficeInterpreterBridge(): void {
+  installOfficeTaskEventObserver()
   if (window.__SMART_OFFICE_SEMANTIC_OFFICE_BRIDGE_INSTALLED__) return
   window.__SMART_OFFICE_SEMANTIC_OFFICE_BRIDGE_INSTALLED__ = true
   const originalInterpret = realtimeOfficeInterpreter.interpret.bind(realtimeOfficeInterpreter)
