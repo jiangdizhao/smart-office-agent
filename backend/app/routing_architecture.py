@@ -23,8 +23,8 @@ _ACTION_TARGET_ZH = re.compile(
     r"teams|微软团队|onenote|微软笔记|powerpoint|ppt|幻灯片|演示文稿|"
     r"音量|扬声器|喇叭|音乐|媒体播放器|outlook|邮件|草稿|"
     r"预约|会议日历|预约日历|登记表|联系方式|录音|对话总结|对话记录|结果中心|"
-    r"应用|软件|窗口|面板"
-    , re.IGNORECASE,
+    r"应用|软件|窗口|面板",
+    re.IGNORECASE,
 )
 _ACTION_VERB_EN = re.compile(
     r"\b(?:open|launch|start|close|quit|exit|play|stop|set|adjust|change|send|create|"
@@ -49,23 +49,25 @@ _AMBIGUOUS_ACTION = re.compile(
     re.IGNORECASE,
 )
 
-# These patterns deliberately require a first-person business statement, a pain
-# statement, or an explicit conversion/recommendation request. Merely asking what
-# Sara knows about an industry remains ordinary conversation.
+# A sales candidate requires explicit customer context, a concrete pain statement,
+# or a conversion/recommendation request. A question about an industry in general
+# is intentionally excluded and remains ordinary conversation.
 _SALES_ZH = re.compile(
-    r"(?:我|我们|本公司|我们公司).{0,24}(?:从事|属于|是一家|负责|职位|工作|痛点|困难|"
-    r"问题|想改善|希望改善|感兴趣|需要方案)|"
-    r"(?:会议|客户跟进|重复行政|文件版本|项目协作|信息遗漏).{0,12}(?:太多|很慢|麻烦|困难|"
-    r"浪费时间|容易遗漏|是个问题)|"
+    r"(?:我|我们|本公司|我们公司).{0,36}(?:从事|属于|是一家|负责|担任|做.{0,8}(?:经理|主管|顾问|工程师)|"
+    r"职位|工作|痛点|困难|问题|麻烦|想改善|希望改善|感兴趣|需要方案)|"
+    r"(?:会议|客户跟进|重复行政|文件版本|项目协作|信息遗漏|行动项).{0,16}(?:太多|很慢|麻烦|困难|"
+    r"浪费时间|容易遗漏|是个问题|整理不完)|"
     r"(?:给我|帮我|可以).{0,10}(?:推荐|安排预约|留下联系方式|完整演示)|"
     r"(?:我想|我们想|我希望|我们希望).{0,16}(?:预约|登记|留联系方式|完整演示|了解价格)|"
     r"(?:多少钱|价格|费用|报价|隐私|人脸数据|保存数据|联系方式)"
 )
 _SALES_EN = re.compile(
-    r"\b(?:i|we|our\s+company)\b.{0,80}\b(?:work\s+in|operate\s+in|industry|role|"
-    r"responsible|pain\s+point|problem|interested|need|want\s+to\s+improve)\b|"
+    r"\b(?:i|we|our\s+company)\b.{0,100}\b(?:work\s+in|operate\s+in|industry|role|"
+    r"responsible|project\s+manager|manager|consultant|engineer|pain\s+point|problem|"
+    r"biggest\s+issue|difficult|interested|need|want\s+to\s+improve)\b|"
     r"\b(?:meetings?|customer\s+follow-up|repetitive\s+administration|file\s+versions?|"
-    r"project\s+collaboration)\b.{0,60}\b(?:too\s+many|slow|difficult|time-consuming|problem|missing)\b|"
+    r"project\s+collaboration|action\s+items?)\b.{0,60}\b(?:too\s+many|slow|difficult|"
+    r"time-consuming|problem|missing|hard\s+to\s+organise|hard\s+to\s+organize)\b|"
     r"\b(?:recommend|book\s+(?:a\s+)?meeting|leave\s+(?:my\s+)?contact|contact\s+details|"
     r"full\s+demo|pricing|price|cost|quotation|privacy|face\s+data|store\s+data)\b",
     re.IGNORECASE,
@@ -79,25 +81,24 @@ _COMPLEX_EN = re.compile(
     r"detailed\s+analysis|comparative\s+analysis|pros\s+and\s+cons|risk\s+analysis)\b",
     re.IGNORECASE,
 )
-
 _AFFIRM = {"可以", "好", "好的", "行", "愿意", "没问题", "yes", "sure", "okay", "ok", "go ahead"}
 _REJECT = {"不", "不用", "不用了", "不了", "不需要", "算了", "no", "no thanks", "not now"}
 
 
 def routing_architecture(value: str | None = None) -> RoutingArchitecture:
-    clean = str(value if value is not None else os.getenv("SMART_OFFICE_ROUTING_ARCHITECTURE", "hybrid")).strip().casefold()
-    if clean not in {"legacy", "hybrid", "unified"}:
-        return "hybrid"
-    return clean  # type: ignore[return-value]
+    raw = value if value is not None else os.getenv("SMART_OFFICE_ROUTING_ARCHITECTURE", "hybrid")
+    clean = str(raw).strip().casefold()
+    return clean if clean in {"legacy", "hybrid", "unified"} else "hybrid"  # type: ignore[return-value]
 
 
 def has_action_candidate(text: str) -> bool:
     clean = " ".join(str(text or "").strip().split())
     if _IMPLICIT_ACTION.search(clean) or _AMBIGUOUS_ACTION.search(clean):
         return True
-    zh = bool(_ACTION_VERB_ZH.search(clean) and _ACTION_TARGET_ZH.search(clean))
-    en = bool(_ACTION_VERB_EN.search(clean) and _ACTION_TARGET_EN.search(clean))
-    return zh or en
+    return bool(
+        (_ACTION_VERB_ZH.search(clean) and _ACTION_TARGET_ZH.search(clean))
+        or (_ACTION_VERB_EN.search(clean) and _ACTION_TARGET_EN.search(clean))
+    )
 
 
 def has_sales_candidate(text: str) -> bool:
@@ -121,17 +122,15 @@ def recent_context_text(turns: list[RecentTurn], current_text: str) -> str:
     values = list(turns[-10:])
     if values and values[-1].role == "user" and " ".join(values[-1].text.strip().split()) == current:
         values = values[:-1]
-    lines = [f"{item.role.upper()}: {item.text}" for item in values if item.text.strip()]
-    return "\n".join(lines)
+    return "\n".join(f"{item.role.upper()}: {item.text}" for item in values if item.text.strip())
 
 
 def attach_recent_context(route: SemanticRoute, request: SemanticRouteRequest) -> SemanticRoute:
     if route.action_mode != "answer_only":
         return route
-    context = recent_context_text(request.recent_turns, request.text)
     entities = dict(route.entities)
     entities["language"] = request.language
-    entities["recent_context"] = context
+    entities["recent_context"] = recent_context_text(request.recent_turns, request.text)
     return route.model_copy(update={"entities": entities})
 
 
@@ -147,10 +146,9 @@ def pending_conversion_route(request: SemanticRouteRequest) -> tuple[SemanticRou
         return None, None
     semantic_pending_intents.consume(request.conversation_id, request.visit_id)
     booking = pending.intent_type == "booking_offer"
-    intent = "booking_response" if booking else "contact_response"
     return (
         SemanticRoute(
-            primary_intent=intent,
+            primary_intent="booking_response" if booking else "contact_response",
             domain="sales",
             action_mode="delegate",
             confidence=1.0,
@@ -184,13 +182,15 @@ def hybrid_conversation_route(
     if has_action_candidate(request.text):
         return None
     complexity = conversation_complexity(request.text, request.language)
-    context = recent_context_text(request.recent_turns, request.text)
     return SemanticRoute(
         primary_intent="general_question",
         domain="general",
         action_mode="answer_only",
         confidence=1.0,
-        entities={"language": request.language, "recent_context": context},
+        entities={
+            "language": request.language,
+            "recent_context": recent_context_text(request.recent_turns, request.text),
+        },
         risk="none",
         reason_codes=[reason],
         source="fast_path",
@@ -207,7 +207,6 @@ def hybrid_non_action_route(request: SemanticRouteRequest) -> SemanticRoute | No
 
 def legacy_route(request: SemanticRouteRequest) -> SemanticRoute:
     decision = classify_turn(request.text, request.actor_type)
-    context = recent_context_text(request.recent_turns, request.text)
     if decision.route in {"office_direct", "office_planned_task"}:
         return SemanticRoute(
             primary_intent="office_action",
@@ -227,7 +226,10 @@ def legacy_route(request: SemanticRouteRequest) -> SemanticRoute:
         domain="general",
         action_mode="answer_only",
         confidence=1.0,
-        entities={"language": request.language, "recent_context": context},
+        entities={
+            "language": request.language,
+            "recent_context": recent_context_text(request.recent_turns, request.text),
+        },
         risk="none",
         reason_codes=[f"legacy_router:{decision.reason}"],
         source="fast_path",
