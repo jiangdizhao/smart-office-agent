@@ -41,10 +41,10 @@ requireText(delivery, 'light_playful', 'Approved playful delivery style')
 requireText(delivery, 'calm_reassuring', 'Sensitive-context delivery style')
 requireText(delivery, 'pause_before_question', 'Question pacing control')
 requireText(receptionClient, '/api/sales/experience/proactive', 'Experience proactive endpoint')
-requireText(ui, '数字管理员与企业解决方案顾问', 'Chinese customer-facing identity')
+requireText(ui, '数字管理员 · 解决方案顾问', 'Compact Chinese customer-facing identity')
 requireText(ui, 'Digital Manager · Solution Consultant', 'English header identity')
 if (ui.includes("Smart Office 虚拟助手。访客靠近后")) {
   throw new Error('The old virtual-assistant standby identity is still visible.')
 }
 
-console.log('PASS: customer-facing Phase 1 uses reliable output lifecycle events, sequential Visit-scoped proactive timing, controlled voice delivery and the Digital Manager persona.')
+console.log('PASS: customer-facing Phase 1 uses reliable output lifecycle events, sequential Visit-scoped proactive timing, controlled voice delivery and the English-first bilingual Digital Manager persona.')
