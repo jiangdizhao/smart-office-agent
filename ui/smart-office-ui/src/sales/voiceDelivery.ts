@@ -37,7 +37,7 @@ function key(text: string): string {
 export function defaultVoiceDelivery(): VoiceDeliveryPlan {
   return {
     schema_version: 'voice-delivery-v1',
-    style: 'neutral_exact',
+    style: 'warm_confident',
     pace: 'natural',
     energy: 'medium',
     question_tone: 'none',
@@ -55,8 +55,9 @@ export function inferVoiceOutputContext(
   const opening = /数字管理员与企业解决方案顾问|Digital Manager and Enterprise Solution Consultant/i.test(clean)
   const privacy = /隐私|人脸|录音|保存.*数据|privacy|face data|recording/i.test(clean)
   const failure = /没有成功|失败|无法|未完成|did not open|failed|could not/i.test(clean)
+  const verifiedOperation = /已经(?:打开|关闭|停止|完成)|通过状态验证|已保存|预约成功|登记成功|is (?:open|closed|complete)|verified|saved successfully/i.test(clean)
   const question = /[？?]\s*$/.test(clean)
-  const humour = /咖啡|工位|停车位|冰箱|年假|键盘|coffee|desk|parking|annual leave|keyboard/i.test(clean)
+  const humour = /咖啡|工位|停车位|冰箱|年假|键盘|文件名都开始|不同版本|重复录入很有耐心|coffee|desk|parking|annual leave|keyboard|file names appear to join/i.test(clean)
   if (opening) {
     return {
       delivery: {
@@ -91,11 +92,29 @@ export function inferVoiceOutputContext(
       questionField: null,
     }
   }
+  if (verifiedOperation) {
+    return {
+      delivery: {
+        ...defaultVoiceDelivery(),
+        style: 'verified_success',
+        energy: 'medium_high',
+      },
+      purpose: 'verified_operational_result',
+      replyMode: 'exact_operational',
+      expectUserResponse: false,
+      questionField: null,
+    }
+  }
   return {
     delivery: {
       ...defaultVoiceDelivery(),
-      style: question ? 'curious_discovery' : 'neutral_exact',
+      style: humour
+        ? 'light_playful'
+        : question
+          ? 'curious_discovery'
+          : 'warm_confident',
       question_tone: question ? 'curious' : 'none',
+      humour_delivery: humour ? 'light_smile' : 'none',
       pause_before_question: question,
     },
     purpose: 'general_voice_output',
