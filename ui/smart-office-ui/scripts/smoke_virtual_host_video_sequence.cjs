@@ -27,6 +27,10 @@ requireText(avatar, 'Virtual host video could not be loaded', 'truthful media fa
 requireText(gate, 'await gate.promise', 'intro voice synchronisation')
 requireText(gate, "releaseGate('timeout'", 'intro fail-open timeout')
 requireText(css, 'transition: none !important', 'flash-free layer switch')
+requireText(css, '.virtual-host-stage::before', 'legacy stage backdrop override')
+requireText(css, 'content: none !important', 'stage pseudo-element removal')
+requireText(css, 'background: none !important', 'stage egg gradient removal')
+requireText(css, 'box-shadow: none !important', 'stage egg shadow removal')
 
 for (const removed of [
   'CROSSFADE_MS',
@@ -44,4 +48,4 @@ for (const removed of [
   if (avatar.includes(removed)) throw new Error(`Legacy or race-prone token remains: ${removed}`)
 }
 
-console.log('PASS: virtual-host seamless video sequence and transition ownership contract')
+console.log('PASS: virtual-host seamless video sequence, transition ownership and stage-backdrop contract')
