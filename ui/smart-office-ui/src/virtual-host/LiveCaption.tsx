@@ -10,45 +10,23 @@ type LiveCaptionProps = {
   welcomeText: string
 }
 
-function splitLongChunk(chunk: string): string[] {
-  const clean = chunk.trim()
-  if (!clean) return []
+type VoiceChunkDetail = {
+  text?: string
+  outputId?: string
+  index?: number
+  count?: number
+}
 
+function cleanCaption(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function currentTextTail(text: string): string {
+  const clean = cleanCaption(text)
+  if (!clean) return ''
   const hasCjk = /[\u3400-\u9fff]/.test(clean)
-  const limit = hasCjk ? 18 : 9
-  if (hasCjk) {
-    const parts: string[] = []
-    for (let index = 0; index < clean.length; index += limit) {
-      parts.push(clean.slice(index, index + limit))
-    }
-    return parts
-  }
-
-  const words = clean.split(/\s+/)
-  const parts: string[] = []
-  for (let index = 0; index < words.length; index += limit) {
-    parts.push(words.slice(index, index + limit).join(' '))
-  }
-  return parts
-}
-
-function splitLyrics(text: string): string[] {
-  const clean = text.replace(/\s+/g, ' ').trim()
-  if (!clean) return []
-
-  const sentenceChunks = clean
-    .split(/(?<=[，。！？；：,.!?;:])/u)
-    .map((item) => item.trim())
-    .filter(Boolean)
-
-  return sentenceChunks.flatMap(splitLongChunk)
-}
-
-function segmentDurationMs(segment: string): number {
-  const cjk = (segment.match(/[\u3400-\u9fff]/g) ?? []).length
-  const words = (segment.match(/[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*/g) ?? []).length
-  const punctuation = (segment.match(/[，。！？；：,.!?;:]/g) ?? []).length
-  return Math.max(950, Math.min(4200, 520 + cjk * 180 + words * 310 + punctuation * 220))
+  const limit = hasCjk ? 46 : 110
+  return clean.length <= limit ? clean : clean.slice(-limit)
 }
 
 export default function LiveCaption({
@@ -58,38 +36,42 @@ export default function LiveCaption({
   assistantText,
   welcomeText,
 }: LiveCaptionProps) {
-  const lyrics = useMemo(() => splitLyrics(assistantText), [assistantText])
-  const [activeIndex, setActiveIndex] = useState(0)
-  const [showAssistant, setShowAssistant] = useState(Boolean(assistantText))
+  const [activeAssistantChunk, setActiveAssistantChunk] = useState('')
 
   useEffect(() => {
-    setActiveIndex(0)
-    if (assistantText) setShowAssistant(true)
-
-    if (state !== 'speaking' || lyrics.length < 2) return
-
-    const timers: number[] = []
-    let elapsed = 0
-    lyrics.slice(0, -1).forEach((segment, index) => {
-      elapsed += segmentDurationMs(segment)
-      timers.push(window.setTimeout(() => setActiveIndex(index + 1), elapsed))
-    })
-
-    return () => timers.forEach((timer) => window.clearTimeout(timer))
-  }, [assistantText, lyrics, state])
+    const onChunkStart = (event: Event) => {
+      const detail = (event as CustomEvent<VoiceChunkDetail>).detail
+      setActiveAssistantChunk(cleanCaption(detail?.text ?? ''))
+    }
+    const clearAssistantChunk = () => setActiveAssistantChunk('')
+    window.addEventListener('smartoffice:voice-chunk-start', onChunkStart)
+    window.addEventListener('smartoffice:assistant-output-completed', clearAssistantChunk)
+    window.addEventListener('smartoffice:assistant-output-interrupted', clearAssistantChunk)
+    window.addEventListener('smartoffice:assistant-output-failed', clearAssistantChunk)
+    return () => {
+      window.removeEventListener('smartoffice:voice-chunk-start', onChunkStart)
+      window.removeEventListener('smartoffice:assistant-output-completed', clearAssistantChunk)
+      window.removeEventListener('smartoffice:assistant-output-interrupted', clearAssistantChunk)
+      window.removeEventListener('smartoffice:assistant-output-failed', clearAssistantChunk)
+    }
+  }, [])
 
   useEffect(() => {
-    if (state !== 'idle' || !assistantText) return
-    const timer = window.setTimeout(() => setShowAssistant(false), 4200)
-    return () => window.clearTimeout(timer)
-  }, [assistantText, state])
+    if (state === 'listening' || state === 'processing' || state === 'idle' || state === 'error') {
+      setActiveAssistantChunk('')
+    }
+  }, [state])
 
   const isUserCaption = state === 'listening' || state === 'processing'
-  const isAssistantCaption =
-    state === 'speaking' || state === 'executing' || (state === 'idle' && showAssistant)
+  const isAssistantCaption = state === 'speaking' || state === 'executing'
+  const userCaption = useMemo(() => currentTextTail(userText), [userText])
+  const assistantCaption = useMemo(
+    () => currentTextTail(activeAssistantChunk || assistantText),
+    [activeAssistantChunk, assistantText],
+  )
 
   if (isUserCaption) {
-    const waitingForSpeech = state === 'listening' && !userText.trim()
+    const waitingForSpeech = state === 'listening' && !userCaption
     const role = waitingForSpeech
       ? language === 'zh'
         ? '麦克风已开启'
@@ -98,7 +80,7 @@ export default function LiveCaption({
         ? '您说'
         : 'You said'
     const text =
-      userText ||
+      userCaption ||
       (language === 'zh'
         ? state === 'listening'
           ? '正在聆听，请继续说。'
@@ -108,34 +90,34 @@ export default function LiveCaption({
           : 'Preparing your request.')
 
     return (
-      <div className={`live-caption user-live-caption caption-${state}`} aria-live="polite">
+      <div className={`live-caption single-line-caption user-live-caption caption-${state}`} aria-live="polite">
         <span className="caption-role">{role}</span>
-        <p className="user-caption-text">“{text}”</p>
+        <div className="caption-stream-window">
+          <p className="caption-stream-text" aria-label={cleanCaption(userText) || text}>{text}</p>
+        </div>
       </div>
     )
   }
 
-  if (isAssistantCaption && assistantText) {
-    const current = lyrics[activeIndex] ?? assistantText
-    const previous = activeIndex > 0 ? lyrics[activeIndex - 1] : ''
-    const next = activeIndex + 1 < lyrics.length ? lyrics[activeIndex + 1] : ''
-
+  if (isAssistantCaption && assistantCaption) {
     return (
-      <div className={`live-caption lyric-caption caption-${state}`} aria-live="polite">
+      <div className={`live-caption single-line-caption assistant-live-caption caption-${state}`} aria-live="polite">
         <span className="caption-role">{language === 'zh' ? '虚拟助手' : 'Virtual host'}</span>
-        <div className="lyric-stack">
-          <p className="lyric-line lyric-previous">{previous}</p>
-          <p className="lyric-line lyric-current">{current}</p>
-          <p className="lyric-line lyric-next">{next}</p>
+        <div className="caption-stream-window">
+          <p className="caption-stream-text" aria-label={activeAssistantChunk || assistantText}>
+            {assistantCaption}
+          </p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="live-caption welcome-caption" aria-live="polite">
+    <div className="live-caption single-line-caption welcome-caption" aria-live="polite">
       <span className="caption-role">Smart Office</span>
-      <p>{welcomeText}</p>
+      <div className="caption-stream-window">
+        <p className="caption-stream-text">{currentTextTail(welcomeText)}</p>
+      </div>
     </div>
   )
 }
