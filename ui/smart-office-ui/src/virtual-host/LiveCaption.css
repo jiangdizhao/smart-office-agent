@@ -1,12 +1,12 @@
 .single-line-caption {
   display: flex;
-  width: min(1120px, 86vw);
+  width: min(1220px, 92vw);
   min-height: 66px;
   align-items: center;
   justify-content: flex-start;
-  gap: 16px;
+  gap: 12px;
   overflow: hidden;
-  padding: 11px clamp(20px, 2vw, 30px);
+  padding: 11px clamp(18px, 1.8vw, 26px);
   text-align: left;
 }
 
@@ -48,7 +48,7 @@
 .assistant-live-caption .caption-stream-window,
 .welcome-caption .caption-stream-window {
   justify-content: flex-start;
-  mask-image: linear-gradient(90deg, #000 0, #000 97%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 98%, transparent 100%);
 }
 
 .assistant-live-caption .caption-stream-text,
@@ -57,11 +57,10 @@
   text-align: left;
 }
 
-/* VirtualHostWarmShowroom.css intentionally uses !important for the exhibition
-   layout. This more-specific rule lengthens only the live dialogue card without
-   moving Sara, the status indicator or the microphone card. */
+/* Keep the exhibition caption substantially wider without moving Sara, the
+   status indicator or the microphone card. */
 html[data-smart-office-route='virtual-host'] .live-caption.single-line-caption {
-  width: min(940px, 82vw) !important;
+  width: min(1180px, 92vw) !important;
 }
 
 @keyframes caption-stream-arrive {
@@ -75,23 +74,23 @@ html[data-smart-office-route='virtual-host'] .live-caption.single-line-caption {
   }
 }
 
-@media (max-width: 1180px) {
-  .single-line-caption {
-    width: min(92vw, 1040px);
+@media (max-width: 1280px) {
+  html[data-smart-office-route='virtual-host'] .live-caption.single-line-caption {
+    width: min(94vw, 1120px) !important;
   }
 }
 
 @media (max-width: 980px) {
   html[data-smart-office-route='virtual-host'] .live-caption.single-line-caption {
-    width: min(94vw, 820px) !important;
+    width: min(96vw, 900px) !important;
   }
 }
 
 @media (max-width: 760px) {
   .single-line-caption {
-    width: min(94vw, 860px);
-    gap: 10px;
-    padding-inline: 16px;
+    width: min(96vw, 860px);
+    gap: 8px;
+    padding-inline: 14px;
   }
 
   .single-line-caption .caption-role {
