@@ -38,6 +38,7 @@ jobs:
             backend/scripts/smoke_sales_phase1_runtime_contract.py \
             backend/scripts/smoke_sales_experience_phase1_contract.py \
             backend/scripts/smoke_sales_phase2a_contract.py \
+            backend/scripts/smoke_sales_phase2b_contract.py \
             backend/scripts/smoke_unified_semantic_route_contract.py \
             backend/scripts/smoke_phase1_voice_contract.py \
             backend/scripts/smoke_phase2_router_contract.py \
@@ -73,8 +74,10 @@ jobs:
         run: python backend/scripts/smoke_sales_phase1_runtime_contract.py
       - name: Run Phase 1 customer experience contract
         run: python backend/scripts/smoke_sales_experience_phase1_contract.py
-      - name: Run Phase 2A sales continuity contract
+      - name: Run Phase 2A sales continuity compatibility contract
         run: python backend/scripts/smoke_sales_phase2a_contract.py
+      - name: Run Phase 2B engagement and conversion contract
+        run: python backend/scripts/smoke_sales_phase2b_contract.py
       - name: Run unified semantic route contract
         run: python backend/scripts/smoke_unified_semantic_route_contract.py
       - name: Run Phase 1 regression contract
@@ -155,7 +158,7 @@ jobs:
           node scripts/smoke_voice_command_integrity.cjs
       - name: Run Phase 1 customer experience frontend contract
         run: node scripts/smoke_sales_experience_frontend.cjs
-      - name: Run Phase 2A sales continuity frontend contract
+      - name: Run Phase 2B engagement frontend contract
         run: node scripts/smoke_sales_phase2a_frontend.cjs
       - name: Run unified semantic route frontend contract
         run: node scripts/smoke_unified_semantic_router_frontend.cjs
