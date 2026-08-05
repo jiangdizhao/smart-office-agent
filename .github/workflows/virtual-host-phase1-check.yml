@@ -160,6 +160,8 @@ jobs:
         run: node scripts/smoke_sales_experience_frontend.cjs
       - name: Run Phase 2B engagement frontend contract
         run: node scripts/smoke_sales_phase2a_frontend.cjs
+      - name: Run bilingual Visit language frontend contract
+        run: node scripts/smoke_bilingual_visit_language.cjs
       - name: Run unified semantic route frontend contract
         run: node scripts/smoke_unified_semantic_router_frontend.cjs
       - name: Build frontend
