@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import zipfile
 from typing import Any, Literal
 
 from app.models import ToolResult, VerificationResult
@@ -204,6 +206,103 @@ def _merge_desktop_verification(
     )
 
 
+def _configured_slide_count() -> int | None:
+    path = presentation_config.presentation_path
+    if path.suffix.casefold() not in {".pptx", ".pptm", ".ppsx", ".ppsm"}:
+        return None
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return len(
+                {
+                    name
+                    for name in archive.namelist()
+                    if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+                }
+            ) or None
+    except (OSError, zipfile.BadZipFile):
+        return None
+
+
+def _align_status_with_successful_action(
+    name: str,
+    tool_result: ToolResult,
+    verification: VerificationResult,
+    status: ToolResult,
+) -> ToolResult:
+    """Keep the spoken result aligned with a successful bounded action.
+
+    When a new worker cannot reconnect through the PowerPoint ROT immediately, the
+    verifier may legitimately use the successful COM action as secondary evidence.
+    The status envelope must then carry the requested state instead of stale False/
+    None values; otherwise the response layer can say the action failed or report
+    "None" even though the visible action completed.
+    """
+
+    if (
+        not verification.ok
+        or verification.raw.get("verification_source") != "successful_action_result"
+    ):
+        return status
+
+    data = dict(status.data)
+    requested = dict(tool_result.data.get("requested_state") or {})
+    placement_value = tool_result.data.get("window_placement")
+    placement = placement_value if isinstance(placement_value, dict) else {}
+    target = placement.get("target_monitor")
+    target_device = (
+        str(target.get("device") or "").strip()
+        if isinstance(target, dict)
+        else ""
+    )
+    observed_monitor = str(placement.get("observed_monitor_device") or "").strip()
+
+    if name in {
+        "presentation_open_configured",
+        "presentation_start_slideshow",
+        "presentation_next_slide",
+        "presentation_previous_slide",
+        "presentation_go_to_slide",
+        "presentation_end_slideshow",
+    }:
+        data["powerpoint_connected"] = True
+        data["presentation_open"] = True
+        data["presentation_name"] = presentation_config.presentation_path.name
+        data["presentation_path"] = str(presentation_config.presentation_path)
+        data["total_slides"] = data.get("total_slides") or _configured_slide_count()
+
+    if name == "presentation_open_configured":
+        data["slideshow_active"] = bool(data.get("slideshow_active"))
+    elif name == "presentation_start_slideshow":
+        data["slideshow_active"] = True
+        data["current_slide"] = requested.get("current_slide") or data.get("current_slide") or 1
+    elif name in {
+        "presentation_next_slide",
+        "presentation_previous_slide",
+        "presentation_go_to_slide",
+    }:
+        data["slideshow_active"] = True
+        if isinstance(requested.get("current_slide"), int):
+            data["current_slide"] = requested["current_slide"]
+    elif name == "presentation_end_slideshow":
+        data["slideshow_active"] = False
+        data["current_slide"] = None
+    elif name == "presentation_close":
+        data["powerpoint_connected"] = False
+        data["presentation_open"] = False
+        data["slideshow_active"] = False
+        data["current_slide"] = None
+
+    if target_device:
+        data["target_monitor_device"] = target_device
+    if observed_monitor:
+        data["powerpoint_window_monitor_device"] = observed_monitor
+        if bool(data.get("slideshow_active")):
+            data["slideshow_monitor_device"] = observed_monitor
+    data["status_aligned_from_successful_action"] = True
+    data["status_alignment_source"] = verification.raw.get("verification_source")
+    return status.model_copy(update={"data": data})
+
+
 def execute_presentation_tool_call(
     name: str,
     arguments: dict[str, Any] | None = None,
@@ -332,4 +431,5 @@ def execute_presentation_tool_call(
 
     verification = verify_presentation_tool_result(tool_result)
     verification = _merge_desktop_verification(name, verification, placement)
+    status = _align_status_with_successful_action(name, tool_result, verification, status)
     return tool_result, verification, status
