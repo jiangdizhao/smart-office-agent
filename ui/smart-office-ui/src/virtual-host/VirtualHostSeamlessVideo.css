@@ -44,18 +44,19 @@
   filter: none !important;
 }
 
-/* Preserve the optimized source video's 538:720 portrait ratio. Height drives the
-   size and width grows proportionally, so Sara becomes both taller and wider
-   without stretching or changing facial/body proportions. */
-.video-host-avatar {
-  width: auto;
-  height: clamp(560px, 72svh, 940px);
-  min-width: 0;
-  min-height: 0;
-  max-width: min(38vw, 700px);
-  max-height: none;
-  aspect-ratio: 538 / 720;
-  margin-top: 0;
+/* Preserve the optimized source video's exact 538:720 portrait ratio. Explicit,
+   paired viewport-relative width and height values prevent older Phase 3 rules
+   from capping only the width or height and silently creating a narrower frame.
+   At the exhibition viewport this yields roughly 686 x 918 px. */
+.virtual-host-avatar.video-host-avatar {
+  width: clamp(418px, 53.8svh, 702px) !important;
+  height: clamp(560px, 72svh, 940px) !important;
+  min-width: 418px !important;
+  min-height: 560px !important;
+  max-width: 702px !important;
+  max-height: 940px !important;
+  aspect-ratio: 538 / 720 !important;
+  margin-top: 0 !important;
   place-items: stretch;
 }
 
@@ -63,8 +64,16 @@
   border-radius: clamp(18px, 2.2vw, 24px);
 }
 
-/* Portrait and narrow exhibition displays use the remaining stage height while
-   retaining the same source aspect ratio. */
+.video-avatar-layer {
+  width: 100% !important;
+  height: 100% !important;
+  inset: 0 !important;
+  object-fit: contain !important;
+  object-position: 50% 50% !important;
+  background: #eee8df;
+}
+
+/* Portrait and narrow exhibition displays retain the same exact source ratio. */
 @media (orientation: portrait), (max-width: 980px) {
   html[data-smart-office-route='virtual-host'],
   html[data-smart-office-route='virtual-host'] body {
@@ -95,27 +104,22 @@
     display: none;
   }
 
-  .video-host-avatar {
+  .virtual-host-avatar.video-host-avatar {
     grid-column: 1;
     grid-row: 1;
-    width: auto;
-    max-width: min(86vw, 540px);
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    max-height: none;
-    aspect-ratio: 538 / 720;
-    margin: 0;
-    place-self: stretch center;
+    width: min(86vw, 540px) !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-width: min(86vw, 540px) !important;
+    max-height: calc(100svh - 230px) !important;
+    aspect-ratio: 538 / 720 !important;
+    margin: 0 !important;
+    place-self: center;
   }
 
   .video-avatar-frame {
     border-radius: clamp(18px, 2.4vw, 24px);
-  }
-
-  .video-avatar-layer {
-    object-fit: cover;
-    object-position: 50% 44%;
   }
 
   .live-caption {
