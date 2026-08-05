@@ -191,7 +191,7 @@ export class VoiceOutputManager {
       text: clean,
     }
     const generation = ++this.speechGeneration
-    await this.stopInternal(true, 'superseded-before-new-output')
+    await this.stopInternal(true)
     const chunks = speechChunks(clean, detectedSpeechLanguage(clean, language))
     console.info('[RealtimeDiagnostics] speech-chunk-plan', {
       generation,
@@ -363,7 +363,10 @@ export class VoiceOutputManager {
     await this.stopInternal(true, reason)
   }
 
-  private async stopInternal(cancelLocal: boolean, reason: string): Promise<void> {
+  private async stopInternal(
+    cancelLocal: boolean,
+    reason = 'superseded-before-new-output',
+  ): Promise<void> {
     const runtimeBefore = realtimeAgent.status()
     if (cancelLocal && 'speechSynthesis' in window) window.speechSynthesis.cancel()
     await realtimeAgent.stopOutput().catch((error) => {
