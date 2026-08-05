@@ -48,6 +48,8 @@ type OptimizedContext = {
   purpose: 'background_action_accepted' | 'direct_volume_result'
 }
 
+type PriorityOfficeKind = 'presentation' | 'volume'
+
 function optimizedContext(context: OptimizedContext): string {
   return `${OPTIMIZED_CONTEXT_PREFIX}${JSON.stringify(context)}`
 }
@@ -156,6 +158,30 @@ function clearVolumePercent(text: string): number | null {
   return value !== null && Number.isInteger(value) && value >= 0 && value <= 100 ? value : null
 }
 
+function explicitPriorityOfficeAction(text: string): PriorityOfficeKind | null {
+  const clean = stripPoliteness(text).replace(/[。.!！]/g, '').trim()
+  if (!clean) return null
+
+  // Discussion, hypothetical and negated wording must never execute. These guards
+  // intentionally run before the positive action patterns.
+  if (
+    /不要|别|无需|不用|仅介绍|只介绍|解释|比较|对比|假设|如果|为什么|怎么实现|如何实现|能否|能不能|是否|是什么|有什么|do not|don't|without|explain|compare|imagine|hypothetical|what is|how does|can you|could you/i.test(clean)
+  ) return null
+
+  const volumeMentioned = /音量|系统声音|电脑声音|扬声器声音|\bvolume\b|\baudio volume\b/i.test(clean)
+  const volumeAction = /调|设|改|提高|降低|增大|减小|升高|静音|取消静音|多少|当前|set|adjust|change|increase|decrease|raise|lower|turn up|turn down|mute|unmute|current/i.test(clean)
+  if (volumeMentioned && volumeAction) return 'volume'
+
+  const presentationMentioned = /ppt|power\s*point|powerpoint|幻灯片|演示文稿|presentation|slide\s*show|slideshow/i.test(clean)
+  const presentationAction = /打开|开启|启动|执行|演示|放映|播放|开始|继续|结束|停止|关闭|退出|跳到|翻到|下一页|上一页|下一张|上一张|open|launch|start|begin|run|present|show|play|continue|end|stop|close|exit|go to|next slide|previous slide/i.test(clean)
+  if (presentationMentioned && presentationAction) return 'presentation'
+
+  if (/^(?:下一页|上一页|下一张|上一张|后一页|前一页|最后一页|结束放映|开始放映|next slide|previous slide|last slide|start the show|end the show)$/i.test(clean)) {
+    return 'presentation'
+  }
+  return null
+}
+
 async function setVolumeDirect(percent: number, request: RouteRequest): Promise<string> {
   const response = await fetch(`${API_BASE_URL}/api/office/system/volume`, {
     method: 'POST',
@@ -235,6 +261,23 @@ function immediateRoute(
   }
 }
 
+function priorityOfficeRoute(
+  request: RouteRequest,
+  kind: PriorityOfficeKind,
+): SalesAwareConversationRoute {
+  return {
+    route: 'office_direct',
+    scene: 'office',
+    route_reason: `deterministic_priority_office_action:${kind}`,
+    conversation_complexity: 'not_applicable',
+    answer_engine: 'office_interpreter',
+    recent_context: '',
+    visit_id: request.visitId,
+    semantic_decision: null,
+    office_delegate_text: null,
+  }
+}
+
 export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<SalesAwareConversationRoute> {
@@ -267,6 +310,16 @@ export async function previewConversationRoute(
     )
   }
 
+  const priorityOffice = explicitPriorityOfficeAction(request.text)
+  if (priorityOffice) {
+    console.info('[ConversationLatency] deterministic-office-priority-route', {
+      elapsedMs: Math.round(performance.now() - startedAt),
+      kind: priorityOffice,
+      visitId: request.visitId,
+    })
+    return priorityOfficeRoute(request, priorityOffice)
+  }
+
   const local = localGeneralFastPath(request)
   if (local) {
     console.info('[ConversationLatency] local-general-fast-path', {
@@ -285,6 +338,20 @@ export async function generateSimpleRealtimeAnswer(
   lease: VisitLease | null,
 ): Promise<string> {
   const optimized = parseOptimizedContext(recentContext)
-  if (optimized) return optimized.text.trim()
+  if (optimized) return ensureOptimizedHumanLikeText(optimized.text.trim(), language)
   return await generateSalesAwareAnswer(text, language, recentContext, lease)
+}
+
+function ensureOptimizedHumanLikeText(text: string, language: VoiceLanguage): string {
+  if (!text) return text
+  if (/^(?:啊|哦|嗯|好嘞|好的|好，|行，|ah|oh|mm|right|well|all right|there we go)/i.test(text)) {
+    return text
+  }
+  const failed = /没有完成|未完成|失败|did not complete|failed/i.test(text)
+  if (failed) {
+    return language === 'zh'
+      ? `嗯，后台刚才眨了一下眼睛。${text} 我可以再试一次。`
+      : `Mm, the backend blinked for a moment. ${text} I can try again.`
+  }
+  return language === 'zh' ? `啊，搞定了。${text}` : `Ah, there we go. ${text}`
 }
