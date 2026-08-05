@@ -15,33 +15,59 @@ from app.turn_router import classify_turn
 
 RoutingArchitecture = Literal["legacy", "hybrid", "unified"]
 
-_ACTION_ZH = re.compile(
+_ACTION_VERB_ZH = re.compile(
     r"打开|开启|启动|运行|关闭|关掉|退出|播放|停止|调(?:整|到|成|为)?|设置|设为|"
-    r"发送|发给|创建|生成|删除|保存|开始录音|结束录音|下一页|上一页|跳到|"
-    r"预约|登记|提交|批准|取消|演示|展示"
+    r"发送|发给|创建|生成|删除|保存|开始|结束|跳到|预约|登记|提交|批准|取消"
 )
-_ACTION_EN = re.compile(
+_ACTION_TARGET_ZH = re.compile(
+    r"teams|微软团队|onenote|微软笔记|powerpoint|ppt|幻灯片|演示文稿|"
+    r"音量|扬声器|喇叭|音乐|媒体播放器|outlook|邮件|草稿|"
+    r"预约|会议日历|预约日历|登记表|联系方式|录音|对话总结|对话记录|结果中心|"
+    r"应用|软件|窗口|面板"
+    , re.IGNORECASE,
+)
+_ACTION_VERB_EN = re.compile(
     r"\b(?:open|launch|start|close|quit|exit|play|stop|set|adjust|change|send|create|"
-    r"delete|save|record|next|previous|go\s+to|book|schedule|register|submit|approve|"
-    r"cancel|demonstrate|show)\b",
+    r"delete|save|record|next|previous|go\s+to|book|schedule|register|submit|approve|cancel)\b",
+    re.IGNORECASE,
+)
+_ACTION_TARGET_EN = re.compile(
+    r"\b(?:teams|onenote|powerpoint|ppt|slide(?:show)?|volume|speaker|music|media\s+player|"
+    r"outlook|email|draft|meeting|calendar|appointment|registration|contact\s+form|"
+    r"recording|transcript|result\s+center|application|app|software|window|panel)\b",
+    re.IGNORECASE,
+)
+_IMPLICIT_ACTION = re.compile(
+    r"下一页|上一页|下一张|上一张|停止音乐|开始录音|结束录音|发出去|发送出去|"
+    r"\b(?:next\s+slide|previous\s+slide|send\s+it|stop\s+music|start\s+recording)\b",
+    re.IGNORECASE,
+)
+_AMBIGUOUS_ACTION = re.compile(
+    r"^(?:请|麻烦|帮我|请你|请您)?\s*(?:打开|关闭|启动|停止|发送|保存|删除|调一下|设置一下)"
+    r"(?:它|这个|那个|一下|掉|出去)?[。.!！?？]?$|"
+    r"^(?:please\s+)?(?:open|close|start|stop|send|save|delete|adjust)\s+(?:it|this|that)?[.!?]?$",
     re.IGNORECASE,
 )
 
-# These patterns deliberately require a first-person business statement or an
-# explicit conversion/sales request. Merely asking about an industry remains a
-# normal knowledge question and must never depend on the semantic model.
+# These patterns deliberately require a first-person business statement, a pain
+# statement, or an explicit conversion/recommendation request. Merely asking what
+# Sara knows about an industry remains ordinary conversation.
 _SALES_ZH = re.compile(
-    r"(?:我|我们|本公司|我们公司).{0,18}(?:从事|属于|是一家|负责|职位|工作|痛点|困难|"
+    r"(?:我|我们|本公司|我们公司).{0,24}(?:从事|属于|是一家|负责|职位|工作|痛点|困难|"
     r"问题|想改善|希望改善|感兴趣|需要方案)|"
-    r"(?:给我|帮我|可以).{0,8}(?:推荐|安排预约|留下联系方式)|"
-    r"(?:我想|我们想|我希望|我们希望).{0,12}(?:预约|登记|留联系方式|完整演示|了解价格)|"
+    r"(?:会议|客户跟进|重复行政|文件版本|项目协作|信息遗漏).{0,12}(?:太多|很慢|麻烦|困难|"
+    r"浪费时间|容易遗漏|是个问题)|"
+    r"(?:给我|帮我|可以).{0,10}(?:推荐|安排预约|留下联系方式|完整演示)|"
+    r"(?:我想|我们想|我希望|我们希望).{0,16}(?:预约|登记|留联系方式|完整演示|了解价格)|"
     r"(?:多少钱|价格|费用|报价|隐私|人脸数据|保存数据|联系方式)"
 )
 _SALES_EN = re.compile(
-    r"\b(?:i|we|our\s+company)\b.{0,60}\b(?:work\s+in|operate\s+in|industry|role|"
+    r"\b(?:i|we|our\s+company)\b.{0,80}\b(?:work\s+in|operate\s+in|industry|role|"
     r"responsible|pain\s+point|problem|interested|need|want\s+to\s+improve)\b|"
+    r"\b(?:meetings?|customer\s+follow-up|repetitive\s+administration|file\s+versions?|"
+    r"project\s+collaboration)\b.{0,60}\b(?:too\s+many|slow|difficult|time-consuming|problem|missing)\b|"
     r"\b(?:recommend|book\s+(?:a\s+)?meeting|leave\s+(?:my\s+)?contact|contact\s+details|"
-    r"pricing|price|cost|quotation|privacy|face\s+data|store\s+data)\b",
+    r"full\s+demo|pricing|price|cost|quotation|privacy|face\s+data|store\s+data)\b",
     re.IGNORECASE,
 )
 _COMPLEX_ZH = re.compile(
@@ -67,7 +93,11 @@ def routing_architecture(value: str | None = None) -> RoutingArchitecture:
 
 def has_action_candidate(text: str) -> bool:
     clean = " ".join(str(text or "").strip().split())
-    return bool(_ACTION_ZH.search(clean) or _ACTION_EN.search(clean))
+    if _IMPLICIT_ACTION.search(clean) or _AMBIGUOUS_ACTION.search(clean):
+        return True
+    zh = bool(_ACTION_VERB_ZH.search(clean) and _ACTION_TARGET_ZH.search(clean))
+    en = bool(_ACTION_VERB_EN.search(clean) and _ACTION_TARGET_EN.search(clean))
+    return zh or en
 
 
 def has_sales_candidate(text: str) -> bool:
@@ -146,8 +176,12 @@ def pending_conversion_route(request: SemanticRouteRequest) -> tuple[SemanticRou
     )
 
 
-def hybrid_non_action_route(request: SemanticRouteRequest) -> SemanticRoute | None:
-    if has_action_candidate(request.text) or has_sales_candidate(request.text):
+def hybrid_conversation_route(
+    request: SemanticRouteRequest,
+    *,
+    reason: str = "hybrid_non_action_conversation_fail_open",
+) -> SemanticRoute | None:
+    if has_action_candidate(request.text):
         return None
     complexity = conversation_complexity(request.text, request.language)
     context = recent_context_text(request.recent_turns, request.text)
@@ -158,11 +192,17 @@ def hybrid_non_action_route(request: SemanticRouteRequest) -> SemanticRoute | No
         confidence=1.0,
         entities={"language": request.language, "recent_context": context},
         risk="none",
-        reason_codes=["hybrid_non_action_conversation_fail_open"],
+        reason_codes=[reason],
         source="fast_path",
         complexity=complexity,
         answer_engine="terra" if complexity == "complex" else "realtime",
     )
+
+
+def hybrid_non_action_route(request: SemanticRouteRequest) -> SemanticRoute | None:
+    if has_sales_candidate(request.text):
+        return None
+    return hybrid_conversation_route(request)
 
 
 def legacy_route(request: SemanticRouteRequest) -> SemanticRoute:
