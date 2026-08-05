@@ -1,12 +1,12 @@
 .single-line-caption {
   display: flex;
-  width: min(860px, 76vw);
+  width: min(1120px, 86vw);
   min-height: 66px;
   align-items: center;
   justify-content: flex-start;
   gap: 16px;
   overflow: hidden;
-  padding: 11px 22px;
+  padding: 11px clamp(20px, 2vw, 30px);
   text-align: left;
 }
 
@@ -26,7 +26,7 @@
   align-items: center;
   justify-content: flex-end;
   overflow: hidden;
-  mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 100%);
 }
 
 .caption-stream-text {
@@ -60,9 +60,15 @@
   }
 }
 
+@media (max-width: 1180px) {
+  .single-line-caption {
+    width: min(92vw, 1040px);
+  }
+}
+
 @media (max-width: 760px) {
   .single-line-caption {
-    width: min(92vw, 860px);
+    width: min(94vw, 860px);
     gap: 10px;
     padding-inline: 16px;
   }
