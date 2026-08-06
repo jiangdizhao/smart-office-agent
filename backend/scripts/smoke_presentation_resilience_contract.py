@@ -49,6 +49,13 @@ def main() -> None:
         "SMART_OFFICE_PRESENTATION_QA_TIMEOUT_SECONDS",
     )
 
+    current_slide = source("backend/app/current_slide_insight.py")
+    require(
+        current_slide,
+        "presentation_worker.status()",
+        "worker_process_isolation",
+    )
+
     task_watchdog = source("backend/app/task_watchdog.py")
     require(
         task_watchdog,
