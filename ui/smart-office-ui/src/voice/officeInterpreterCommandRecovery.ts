@@ -1,3 +1,4 @@
+import './officeTurnWatchdog'
 import {
   commandClarification,
   recoverCommandTranscript,
@@ -14,6 +15,9 @@ import {
 import type { VoiceLanguage } from './realtimeAgentRuntime'
 
 let installed = false
+
+const OFFICE_DOMAIN = /teams|one\s*note|onenote|outlook|word|excel|邮件|邮箱|草稿|会议|音量|亮度|音乐|录音|文档|系统设置|office/i
+const OFFICE_ACTION = /打开|关闭|启动|停止|创建|生成|发送|调整|设置|播放|执行|总结|整理|查看|读取|预约|操作|open|close|launch|start|stop|create|generate|send|adjust|set|play|execute|summari[sz]e|review|read|book/i
 
 function deterministicDecision(
   steps: Array<Record<string, unknown>>,
@@ -51,9 +55,6 @@ export function installOfficeInterpreterCommandRecovery(): void {
     const recovered = recoverCommandTranscript(text, language)
     const raw = recovered.raw || text
 
-    // PowerPoint is a hard command domain. Resolve every supported action before
-    // generic clarification and never let a PPT mention fall through to normal
-    // conversation about personal PowerPoint usage.
     const presentationSteps = deterministicPresentationSteps(raw)
       ?? deterministicPresentationSteps(recovered.normalized)
     if (presentationSteps) {
@@ -89,7 +90,20 @@ export function installOfficeInterpreterCommandRecovery(): void {
       )
     }
 
-    return await originalInterpret(recovered.normalized, language)
+    const decision = await originalInterpret(recovered.normalized, language)
+    if (
+      decision.kind === 'none'
+      && OFFICE_DOMAIN.test(recovered.normalized)
+      && OFFICE_ACTION.test(recovered.normalized)
+    ) {
+      return {
+        kind: 'clarify',
+        clarification: language === 'zh'
+          ? '请明确要执行的办公操作，例如打开应用、调整音量、处理邮件，或操作 PPT。'
+          : 'Please state the Office action clearly, such as opening an app, changing volume, handling email, or controlling PowerPoint.',
+      }
+    }
+    return decision
   }
 }
 
