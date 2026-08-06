@@ -388,7 +388,7 @@ def demonstration_policy(
     decision = sales_runtime_policy.demonstration_decision(
         capability_id,
         language=language,
-        explicit_request_count=explicit_request_count,
+        explicit_demo_request_count=explicit_request_count,
     )
     return {
         "ok": decision.capability_status != "unknown",
