@@ -184,14 +184,18 @@ _VOLUME_INTENT_PATTERN = re.compile(
     r"\b(?:up|down|higher|lower|louder|quieter|mute|unmute|percent|\d+)\b",
     re.IGNORECASE,
 )
+_PRESENTATION_MENTION_PATTERN = re.compile(
+    r"\b(?:ppt|powerpoint|power\s+point|presentation|slides?|slideshow)\b|幻灯片|演示文稿",
+    re.IGNORECASE,
+)
 _PRESENTATION_ACTION_PATTERN = re.compile(
-    r"(?:开始|启动|进入|播放|继续|停止|结束|退出|关闭|全屏).{0,6}"
-    r"(?:演示|放映|幻灯片|演示文稿)"
-    r"|(?:演示|放映|播放|展示).{0,6}(?:ppt|powerpoint|幻灯片|演示文稿)"
-    r"|(?:ppt|powerpoint|幻灯片|演示文稿).{0,6}"
-    r"(?:演示|放映|播放|展示|全屏)"
-    r"|\b(?:start|begin|play|run|continue|stop|end|exit)\b.{0,20}"
-    r"\b(?:presentation|slide\s*show|slideshow)\b"
+    r"(?:开始|启动|进入|播放|继续|停止|结束|退出|关闭|全屏|总结|解释|理解|分析).{0,8}"
+    r"(?:演示|放映|幻灯片|演示文稿|ppt|powerpoint)"
+    r"|(?:演示|放映|播放|展示|总结|解释|理解|分析).{0,8}(?:ppt|powerpoint|幻灯片|演示文稿)"
+    r"|(?:ppt|powerpoint|幻灯片|演示文稿).{0,8}"
+    r"(?:演示|放映|播放|展示|全屏|总结|解释|理解|分析)"
+    r"|\b(?:start|begin|play|run|continue|stop|end|exit|summari[sz]e|explain|interpret|analy[sz]e)\b.{0,24}"
+    r"\b(?:presentation|slide\s*show|slideshow|slides?|ppt|powerpoint)\b"
     r"|\b(?:present|show)\b.{0,12}\b(?:ppt|powerpoint|presentation|slides?)\b",
     re.IGNORECASE,
 )
@@ -213,11 +217,15 @@ _CONTEXTUAL_PRESENTATION_TERMS = {
     "前一张",
     "往后翻",
     "往前翻",
+    "总结当前页",
+    "解释当前页",
     "start the show",
     "start presenting",
     "continue presenting",
     "end the show",
     "exit the slideshow",
+    "summarize this slide",
+    "explain this slide",
 }
 
 
@@ -263,7 +271,7 @@ def _is_presentation_action(text: str, *, office_context_active: bool) -> bool:
     compact = _compact_intent_text(text)
     if compact in {_compact_intent_text(item) for item in _CONTEXTUAL_PRESENTATION_TERMS}:
         return office_context_active or any(
-            marker in compact for marker in ("演示", "放映", "slideshow", "present")
+            marker in compact for marker in ("演示", "放映", "slideshow", "present", "当前页", "slide")
         )
     return False
 
@@ -302,6 +310,17 @@ def classify_turn(
     if lowered in _GREETING_TERMS or lowered in _STOP_TERMS or lowered in _REPEAT_TERMS:
         return RouteDecision("realtime_direct", "reception", reason="direct_control_or_greeting")
 
+    # Hard gate: every explicit PowerPoint mention belongs to the configured Office
+    # command domain. It must never be classified as ordinary advice about personal
+    # PowerPoint usage. Ambiguous wording is clarified by the Office interpreter.
+    if _PRESENTATION_MENTION_PATTERN.search(lowered):
+        complex_goal = _contains_any(lowered, _COMPLEX_OFFICE_TERMS) or _is_compound_office_request(lowered)
+        return RouteDecision(
+            "office_planned_task" if complex_goal else "office_direct",
+            "office",
+            reason=f"office_intent:presentation_hard_gate:{actor_type}",
+        )
+
     reception_match = _is_reception_intent(lowered)
     volume_match = _is_volume_intent(lowered)
     presentation_action_match = _is_presentation_action(
@@ -314,9 +333,6 @@ def classify_turn(
         or presentation_action_match
     )
 
-    # Reception content remains a reception request even when the user asks to
-    # "open" or "show" it, unless the same utterance clearly names an Office
-    # entity, system volume action, or PowerPoint slide-show action.
     if reception_match and not office_match:
         return RouteDecision("reception_knowledge", "reception", reason="reception_intent")
 
