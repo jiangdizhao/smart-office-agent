@@ -61,7 +61,9 @@ def realtime_status() -> dict:
         "turn_mode": "push_to_talk",
         "initial_output_modalities": ["text"],
         "api_key_present": api_key_present,
-        "phase": "m3a_fusion_phase_1",
+        "function_calling": True,
+        "presentation_function_calling": True,
+        "phase": "m3a_fusion_phase_3_gate_2a",
     }
 
 

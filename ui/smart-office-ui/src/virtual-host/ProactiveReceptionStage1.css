@@ -1,0 +1,15 @@
+/* Stage 1 proactive reception is voice-first. Manual recording and push-to-talk
+   controls remain implemented as fallback code but are intentionally absent from
+   the public virtual-host UI. */
+html[data-smart-office-route='virtual-host'] .voice-primary-row {
+  display: none !important;
+}
+
+html[data-smart-office-route='virtual-host'] .conversation-record-button,
+html[data-smart-office-route='virtual-host'] .primary-voice-button {
+  display: none !important;
+}
+
+html[data-smart-office-route='virtual-host'] .voice-dock {
+  pointer-events: auto;
+}

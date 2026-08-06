@@ -1,0 +1,81 @@
+{
+  "schema_version": "sales-phase2b-v1",
+  "timing": {
+    "first_idle_seconds": 8,
+    "second_idle_seconds": 10,
+    "busy_retry_seconds": 2,
+    "after_interaction_seconds": 3
+  },
+  "limits": {
+    "maximum_nudges_per_episode": 2,
+    "maximum_nudges_per_visit": 6
+  },
+  "industries": [
+    {
+      "industry_id": "construction",
+      "keywords": ["建筑", "施工", "工程", "建造", "construction", "architecture", "engineering project"],
+      "scenario_zh": "项目会议结论、图纸和文档版本、现场问题回传以及供应商协同",
+      "scenario_en": "project-meeting actions, drawing and document versions, site-issue reporting and supplier coordination",
+      "recommendation_zh": "建议先把会议结论、责任人和时间节点整理成可追踪的任务，再连接到 Teams、Outlook 或项目记录；这样比单独增加一个聊天窗口更容易看到实际效果。",
+      "recommendation_en": "Start by turning meeting decisions, owners and deadlines into traceable actions, then connect them to Teams, Outlook or the project record. That is easier to validate than adding another isolated chat window.",
+      "question_zh": "您更想先改善会议后的任务跟踪，还是现场信息回传？",
+      "question_en": "Would you rather improve post-meeting action tracking or information coming back from site first?",
+      "humour_theme": "construction_versions"
+    },
+    {
+      "industry_id": "manufacturing",
+      "keywords": ["制造", "工厂", "生产", "manufacturing", "factory", "production"],
+      "scenario_zh": "跨班次交接、异常问题跟踪、会议行动项和跨地区团队协作",
+      "scenario_en": "shift handovers, issue tracking, meeting actions and cross-region team coordination",
+      "recommendation_zh": "建议先选一个重复而高频的流程，例如班次交接或异常问题跟踪，把摘要、责任人和后续提醒连接起来，再逐步扩展到其他部门。",
+      "recommendation_en": "Choose one frequent repetitive workflow, such as shift handover or issue tracking, connect its summary, owner and follow-up reminders, and expand only after that workflow is stable.",
+      "question_zh": "您更关心生产异常的跟踪，还是跨班次的信息遗漏？",
+      "question_en": "Is production-issue tracking or information loss between shifts the more important problem?",
+      "humour_theme": "handover_memory"
+    },
+    {
+      "industry_id": "education",
+      "keywords": ["教育", "学校", "大学", "培训", "education", "school", "university", "training"],
+      "scenario_zh": "教职工会议、课程和活动安排、学生事务以及重复行政记录",
+      "scenario_en": "staff meetings, course and event scheduling, student administration and repetitive records",
+      "recommendation_zh": "建议从会议后的任务整理或重复行政记录开始，让信息先形成一致的结构，再连接到日历、邮件和团队协作工具。",
+      "recommendation_en": "Begin with post-meeting actions or repetitive administration, create a consistent information structure, and then connect it to calendars, email and collaboration tools.",
+      "question_zh": "您更想先减少会议后的整理，还是日常行政录入？",
+      "question_en": "Would you rather reduce post-meeting work or everyday administrative entry first?",
+      "humour_theme": "repetitive_admin"
+    },
+    {
+      "industry_id": "general",
+      "keywords": [],
+      "scenario_zh": "会议、客户跟进和重复行政工作",
+      "scenario_en": "meetings, customer follow-up and repetitive administration",
+      "recommendation_zh": "建议先选择一个高频、可验证的流程，把输入、决定、责任人和结果连接起来；稳定以后再扩展到更多软件和部门。",
+      "recommendation_en": "Start with one frequent, verifiable workflow and connect its input, decision, owner and result. Expand to more software and teams only after it is stable.",
+      "question_zh": "您更想先改善会议、客户跟进，还是重复行政工作？",
+      "question_en": "Would you rather improve meetings, customer follow-up or repetitive administration first?",
+      "humour_theme": "meeting_memory"
+    }
+  ],
+  "humour": [
+    {
+      "theme_id": "construction_versions",
+      "zh": "建筑项目有时不是缺少文件，而是每个人手里都有一个不同版本——最后连文件名都开始参与项目管理了。",
+      "en": "Construction projects sometimes do not lack documents; they have several different versions, until even the file names appear to join the project team."
+    },
+    {
+      "theme_id": "handover_memory",
+      "zh": "交接最怕的不是没人说，而是每个人都说过，只是信息没有在同一个地方见面。",
+      "en": "The hardest handover is not when nobody speaks, but when everybody has spoken and the information never meets in the same place."
+    },
+    {
+      "theme_id": "repetitive_admin",
+      "zh": "重复录入很有耐心，可惜人的耐心通常没有它那么稳定。",
+      "en": "Repetitive data entry has remarkable patience; unfortunately, people are rarely designed with the same specification."
+    },
+    {
+      "theme_id": "meeting_memory",
+      "zh": "有些会议最稳定的产出，是大家都记得开过，但没人记得谁负责下一步。",
+      "en": "Some meetings have one very reliable outcome: everyone remembers attending, but nobody remembers who owns the next step."
+    }
+  ]
+}

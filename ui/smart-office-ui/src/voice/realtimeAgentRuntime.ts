@@ -1,14 +1,16 @@
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 
-const CONNECTION_TIMEOUT_MS = 15_000
+const CONNECTION_TIMEOUT_MS = 12_000
+const GET_USER_MEDIA_TIMEOUT_MS = 8_000
 const COMMIT_TIMEOUT_MS = 5_000
-const TEXT_RESPONSE_TIMEOUT_MS = 30_000
-const AUDIO_START_TIMEOUT_MS = 15_000
-const AUDIO_COMPLETION_MIN_MS = 90_000
-const AUDIO_COMPLETION_MAX_MS = 360_000
-const MIC_STABILIZE_MS = 160
-const RTP_DRAIN_MS = 220
+const TEXT_RESPONSE_TIMEOUT_MS = 25_000
+const AUDIO_START_TIMEOUT_MS = 6_000
+const AUDIO_COMPLETION_MIN_MS = 8_000
+const AUDIO_COMPLETION_MAX_MS = 45_000
+const MIC_STABILIZE_MS = 120
+const RTP_DRAIN_MS = 180
+const VAD_TRANSCRIPTION_SETTLE_MS = 100
 
 export type VoiceLanguage = 'zh' | 'en'
 
@@ -19,15 +21,30 @@ export type RealtimeRuntimeStatus = {
   microphoneAttached: boolean
   responseActive: boolean
   outputActive: boolean
+  continuousListening?: boolean
+  speechDetected?: boolean
+}
+
+export class RealtimeSpeechError extends Error {
+  readonly audioStarted: boolean
+
+  constructor(message: string, audioStarted: boolean, name = 'Error') {
+    super(message)
+    this.name = name
+    this.audioStarted = audioStarted
+  }
 }
 
 type PendingCommit = {
+  generation: number
+  timer: number
   resolve: () => void
   reject: (error: Error) => void
 }
 
 type PendingResponse = {
   requestId: string
+  generation: number
   purpose: string
   modalities: Array<'text' | 'audio'>
   text: string
@@ -35,7 +52,9 @@ type PendingResponse = {
   responseDone: boolean
   audioStarted: boolean
   audioStopped: boolean
-  startedAt: number
+  audioStartedAtMs: number | null
+  completionEstimateTextLength: number
+  completionTimeoutMs: number
   startTimer: number | null
   completionTimer: number | null
   resolve: (value: string) => void
@@ -47,8 +66,12 @@ type RealtimeServerEvent = {
   delta?: string
   text?: string
   transcript?: string
+  item_id?: string
+  audio_start_ms?: number
+  audio_end_ms?: number
   error?: { code?: string; message?: string }
   response?: {
+    id?: string
     status?: string
     metadata?: Record<string, unknown>
     status_details?: { error?: { message?: string } }
@@ -57,20 +80,21 @@ type RealtimeServerEvent = {
 
 type AudioContextConstructor = new () => AudioContext
 
+type UtteranceWaiter = {
+  resolve: (text: string) => void
+  reject: (error: Error) => void
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
 declare global {
   interface Window {
     webkitAudioContext?: AudioContextConstructor
   }
 }
 
-function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
-}
-
-function abortError(message: string): Error {
-  const error = new Error(message)
-  error.name = 'AbortError'
-  return error
+function abortError(message: string, audioStarted = false): RealtimeSpeechError {
+  return new RealtimeSpeechError(message, audioStarted, 'AbortError')
 }
 
 function browserConversationId(): string {
@@ -82,16 +106,70 @@ function browserConversationId(): string {
   return value
 }
 
+function envNumber(name: string, fallback: number, minimum: number, maximum: number): number {
+  const value = Number(import.meta.env[name])
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(minimum, Math.min(maximum, value))
+}
+
+function vadThreshold(): number {
+  return envNumber('VITE_REALTIME_VAD_THRESHOLD', 0.72, 0, 1)
+}
+function vadSilenceMs(): number {
+  return Math.round(envNumber('VITE_REALTIME_VAD_SILENCE_MS', 650, 250, 3000))
+}
+function vadPrefixMs(): number {
+  return Math.round(envNumber('VITE_REALTIME_VAD_PREFIX_MS', 420, 100, 1500))
+}
+function bargeInGraceMs(): number {
+  return Math.round(envNumber('VITE_REALTIME_BARGE_IN_GRACE_MS', 350, 0, 1500))
+}
+
 function estimateAudioCompletionMs(text: string): number {
   const chineseCharacters = (text.match(/[\u3400-\u9fff]/g) ?? []).length
   const englishWords = (text.match(/[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*/g) ?? []).length
   const punctuation = (text.match(/[，。！？；：,.!?;:]/g) ?? []).length
-  const estimate =
-    35_000 + chineseCharacters * 320 + englishWords * 420 + punctuation * 250
-  return Math.max(
-    AUDIO_COMPLETION_MIN_MS,
-    Math.min(AUDIO_COMPLETION_MAX_MS, estimate),
-  )
+  const estimate = 4_000 + chineseCharacters * 260 + englishWords * 360 + punctuation * 160
+  return Math.max(AUDIO_COMPLETION_MIN_MS, Math.min(AUDIO_COMPLETION_MAX_MS, estimate))
+}
+
+function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError('Operation aborted.'))
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup()
+      resolve()
+    }, milliseconds)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      cleanup()
+      reject(abortError('Operation aborted.'))
+    }
+    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function fetchWithDeadline(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+  const abortFromParent = () => controller.abort()
+  signal?.addEventListener('abort', abortFromParent, { once: true })
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    window.clearTimeout(timeout)
+    signal?.removeEventListener('abort', abortFromParent)
+  }
+}
+
+function stopStream(stream: MediaStream | null): void {
+  for (const track of stream?.getTracks() ?? []) track.stop()
 }
 
 export class PersistentRealtimeAgent {
@@ -103,100 +181,214 @@ export class PersistentRealtimeAgent {
   private silentStream: MediaStream | null = null
   private microphoneStream: MediaStream | null = null
   private remoteAudio: HTMLAudioElement | null = null
+  private remoteOutputStream: MediaStream | null = null
   private connectPromise: Promise<void> | null = null
+  private connectAbort: AbortController | null = null
+  private generation = 0
   private captureStartedAt = 0
+  private captureActive = false
+  private continuousCaptureActive = false
+  private vadSpeechDetected = false
   private pendingCommit: PendingCommit | null = null
   private pendingResponse: PendingResponse | null = null
-  private operationQueue: Promise<unknown> = Promise.resolve()
   private language: VoiceLanguage = 'zh'
+  private utteranceQueue: string[] = []
+  private utteranceWaiters: UtteranceWaiter[] = []
+  private suppressedVadItems = new Set<string>()
+  private vadTranscriptionChain: Promise<void> = Promise.resolve()
+  private outputStartedAtMs = 0
 
-  async prewarm(language: VoiceLanguage): Promise<void> {
+  async prewarm(language: VoiceLanguage, signal?: AbortSignal): Promise<void> {
     this.language = language
-    await this.ensureConnected()
+    const generation = this.generation
+    await this.ensureConnected(generation, signal)
+    this.assertGeneration(generation)
   }
 
-  async beginCapture(language: VoiceLanguage): Promise<void> {
+  async beginCapture(language: VoiceLanguage, signal?: AbortSignal): Promise<void> {
     this.language = language
-    await this.enqueue(async () => {
-      await this.stopOutput()
-      await this.ensureConnected()
-      this.microphoneStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-        },
-      })
-      const track = this.microphoneStream.getAudioTracks()[0] ?? null
-      if (!track || !this.sender) {
-        await this.releaseMicrophone()
-        throw new Error('No microphone audio track is available.')
-      }
-      await this.sender.replaceTrack(track)
-      await wait(MIC_STABILIZE_MS)
-      this.send({ type: 'input_audio_buffer.clear' })
-      this.captureStartedAt = performance.now()
-      window.dispatchEvent(new CustomEvent('smartoffice:realtime-listening-start'))
-    })
+    const generation = this.generation
+    await this.stopContinuousCapture(false).catch(() => undefined)
+    await this.stopOutput()
+    await this.ensureConnected(generation, signal)
+    this.assertGeneration(generation)
+    if (this.captureActive) throw new Error('Realtime microphone capture is already active.')
+    this.configureTurnDetection(false)
+
+    const stream = await this.ensureMicrophone(generation, signal)
+    this.assertGeneration(generation)
+    const track = stream.getAudioTracks()[0] ?? null
+    if (!track || !this.sender) throw new Error('No microphone audio track is available.')
+    await this.sender.replaceTrack(track)
+    await wait(MIC_STABILIZE_MS, signal)
+    this.assertGeneration(generation)
+    this.send({ type: 'input_audio_buffer.clear' })
+    this.captureStartedAt = performance.now()
+    this.captureActive = true
+    window.dispatchEvent(new CustomEvent('smartoffice:realtime-listening-start'))
   }
 
-  async endCapture(): Promise<string> {
-    return await this.enqueue(async () => {
-      if (!this.captureStartedAt) throw new Error('Realtime capture was not started.')
-      if (performance.now() - this.captureStartedAt < 250) {
-        await this.restoreSilentTrack()
-        this.captureStartedAt = 0
-        throw new Error('录音时间太短，请看到“正在聆听”后再完整说话。')
-      }
-      await wait(RTP_DRAIN_MS)
-      await this.commitAudio()
-      await this.restoreSilentTrack()
+  async endCapture(signal?: AbortSignal): Promise<string> {
+    const generation = this.generation
+    if (this.continuousCaptureActive) {
+      throw new Error('Manual capture cannot end while continuous listening is active.')
+    }
+    if (!this.captureActive || !this.captureStartedAt) {
+      throw new Error('Realtime capture was not started.')
+    }
+    if (performance.now() - this.captureStartedAt < 250) {
+      await this.restoreSilentTrack(false)
+      this.captureStartedAt = 0
+      this.captureActive = false
+      throw new Error('录音时间太短，请看到“正在聆听”后再完整说话。')
+    }
+    await wait(RTP_DRAIN_MS, signal)
+    this.assertGeneration(generation)
+    await this.commitAudio(generation, signal)
+    await this.restoreSilentTrack(false)
+    this.captureActive = false
+    const instructions = this.transcriptionInstructions()
+    try {
       const transcript = await this.createResponse(
-        ['text'],
-        this.transcriptionInstructions(),
-        'speech_understanding',
+        ['text'], instructions, 'speech_understanding', instructions, generation, signal,
       )
+      this.assertGeneration(generation)
+      return transcript.trim()
+    } finally {
       this.captureStartedAt = 0
       window.dispatchEvent(new CustomEvent('smartoffice:realtime-listening-stop'))
-      return transcript.trim()
+    }
+  }
+
+  async startContinuousCapture(language: VoiceLanguage, signal?: AbortSignal): Promise<void> {
+    this.language = language
+    const generation = this.generation
+    await this.ensureConnected(generation, signal)
+    this.assertGeneration(generation)
+    if (this.continuousCaptureActive) return
+    if (this.captureActive) await this.abortCapture(false)
+
+    const stream = await this.ensureMicrophone(generation, signal)
+    this.assertGeneration(generation)
+    const track = stream.getAudioTracks()[0] ?? null
+    if (!track || !this.sender) throw new Error('No microphone audio track is available.')
+    await this.sender.replaceTrack(track)
+    await wait(MIC_STABILIZE_MS, signal)
+    this.assertGeneration(generation)
+    this.send({ type: 'input_audio_buffer.clear' })
+    this.configureTurnDetection(true)
+    this.captureStartedAt = performance.now()
+    this.captureActive = true
+    this.continuousCaptureActive = true
+    this.vadSpeechDetected = false
+    console.info('[RealtimeDiagnostics] continuous-listening-started', {
+      threshold: vadThreshold(),
+      silenceDurationMs: vadSilenceMs(),
+      prefixPaddingMs: vadPrefixMs(),
+      microphoneLabel: track.label,
+      microphoneSettings: track.getSettings(),
+    })
+    window.dispatchEvent(new CustomEvent('smartoffice:realtime-continuous-listening-start'))
+  }
+
+  async nextContinuousUtterance(signal?: AbortSignal): Promise<string> {
+    if (signal?.aborted) throw abortError('Continuous listening was aborted.')
+    const queued = this.utteranceQueue.shift()
+    if (queued !== undefined) return queued
+    if (!this.continuousCaptureActive) {
+      throw new Error('Continuous listening is not active.')
+    }
+    return await new Promise<string>((resolve, reject) => {
+      const waiter: UtteranceWaiter = { resolve, reject, signal }
+      const onAbort = () => {
+        const index = this.utteranceWaiters.indexOf(waiter)
+        if (index >= 0) this.utteranceWaiters.splice(index, 1)
+        reject(abortError('Continuous listening was aborted.'))
+      }
+      waiter.onAbort = onAbort
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.utteranceWaiters.push(waiter)
     })
   }
 
-  async abortCapture(): Promise<void> {
-    if (this.dc?.readyState === 'open') this.safeSend({ type: 'input_audio_buffer.clear' })
-    await this.restoreSilentTrack()
+  async stopContinuousCapture(releaseMicrophone = true): Promise<void> {
+    if (!this.continuousCaptureActive && !this.captureActive) {
+      if (releaseMicrophone) {
+        stopStream(this.microphoneStream)
+        this.microphoneStream = null
+      }
+      return
+    }
+    this.continuousCaptureActive = false
+    this.vadSpeechDetected = false
+    this.captureActive = false
     this.captureStartedAt = 0
+    this.configureTurnDetection(false)
+    if (this.dc?.readyState === 'open') this.safeSend({ type: 'input_audio_buffer.clear' })
+    await this.restoreSilentTrack(releaseMicrophone).catch(() => undefined)
+    this.rejectUtteranceWaiters(abortError('Continuous listening stopped.'))
+    this.utteranceQueue = []
+    window.dispatchEvent(new CustomEvent('smartoffice:realtime-continuous-listening-stop'))
     window.dispatchEvent(new CustomEvent('smartoffice:realtime-listening-stop'))
   }
 
-  async speakExact(text: string, language: VoiceLanguage): Promise<string> {
+  async abortCapture(releaseMicrophone = true): Promise<void> {
+    if (this.continuousCaptureActive) {
+      await this.stopContinuousCapture(releaseMicrophone)
+      return
+    }
+    if (this.dc?.readyState === 'open') this.safeSend({ type: 'input_audio_buffer.clear' })
+    await this.restoreSilentTrack(releaseMicrophone).catch(() => undefined)
+    this.captureStartedAt = 0
+    this.captureActive = false
+    window.dispatchEvent(new CustomEvent('smartoffice:realtime-listening-stop'))
+  }
+
+  currentMicrophoneStream(): MediaStream | null {
+    return this.microphoneStream
+  }
+
+  async speakExact(text: string, language: VoiceLanguage, signal?: AbortSignal): Promise<string> {
     const clean = text.trim()
     if (!clean) return ''
     this.language = language
-    return await this.enqueue(async () => {
-      await this.ensureConnected()
-      const instruction =
-        language === 'en'
-          ? `Read the following final answer exactly in a calm, mature and professional virtual-host voice. Do not add, remove, summarize, or paraphrase any word:\n${clean}`
-          : `请使用成熟、稳重、亲切、专业的中文虚拟接待员语气，逐字朗读下面的最终答复。不得增加、删除、总结或改写任何内容：\n${clean}`
-      const spoken = await this.createResponse(
-        ['audio'],
-        instruction,
-        'exact_backend_answer',
-        clean,
-      )
-      return spoken || clean
-    })
+    const generation = this.generation
+    await this.stopOutput()
+    await this.ensureConnected(generation, signal)
+    this.assertGeneration(generation)
+    const instruction = language === 'en'
+      ? `Read the following final answer exactly in a calm, mature and professional virtual-host voice. Do not add, remove, summarize, or paraphrase any word:\n${clean}`
+      : `请使用成熟、稳重、亲切、专业的中文虚拟接待员语气，逐字朗读下面的最终答复。不得增加、删除、总结或改写任何内容：\n${clean}`
+    const spoken = await this.createResponse(
+      ['audio'], instruction, 'exact_backend_answer', clean, generation, signal,
+    )
+    this.assertGeneration(generation)
+    return spoken || clean
+  }
+
+  async generateText(
+    instructions: string,
+    language: VoiceLanguage,
+    purpose = 'application_text_generation',
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const clean = instructions.trim()
+    if (!clean) return ''
+    this.language = language
+    const generation = this.generation
+    await this.ensureConnected(generation, signal)
+    this.assertGeneration(generation)
+    return (await this.createResponse(
+      ['text'], clean, purpose, clean, generation, signal,
+    )).trim()
+  }
+
+  currentRemoteAudioStream(): MediaStream | null {
+    return this.remoteOutputStream
   }
 
   async stopOutput(): Promise<void> {
-    const pending = this.pendingResponse
-    if (pending?.modalities.includes('audio')) {
-      this.clearPendingTimers(pending)
-      this.pendingResponse = null
-      pending.reject(abortError('Realtime speech was interrupted.'))
-    }
+    this.interruptPendingResponse('Realtime speech was interrupted.')
     if (this.dc?.readyState === 'open') {
       this.safeSend({ type: 'response.cancel' })
       this.safeSend({ type: 'output_audio_buffer.clear' })
@@ -206,149 +398,208 @@ export class PersistentRealtimeAgent {
   }
 
   status(): RealtimeRuntimeStatus {
+    const pending = this.pendingResponse
     return {
       connected: this.pc?.connectionState === 'connected',
       connectionState: this.pc?.connectionState ?? 'not-created',
       dataChannelState: this.dc?.readyState ?? 'not-created',
-      microphoneAttached: this.microphoneStream !== null,
-      responseActive: this.pendingResponse !== null,
-      outputActive: Boolean(
-        this.pendingResponse?.modalities.includes('audio') &&
-          this.pendingResponse.audioStarted &&
-          !this.pendingResponse.audioStopped,
-      ),
+      microphoneAttached: Boolean(this.microphoneStream && this.captureActive),
+      responseActive: pending !== null,
+      outputActive: Boolean(pending?.modalities.includes('audio') && pending.audioStarted && !pending.audioStopped),
+      continuousListening: this.continuousCaptureActive,
+      speechDetected: this.vadSpeechDetected,
     }
   }
 
   async shutdown(): Promise<void> {
-    await this.shutdownConnection()
-    this.silentTrack?.stop()
+    this.generation += 1
+    this.connectAbort?.abort()
+    this.connectAbort = null
+    this.connectPromise = null
+    this.rejectPending(abortError('GPT Realtime session was revoked.'))
+    this.rejectUtteranceWaiters(abortError('GPT Realtime session was revoked.'))
+
+    const microphone = this.microphoneStream
+    this.microphoneStream = null
+    stopStream(microphone)
+    this.captureStartedAt = 0
+    this.captureActive = false
+    this.continuousCaptureActive = false
+    this.vadSpeechDetected = false
+    this.utteranceQueue = []
+    this.closeConnectionObjects()
+
+    const silentTrack = this.silentTrack
+    const silentContext = this.silentContext
     this.silentTrack = null
     this.silentStream = null
-    await this.silentContext?.close().catch(() => undefined)
     this.silentContext = null
+    silentTrack?.stop()
+    await silentContext?.close().catch(() => undefined)
+    window.dispatchEvent(new CustomEvent('smartoffice:realtime-visit-session-closed'))
   }
 
-  private async enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.operationQueue.then(operation, operation)
-    this.operationQueue = next.catch(() => undefined)
-    return await next
+  transcriptionInstructions(): string {
+    return `
+You are a multilingual speech transcription and correction layer, not a conversational assistant.
+Return only the user's final intended utterance as normalized plain text. Do not answer the user.
+Detect the language from the spoken audio itself and never translate it.
+Preserve genuine Chinese-English code-switching.
+Later explicit corrections override earlier uncertain words.
+Chinese correction signals such as “不”, “不是”, “不对”, “我是说”, “应该是” and character explanations are authoritative.
+English correction signals such as “no”, “not that”, “I mean”, “correction”, and “it should be” are authoritative.
+Relevant terms include Microsoft Teams, PowerPoint, Word, Excel, Outlook, OneNote, meeting, presentation, mute, camera, next slide, previous slide, and screen sharing.
+Never invent a request. If genuinely unintelligible, output exactly __UNCLEAR__.
+Output only normalized plain text without labels, JSON, Markdown, quotation marks, explanations, or translations.
+`.trim()
   }
 
-  private async ensureConnected(): Promise<void> {
-    if (
-      this.pc &&
-      this.dc?.readyState === 'open' &&
-      ['connected', 'connecting', 'new'].includes(this.pc.connectionState)
-    ) {
-      if (this.remoteAudio?.paused) {
-        await this.remoteAudio.play().catch(() => undefined)
-      }
+  private configureTurnDetection(enabled: boolean): void {
+    if (this.dc?.readyState !== 'open') return
+    this.safeSend({
+      type: 'session.update',
+      session: {
+        type: 'realtime',
+        audio: {
+          input: {
+            noise_reduction: { type: 'near_field' },
+            turn_detection: enabled ? {
+              type: 'server_vad',
+              threshold: vadThreshold(),
+              prefix_padding_ms: vadPrefixMs(),
+              silence_duration_ms: vadSilenceMs(),
+              create_response: false,
+              interrupt_response: false,
+            } : null,
+          },
+        },
+      },
+    })
+  }
+
+  private assertGeneration(expected: number): void {
+    if (expected !== this.generation) throw abortError('Stale GPT Realtime operation was fenced.')
+  }
+
+  private async ensureConnected(generation: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw abortError('Realtime connection was aborted.')
+    this.assertGeneration(generation)
+    if (this.pc && this.dc?.readyState === 'open' && ['connected', 'connecting', 'new'].includes(this.pc.connectionState)) {
+      if (this.remoteAudio?.paused) await this.remoteAudio.play().catch(() => undefined)
       return
     }
-    if (this.connectPromise) return await this.connectPromise
-    this.connectPromise = this.connect()
-    try {
+    if (this.connectPromise) {
       await this.connectPromise
+      this.assertGeneration(generation)
+      return
+    }
+    const connectAbort = new AbortController()
+    const abortFromParent = () => connectAbort.abort()
+    signal?.addEventListener('abort', abortFromParent, { once: true })
+    this.connectAbort = connectAbort
+    const promise = this.connect(generation, connectAbort.signal)
+    this.connectPromise = promise
+    try {
+      await promise
+      this.assertGeneration(generation)
     } finally {
-      this.connectPromise = null
+      signal?.removeEventListener('abort', abortFromParent)
+      if (this.connectPromise === promise) this.connectPromise = null
+      if (this.connectAbort === connectAbort) this.connectAbort = null
     }
   }
 
-  private async connect(): Promise<void> {
-    await this.shutdownConnection()
-
-    const statusResponse = await fetch(`${API_BASE_URL}/api/realtime/status`, {
-      headers: { Accept: 'application/json' },
-    })
-    if (!statusResponse.ok) {
-      throw new Error(`Realtime status failed: ${statusResponse.status}`)
-    }
-    const status = (await statusResponse.json()) as {
-      configured?: boolean
-      enabled?: boolean
-      model?: string
-    }
-    if (!status.configured || !status.enabled) {
-      throw new Error('GPT Realtime is not configured in the Backend process.')
-    }
+  private async connect(generation: number, signal: AbortSignal): Promise<void> {
+    this.closeConnectionObjects()
+    const statusResponse = await fetchWithDeadline(
+      `${API_BASE_URL}/api/realtime/status`, { headers: { Accept: 'application/json' } }, CONNECTION_TIMEOUT_MS, signal,
+    )
+    this.assertGeneration(generation)
+    if (!statusResponse.ok) throw new Error(`Realtime status failed: ${statusResponse.status}`)
+    const status = (await statusResponse.json()) as { configured?: boolean; enabled?: boolean }
+    if (!status.configured || !status.enabled) throw new Error('GPT Realtime is not configured in the Backend process.')
 
     this.createSilentTrack()
-    if (!this.silentTrack || !this.silentStream) {
-      throw new Error('Could not create a silent WebRTC track.')
-    }
+    if (!this.silentTrack || !this.silentStream) throw new Error('Could not create a silent WebRTC track.')
 
     const pc = new RTCPeerConnection()
     const dc = pc.createDataChannel('oai-events')
-    this.pc = pc
-    this.dc = dc
-    this.sender = pc.addTrack(this.silentTrack, this.silentStream)
-
     const remoteAudio = document.createElement('audio')
     remoteAudio.autoplay = true
     remoteAudio.playsInline = true
     remoteAudio.hidden = true
     remoteAudio.dataset.owner = 'smart-office-realtime'
     document.body.appendChild(remoteAudio)
-    this.remoteAudio = remoteAudio
 
     pc.addEventListener('track', (event) => {
-      remoteAudio.srcObject = event.streams[0] ?? new MediaStream([event.track])
+      if (generation !== this.generation || pc !== this.pc) return
+      const stream = event.streams[0] ?? new MediaStream([event.track])
+      this.remoteOutputStream = stream
+      remoteAudio.srcObject = stream
+      window.dispatchEvent(new CustomEvent<MediaStream>('smartoffice:realtime-remote-stream', { detail: stream }))
       void remoteAudio.play().catch(() => undefined)
     })
     dc.addEventListener('message', (event: MessageEvent<string>) => {
-      this.handleServerEvent(event)
+      if (generation === this.generation && dc === this.dc) this.handleServerEvent(event)
     })
     pc.addEventListener('connectionstatechange', () => {
-      window.dispatchEvent(
-        new CustomEvent('smartoffice:realtime-connection-state', {
-          detail: pc.connectionState,
-        }),
-      )
+      if (pc !== this.pc) return
+      window.dispatchEvent(new CustomEvent('smartoffice:realtime-connection-state', { detail: pc.connectionState }))
       if (['failed', 'closed'].includes(pc.connectionState)) {
         this.rejectPending(new Error('GPT Realtime WebRTC connection was lost.'))
+        this.rejectUtteranceWaiters(new Error('GPT Realtime WebRTC connection was lost.'))
       }
     })
 
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    const sdp = pc.localDescription?.sdp ?? offer.sdp
-    if (!sdp) throw new Error('Could not create a WebRTC SDP offer.')
+    this.pc = pc
+    this.dc = dc
+    this.remoteAudio = remoteAudio
+    this.sender = pc.addTrack(this.silentTrack, this.silentStream)
 
-    const sessionResponse = await fetch(
-      `${API_BASE_URL}/api/realtime/session?conversation_id=${encodeURIComponent(browserConversationId())}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/sdp' },
-        body: sdp,
-      },
-    )
-    if (!sessionResponse.ok) {
-      const detail = await sessionResponse.text().catch(() => '')
-      throw new Error(`Realtime session failed: ${sessionResponse.status} ${detail}`)
-    }
-
-    await pc.setRemoteDescription({ type: 'answer', sdp: await sessionResponse.text() })
-    await this.waitForDataChannel(dc)
-    this.send({
-      type: 'session.update',
-      session: {
-        type: 'realtime',
-        output_modalities: ['audio'],
-        instructions:
-          this.language === 'en'
-            ? 'You are the voice layer for a Smart Office virtual host. Speak only text explicitly supplied by the application. Never invent company facts or claim that an office action succeeded.'
-            : '你是 Smart Office 虚拟接待员的语音层。只朗读应用明确提供的文字；不得编造公司事实，也不得声称某个办公操作已经成功。',
-        audio: {
-          input: { turn_detection: null },
-          output: {
-            voice: import.meta.env.VITE_REALTIME_VOICE ?? 'marin',
-            speed: 1.0,
+    try {
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
+      const sdp = pc.localDescription?.sdp ?? offer.sdp
+      if (!sdp) throw new Error('Could not create a WebRTC SDP offer.')
+      const sessionResponse = await fetchWithDeadline(
+        `${API_BASE_URL}/api/realtime/session?conversation_id=${encodeURIComponent(browserConversationId())}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: sdp },
+        CONNECTION_TIMEOUT_MS,
+        signal,
+      )
+      this.assertGeneration(generation)
+      if (!sessionResponse.ok) {
+        const detail = await sessionResponse.text().catch(() => '')
+        throw new Error(`Realtime session failed: ${sessionResponse.status} ${detail}`)
+      }
+      await pc.setRemoteDescription({ type: 'answer', sdp: await sessionResponse.text() })
+      await this.waitForDataChannel(dc, signal)
+      this.assertGeneration(generation)
+      this.send({
+        type: 'session.update',
+        session: {
+          type: 'realtime',
+          output_modalities: ['audio'],
+          instructions: this.language === 'en'
+            ? 'You are the voice layer for a Smart Office virtual host. Speak only text explicitly supplied by the application. Never invent facts or claim an office action succeeded.'
+            : '你是 Smart Office 虚拟接待员的语音层。只朗读应用明确提供的文字；不得编造事实，也不得声称办公操作已经成功。',
+          audio: {
+            input: {
+              noise_reduction: { type: 'near_field' },
+              turn_detection: null,
+            },
+            output: {
+              voice: import.meta.env.VITE_REALTIME_VOICE ?? 'marin',
+              speed: 1.0,
+            },
           },
         },
-      },
-    })
-    window.dispatchEvent(new CustomEvent('smartoffice:realtime-connected'))
+      })
+      window.dispatchEvent(new CustomEvent('smartoffice:realtime-connected'))
+    } catch (error) {
+      if (pc === this.pc) this.closeConnectionObjects()
+      throw error
+    }
   }
 
   private createSilentTrack(): void {
@@ -368,34 +619,70 @@ export class PersistentRealtimeAgent {
     this.silentTrack = destination.stream.getAudioTracks()[0] ?? null
   }
 
-  private async releaseMicrophone(): Promise<void> {
-    for (const track of this.microphoneStream?.getTracks() ?? []) track.stop()
-    this.microphoneStream = null
-  }
+  private async ensureMicrophone(generation: number, signal?: AbortSignal): Promise<MediaStream> {
+    if (signal?.aborted) throw abortError('Microphone acquisition was aborted.')
+    if (this.microphoneStream?.getAudioTracks().some((track) => track.readyState === 'live')) return this.microphoneStream
 
-  private async restoreSilentTrack(): Promise<void> {
-    if (this.sender && this.silentTrack) await this.sender.replaceTrack(this.silentTrack)
-    await this.releaseMicrophone()
-  }
-
-  private commitAudio(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    const configuredDeviceId = String(import.meta.env.VITE_PRIMARY_MIC_DEVICE_ID ?? '').trim()
+    const audio: MediaTrackConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      channelCount: 1,
+      ...(configuredDeviceId ? { deviceId: { exact: configuredDeviceId } } : {}),
+    }
+    let abandoned = false
+    const request = navigator.mediaDevices.getUserMedia({ audio })
+    const timeout = new Promise<never>((_resolve, reject) => {
       const timer = window.setTimeout(() => {
-        if (this.pendingCommit) this.pendingCommit = null
-        reject(new Error('GPT Realtime did not confirm the audio buffer.'))
-      }, COMMIT_TIMEOUT_MS)
-      this.pendingCommit = {
-        resolve: () => {
-          window.clearTimeout(timer)
-          this.pendingCommit = null
-          resolve()
-        },
-        reject: (error) => {
-          window.clearTimeout(timer)
-          this.pendingCommit = null
-          reject(error)
-        },
+        abandoned = true
+        reject(new Error('Microphone acquisition timed out.'))
+      }, GET_USER_MEDIA_TIMEOUT_MS)
+      const onAbort = () => {
+        abandoned = true
+        window.clearTimeout(timer)
+        reject(abortError('Microphone acquisition was aborted.'))
       }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      void request.finally(() => {
+        window.clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+      })
+    })
+    request.then((stream) => {
+      if (abandoned || generation !== this.generation) stopStream(stream)
+    }).catch(() => undefined)
+    const stream = await Promise.race([request, timeout])
+    this.assertGeneration(generation)
+    this.microphoneStream = stream
+    return stream
+  }
+
+  private async restoreSilentTrack(releaseMicrophone: boolean): Promise<void> {
+    if (this.sender && this.silentTrack) await this.sender.replaceTrack(this.silentTrack)
+    if (releaseMicrophone) {
+      stopStream(this.microphoneStream)
+      this.microphoneStream = null
+    }
+  }
+
+  private commitAudio(generation: number, signal?: AbortSignal): Promise<void> {
+    if (this.pendingCommit) return Promise.reject(new Error('Audio commit is already active.'))
+    return new Promise((resolve, reject) => {
+      const onAbort = () => finish(abortError('Audio commit was aborted.'))
+      const finish = (error?: Error) => {
+        signal?.removeEventListener('abort', onAbort)
+        const pending = this.pendingCommit
+        if (pending?.generation === generation) {
+          window.clearTimeout(pending.timer)
+          this.pendingCommit = null
+        }
+        if (error) reject(error)
+        else resolve()
+      }
+      const timer = window.setTimeout(() => finish(new Error('GPT Realtime did not confirm the audio buffer.')), COMMIT_TIMEOUT_MS)
+      this.pendingCommit = { generation, timer, resolve: () => finish(), reject: (error) => finish(error) }
+      signal?.addEventListener('abort', onAbort, { once: true })
       this.send({ type: 'input_audio_buffer.commit' })
     })
   }
@@ -404,45 +691,49 @@ export class PersistentRealtimeAgent {
     modalities: Array<'text' | 'audio'>,
     instructions: string,
     purpose: string,
-    completionEstimateText = instructions,
+    completionEstimateText: string,
+    generation: number,
+    signal?: AbortSignal,
   ): Promise<string> {
+    if (this.pendingResponse) return Promise.reject(new Error('Another GPT Realtime response is still active.'))
     return new Promise((resolve, reject) => {
-      if (this.pendingResponse) {
-        reject(new Error('Another GPT Realtime response is still active.'))
-        return
-      }
-
-      const requestId = `${purpose}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+      const requestId = `${purpose}-${generation}-${Date.now()}-${Math.random().toString(16).slice(2)}`
       const audio = modalities.includes('audio')
+      const completionTimeoutMs = audio ? estimateAudioCompletionMs(completionEstimateText) : TEXT_RESPONSE_TIMEOUT_MS
       const pending: PendingResponse = {
-        requestId,
-        purpose,
-        modalities,
-        text: '',
-        transcript: '',
-        responseDone: false,
-        audioStarted: false,
-        audioStopped: !audio,
-        startedAt: performance.now(),
-        startTimer: null,
-        completionTimer: null,
-        resolve,
-        reject,
+        requestId, generation, purpose, modalities, text: '', transcript: '',
+        responseDone: false, audioStarted: false, audioStopped: !audio,
+        audioStartedAtMs: null, completionEstimateTextLength: completionEstimateText.length,
+        completionTimeoutMs, startTimer: null, completionTimer: null, resolve, reject,
       }
+      console.info('[RealtimeDiagnostics] response-created', {
+        requestId, purpose, generation, modalities,
+        completionEstimateTextLength: pending.completionEstimateTextLength,
+        completionTimeoutMs: pending.completionTimeoutMs,
+      })
+      const onAbort = () => {
+        if (this.pendingResponse?.requestId !== requestId) return
+        this.safeSend({ type: 'response.cancel' })
+        this.safeSend({ type: 'output_audio_buffer.clear' })
+        this.finishResponseError(pending, abortError('Realtime response was aborted.', pending.audioStarted))
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      const wrappedResolve = pending.resolve
+      const wrappedReject = pending.reject
+      pending.resolve = (value) => { signal?.removeEventListener('abort', onAbort); wrappedResolve(value) }
+      pending.reject = (error) => { signal?.removeEventListener('abort', onAbort); wrappedReject(error) }
 
       if (audio) {
         pending.startTimer = window.setTimeout(() => {
           if (this.pendingResponse?.requestId !== requestId) return
           this.safeSend({ type: 'response.cancel' })
-          this.pendingResponse = null
-          reject(new Error('GPT Realtime audio did not start within 15 seconds.'))
+          this.finishResponseError(pending, new RealtimeSpeechError('GPT Realtime audio did not start in time.', false))
         }, AUDIO_START_TIMEOUT_MS)
       } else {
         pending.completionTimer = window.setTimeout(() => {
           if (this.pendingResponse?.requestId !== requestId) return
           this.safeSend({ type: 'response.cancel' })
-          this.pendingResponse = null
-          reject(new Error('GPT Realtime text response timed out.'))
+          this.finishResponseError(pending, new Error('GPT Realtime text response timed out.'))
         }, TEXT_RESPONSE_TIMEOUT_MS)
       }
 
@@ -453,11 +744,8 @@ export class PersistentRealtimeAgent {
           conversation: 'none',
           output_modalities: modalities,
           metadata: {
-            purpose,
-            request_id: requestId,
-            completion_timeout_ms: audio
-              ? estimateAudioCompletionMs(completionEstimateText)
-              : TEXT_RESPONSE_TIMEOUT_MS,
+            purpose: String(purpose), request_id: String(requestId),
+            generation: String(generation), completion_timeout_ms: String(pending.completionTimeoutMs),
           },
           instructions,
         },
@@ -467,22 +755,49 @@ export class PersistentRealtimeAgent {
 
   private startAudioCompletionTimer(pending: PendingResponse): void {
     if (pending.completionTimer !== null) return
+    pending.audioStartedAtMs = performance.now()
+    this.outputStartedAtMs = pending.audioStartedAtMs
+    console.info('[RealtimeDiagnostics] audio-completion-timer-started', {
+      requestId: pending.requestId, purpose: pending.purpose, generation: pending.generation,
+      completionEstimateTextLength: pending.completionEstimateTextLength,
+      completionTimeoutMs: pending.completionTimeoutMs,
+    })
     pending.completionTimer = window.setTimeout(() => {
       if (this.pendingResponse?.requestId !== pending.requestId) return
+      const elapsedMs = Math.round(performance.now() - (pending.audioStartedAtMs ?? performance.now()))
+      console.error('[RealtimeDiagnostics] audio-completion-timeout', {
+        requestId: pending.requestId, purpose: pending.purpose, generation: pending.generation,
+        completionEstimateTextLength: pending.completionEstimateTextLength,
+        completionTimeoutMs: pending.completionTimeoutMs, elapsedMs,
+        transcriptLength: pending.transcript.length, textLength: pending.text.length,
+        responseDone: pending.responseDone,
+      })
       this.safeSend({ type: 'response.cancel' })
       this.safeSend({ type: 'output_audio_buffer.clear' })
-      this.pendingResponse = null
-      pending.reject(new Error('GPT Realtime audio completion timed out.'))
-    }, estimateAudioCompletionMs(pending.transcript || pending.text || pending.purpose))
+      this.finishResponseError(pending, new RealtimeSpeechError('GPT Realtime audio did not report completion in time.', pending.audioStarted))
+    }, pending.completionTimeoutMs)
   }
 
-  private maybeResolveResponse(): void {
-    const pending = this.pendingResponse
-    if (!pending || !pending.responseDone || !pending.audioStopped) return
+  private resolveResponse(pending: PendingResponse): void {
+    if (this.pendingResponse?.requestId !== pending.requestId) return
     this.clearPendingTimers(pending)
     this.pendingResponse = null
-    const text = (pending.transcript || pending.text).trim()
-    pending.resolve(text)
+    pending.resolve((pending.transcript || pending.text).trim())
+  }
+
+  private finishResponseError(pending: PendingResponse, error: Error): void {
+    if (this.pendingResponse?.requestId !== pending.requestId) return
+    this.clearPendingTimers(pending)
+    this.pendingResponse = null
+    pending.reject(error)
+  }
+
+  private interruptPendingResponse(message: string): void {
+    const pending = this.pendingResponse
+    if (!pending) return
+    this.clearPendingTimers(pending)
+    this.pendingResponse = null
+    pending.reject(abortError(message, pending.audioStarted))
   }
 
   private clearPendingTimers(pending: PendingResponse): void {
@@ -494,105 +809,148 @@ export class PersistentRealtimeAgent {
 
   private handleServerEvent(message: MessageEvent<string>): void {
     let event: RealtimeServerEvent
-    try {
-      event = JSON.parse(message.data) as RealtimeServerEvent
-    } catch {
-      return
-    }
+    try { event = JSON.parse(message.data) as RealtimeServerEvent } catch { return }
 
     if (event.type === 'input_audio_buffer.committed') {
       this.pendingCommit?.resolve()
       return
     }
-    if (event.type === 'response.output_text.delta' && this.pendingResponse) {
-      this.pendingResponse.text += event.delta ?? ''
-      return
-    }
-    if (event.type === 'response.output_text.done' && this.pendingResponse) {
-      this.pendingResponse.text = event.text ?? this.pendingResponse.text
-      return
-    }
-    if (event.type === 'response.output_audio_transcript.delta' && this.pendingResponse) {
-      this.pendingResponse.transcript += event.delta ?? ''
-      return
-    }
-    if (event.type === 'response.output_audio_transcript.done' && this.pendingResponse) {
-      this.pendingResponse.transcript = event.transcript ?? this.pendingResponse.transcript
-      return
-    }
-    if (event.type === 'output_audio_buffer.started') {
+    if (event.type === 'input_audio_buffer.speech_started' && this.continuousCaptureActive) {
+      const itemId = String(event.item_id ?? '')
       const pending = this.pendingResponse
-      if (pending) {
+      const outputActive = Boolean(pending?.modalities.includes('audio') && pending.audioStarted && !pending.audioStopped)
+      const elapsedFromOutputStart = this.outputStartedAtMs ? performance.now() - this.outputStartedAtMs : Number.POSITIVE_INFINITY
+      if (outputActive && elapsedFromOutputStart < bargeInGraceMs()) {
+        if (itemId) this.suppressedVadItems.add(itemId)
+        console.info('[RealtimeDiagnostics] vad-turn-suppressed-in-playback-grace', {
+          itemId, elapsedMs: Math.round(elapsedFromOutputStart), graceMs: bargeInGraceMs(),
+        })
+        return
+      }
+      this.vadSpeechDetected = true
+      this.interruptPendingResponse('Realtime output was interrupted by visitor speech.')
+      if (this.dc?.readyState === 'open') {
+        this.safeSend({ type: 'response.cancel' })
+        this.safeSend({ type: 'output_audio_buffer.clear' })
+      }
+      this.remoteAudio?.pause()
+      window.dispatchEvent(new CustomEvent('smartoffice:realtime-speaking-stop'))
+      window.dispatchEvent(new CustomEvent('smartoffice:realtime-vad-speech-started', {
+        detail: { itemId, audioStartMs: event.audio_start_ms ?? null, bargeIn: outputActive },
+      }))
+      return
+    }
+    if (event.type === 'input_audio_buffer.speech_stopped' && this.continuousCaptureActive) {
+      const itemId = String(event.item_id ?? '')
+      if (itemId && this.suppressedVadItems.delete(itemId)) {
+        this.safeSend({ type: 'conversation.item.delete', item_id: itemId })
+        return
+      }
+      this.vadSpeechDetected = false
+      window.dispatchEvent(new CustomEvent('smartoffice:realtime-vad-speech-stopped', {
+        detail: { itemId, audioEndMs: event.audio_end_ms ?? null },
+      }))
+      const generation = this.generation
+      this.vadTranscriptionChain = this.vadTranscriptionChain
+        .then(() => this.transcribeVadTurn(itemId, generation))
+        .catch((error) => {
+          if (!(error instanceof Error && error.name === 'AbortError')) {
+            console.error('[RealtimeDiagnostics] continuous-transcription-error', {
+              itemId, message: error instanceof Error ? error.message : String(error),
+            })
+          }
+        })
+      return
+    }
+
+    const pending = this.pendingResponse
+    if (event.type === 'response.output_text.delta' && pending) { pending.text += event.delta ?? ''; return }
+    if (event.type === 'response.output_text.done' && pending) { pending.text = event.text ?? pending.text; return }
+    if (event.type === 'response.output_audio_transcript.delta' && pending) { pending.transcript += event.delta ?? ''; return }
+    if (event.type === 'response.output_audio_transcript.done' && pending) { pending.transcript = event.transcript ?? pending.transcript; return }
+    if (event.type === 'output_audio_buffer.started') {
+      if (pending?.modalities.includes('audio')) {
         pending.audioStarted = true
-        if (pending.startTimer !== null) {
-          window.clearTimeout(pending.startTimer)
-          pending.startTimer = null
-        }
+        if (pending.startTimer !== null) { window.clearTimeout(pending.startTimer); pending.startTimer = null }
         this.startAudioCompletionTimer(pending)
       }
       window.dispatchEvent(new CustomEvent('smartoffice:realtime-speaking-start'))
       return
     }
     if (event.type === 'output_audio_buffer.stopped') {
-      if (this.pendingResponse) this.pendingResponse.audioStopped = true
+      if (pending?.modalities.includes('audio') && pending.audioStarted) {
+        pending.audioStopped = true
+        this.resolveResponse(pending)
+      }
       window.dispatchEvent(new CustomEvent('smartoffice:realtime-speaking-stop'))
-      this.maybeResolveResponse()
       return
     }
     if (event.type === 'response.done') {
-      const pending = this.pendingResponse
       if (!pending) return
       const responseRequestId = event.response?.metadata?.request_id
-      if (typeof responseRequestId === 'string' && responseRequestId !== pending.requestId) {
-        return
-      }
+      if (typeof responseRequestId === 'string' && responseRequestId !== pending.requestId) return
       if (event.response?.status === 'failed') {
-        const detail =
-          event.response.status_details?.error?.message ?? 'GPT Realtime response failed.'
-        this.clearPendingTimers(pending)
-        this.pendingResponse = null
-        pending.reject(new Error(detail))
+        const detail = event.response.status_details?.error?.message ?? 'GPT Realtime response failed.'
+        this.finishResponseError(pending, pending.modalities.includes('audio')
+          ? new RealtimeSpeechError(detail, pending.audioStarted)
+          : new Error(detail))
         return
       }
       pending.responseDone = true
-      this.maybeResolveResponse()
+      if (!pending.modalities.includes('audio')) this.resolveResponse(pending)
       return
     }
     if (event.type === 'error') {
       const code = event.error?.code ?? ''
-      if (['response_cancel_not_active', 'input_audio_buffer_clear_empty'].includes(code)) {
-        return
-      }
+      if (['response_cancel_not_active', 'input_audio_buffer_clear_empty', 'conversation_item_delete_failed'].includes(code)) return
       const error = new Error(event.error?.message ?? 'GPT Realtime returned an unknown error.')
-      if (this.pendingCommit) {
-        this.pendingCommit.reject(error)
-      } else if (this.pendingResponse) {
-        const pending = this.pendingResponse
-        this.clearPendingTimers(pending)
-        this.pendingResponse = null
-        pending.reject(error)
-      }
+      if (this.pendingCommit) this.pendingCommit.reject(error)
+      else if (pending) this.finishResponseError(pending, pending.modalities.includes('audio')
+        ? new RealtimeSpeechError(error.message, pending.audioStarted)
+        : error)
     }
   }
 
-  private transcriptionInstructions(): string {
-    return `
-You are a speech-understanding layer, not a conversational assistant.
-Return only the user's final intended utterance as plain text. Do not answer.
-Language: ${this.language === 'en' ? 'English' : 'Chinese Mandarin'}.
-Later explicit corrections override earlier uncertain words.
-Chinese correction signals such as “不”, “不是”, “不对”, “我是说”, “应该是” and character explanations are authoritative.
-Example: “打开钱会色的演示，不对，是浅灰色，深浅的浅，灰色的灰” becomes “打开浅灰色的演示”.
-Relevant terms include Microsoft Teams, PowerPoint, Word, Excel, Outlook, OneNote, meeting, presentation, mute, camera, next slide, previous slide, and screen sharing.
-Never invent a request. If genuinely unintelligible, output exactly __UNCLEAR__.
-Output only normalized plain text without labels, JSON, Markdown, or quotation marks.
-`.trim()
+  private async transcribeVadTurn(itemId: string, generation: number): Promise<void> {
+    await wait(VAD_TRANSCRIPTION_SETTLE_MS)
+    if (!this.continuousCaptureActive || generation !== this.generation) return
+    if (this.pendingResponse) this.interruptPendingResponse('A newer visitor utterance superseded the previous response.')
+    const instructions = this.transcriptionInstructions()
+    const transcript = (await this.createResponse(
+      ['text'], instructions, 'continuous_speech_understanding', instructions, generation,
+    )).trim()
+    if (!this.continuousCaptureActive || generation !== this.generation) return
+    if (!transcript || transcript === '__UNCLEAR__') {
+      console.info('[RealtimeDiagnostics] continuous-utterance-ignored', { itemId, transcript })
+      return
+    }
+    console.info('[RealtimeDiagnostics] continuous-utterance-ready', { itemId, transcriptLength: transcript.length })
+    window.dispatchEvent(new CustomEvent('smartoffice:realtime-continuous-utterance', {
+      detail: { itemId, transcript },
+    }))
+    this.enqueueUtterance(transcript)
+  }
+
+  private enqueueUtterance(text: string): void {
+    const waiter = this.utteranceWaiters.shift()
+    if (waiter) {
+      if (waiter.onAbort) waiter.signal?.removeEventListener('abort', waiter.onAbort)
+      waiter.resolve(text)
+      return
+    }
+    this.utteranceQueue.push(text)
+    if (this.utteranceQueue.length > 4) this.utteranceQueue.splice(0, this.utteranceQueue.length - 4)
+  }
+
+  private rejectUtteranceWaiters(error: Error): void {
+    for (const waiter of this.utteranceWaiters.splice(0)) {
+      if (waiter.onAbort) waiter.signal?.removeEventListener('abort', waiter.onAbort)
+      waiter.reject(error)
+    }
   }
 
   private send(event: Record<string, unknown>): void {
-    if (this.dc?.readyState !== 'open') {
-      throw new Error('GPT Realtime data channel is not open.')
-    }
+    if (this.dc?.readyState !== 'open') throw new Error('GPT Realtime data channel is not open.')
     this.dc.send(JSON.stringify(event))
   }
 
@@ -600,28 +958,22 @@ Output only normalized plain text without labels, JSON, Markdown, or quotation m
     if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify(event))
   }
 
-  private waitForDataChannel(channel: RTCDataChannel): Promise<void> {
+  private waitForDataChannel(channel: RTCDataChannel, signal?: AbortSignal): Promise<void> {
     if (channel.readyState === 'open') return Promise.resolve()
     return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        cleanup()
-        reject(new Error('Timed out while opening GPT Realtime data channel.'))
-      }, CONNECTION_TIMEOUT_MS)
+      const timer = window.setTimeout(() => { cleanup(); reject(new Error('Timed out while opening GPT Realtime data channel.')) }, CONNECTION_TIMEOUT_MS)
       const cleanup = () => {
         window.clearTimeout(timer)
         channel.removeEventListener('open', onOpen)
         channel.removeEventListener('error', onError)
+        signal?.removeEventListener('abort', onAbort)
       }
-      const onOpen = () => {
-        cleanup()
-        resolve()
-      }
-      const onError = () => {
-        cleanup()
-        reject(new Error('Could not open GPT Realtime data channel.'))
-      }
+      const onOpen = () => { cleanup(); resolve() }
+      const onError = () => { cleanup(); reject(new Error('Could not open GPT Realtime data channel.')) }
+      const onAbort = () => { cleanup(); reject(abortError('Realtime connection was aborted.')) }
       channel.addEventListener('open', onOpen)
       channel.addEventListener('error', onError)
+      signal?.addEventListener('abort', onAbort, { once: true })
     })
   }
 
@@ -631,21 +983,22 @@ Output only normalized plain text without labels, JSON, Markdown, or quotation m
     if (pending) {
       this.clearPendingTimers(pending)
       this.pendingResponse = null
-      pending.reject(error)
+      pending.reject(pending.modalities.includes('audio')
+        ? new RealtimeSpeechError(error.message, pending.audioStarted, error.name)
+        : error)
     }
   }
 
-  private async shutdownConnection(): Promise<void> {
-    this.rejectPending(new Error('GPT Realtime connection reset.'))
-    await this.restoreSilentTrack().catch(() => undefined)
+  private closeConnectionObjects(): void {
     this.dc?.close()
     this.pc?.close()
+    this.remoteAudio?.pause()
     this.remoteAudio?.remove()
     this.dc = null
     this.pc = null
     this.sender = null
     this.remoteAudio = null
-    this.captureStartedAt = 0
+    this.remoteOutputStream = null
   }
 }
 

@@ -5,8 +5,16 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
+from app.contact_record_api import router as contact_record_router
+from app.desktop_command_api import router as desktop_command_router
+from app.display_role_api import router as display_role_router, start_display_role_service
+from app.enhanced_turn_api import router as enhanced_turn_router
 from app.event_bus import event_bus
+from app.exhibition_admin_mode import ExhibitionAdminModeMiddleware, exhibition_admin_enabled
 from app.executor import run_task_plan_only, run_task_with_tools
+from app.general_chat_api import router as general_chat_router
+from app.human_recording_api import router as human_recording_router
+from app.legacy_office_compat_api import router as legacy_office_compat_router
 from app.models import (
     AgentRequest,
     AgentResponse,
@@ -15,15 +23,32 @@ from app.models import (
     TaskCreateRequest,
     TaskSession,
 )
+from app.office_api import router as office_router
 from app.planner import plan_task
+from app.presentation_api import router as presentation_router
 from app.realtime_api import router as realtime_router
+from app.reception_api import router as reception_router
+from app.recipient_api import router as recipient_router
+from app.result_center_api import router as result_center_router
+from app.sales_api import router as sales_router
+from app.sales_config import sales_config
+from app.sales_phase2b import router as sales_phase2b_router
+from app.sales_policy import sales_runtime_policy
+from app.semantic_route_api import router as semantic_route_router
+from app.semantic_route_policy import semantic_route_policy
 from app.state_store import state_store
+from app.system_status_policy import install_lightweight_system_status_policy
 from app.task_graph import build_task_graph, task_graph_event_data
 from app.task_logger import log_task_record
 from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
+from app import visitor_context_linking_patch as _visitor_context_linking_patch  # noqa: F401
+from app import conversation_style_patch as _conversation_style_patch  # noqa: F401
 
-app = FastAPI(title="Smart Office Agent Backend", version="0.2.0")
+install_lightweight_system_status_policy()
+start_display_role_service()
+
+app = FastAPI(title="Smart Office Agent Backend", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,9 +60,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ExhibitionAdminModeMiddleware)
 
 app.include_router(realtime_router)
+app.include_router(reception_router)
+app.include_router(enhanced_turn_router)
 app.include_router(turn_router)
+app.include_router(presentation_router)
+app.include_router(office_router)
+app.include_router(legacy_office_compat_router)
+app.include_router(desktop_command_router)
+app.include_router(recipient_router)
+app.include_router(general_chat_router)
+app.include_router(human_recording_router)
+app.include_router(contact_record_router)
+app.include_router(result_center_router)
+app.include_router(display_role_router)
+app.include_router(sales_router)
+app.include_router(sales_phase2b_router)
+app.include_router(semantic_route_router)
 
 
 def _sse_payload(event: StepEvent) -> dict:
@@ -50,15 +91,124 @@ def _sse_payload(event: StepEvent) -> dict:
 
 @app.get("/")
 def health_check():
+    sales_flags = sales_runtime_policy.feature_flags()
+    sales_configuration = sales_config.status()
+    semantic_configuration = semantic_route_policy.status()
     return {
         "status": "ok",
         "service": "smart-office-agent-backend",
-        "version": "0.2.0",
-        "phase": "m3a_fusion_phase_1",
+        "version": "1.0.0",
+        # Root phase is intentionally stable for legacy launchers and contracts.
+        # Newer runtime features are advertised through explicit capabilities.
+        "phase": "preemptive_visit_orchestration",
         "capabilities": {
             "task_runtime": True,
+            "visit_scoped_task_ownership": True,
+            "visit_task_cancellation": True,
+            "approval_timeout_watchdog": True,
+            "killable_office_worker_process": True,
+            "background_visitor_memory_persistence": True,
+            "stale_visit_result_fencing": True,
             "realtime_voice_api": True,
+            "realtime_presentation_function_calling": True,
+            "unified_presentation_plan": True,
+            "unified_office_plan": True,
             "agent_turn_api": True,
+            "unified_turn_router": True,
+            "unified_semantic_router": True,
+            "semantic_route_schema": "semantic-route-v1",
+            "semantic_router_default_mode": semantic_configuration.get("default_mode"),
+            "semantic_pending_intent": True,
+            "semantic_evidence_validated_sales_profile": True,
+            "semantic_policy_gated_execution": True,
+            "semantic_route_diagnostics": True,
+            "exact_desktop_command_api": True,
+            "reception_knowledge": True,
+            "general_backend_chat": True,
+            "general_chat_not_limited_to_company_topics": True,
+            "permission_gate": not exhibition_admin_enabled(),
+            "exhibition_admin_mode": exhibition_admin_enabled(),
+            "exhibition_actor": "operator" if exhibition_admin_enabled() else None,
+            "conversation_memory": True,
+            "conversation_recent_message_limit": 16,
+            "conversation_lifecycle_state": True,
+            "idle_proximity_greeting": True,
+            "proximity_greeting_requires_standby": True,
+            "proximity_greeting_backend_gate": True,
+            "human_conversation_recording_upload": True,
+            "human_conversation_diarized_transcription": True,
+            "human_conversation_docx_summary": True,
+            "human_conversation_docx_auto_open": True,
+            "contact_records": True,
+            "contact_consent_required": True,
+            "exhibition_result_center": True,
+            "visitor_session_bullet_summaries": True,
+            "simulated_meeting_booking": True,
+            "visit_scoped_profile_linking": True,
+            "appointment_first_visitor_profiles": True,
+            "contact_csv_export": True,
+            "recording_list_and_playback": True,
+            "touch_interaction_windows": True,
+            "display_role_routing": True,
+            "presentation_controller": True,
+            "presentation_state_verifier": True,
+            "presentation_control_api": True,
+            "presentation_execution_via_turn": True,
+            "presentation_secondary_display": True,
+            "compound_presentation_execution": True,
+            "compound_task_cancellation": True,
+            "system_volume_control": True,
+            "system_brightness_control": True,
+            "managed_teams_control": True,
+            "managed_onenote_control": True,
+            "random_local_music_playback": True,
+            "managed_media_player_close": True,
+            "scoped_managed_application_verification": True,
+            "brightness_control_mode": "deferred_explicit_only",
+            "incidental_brightness_probe": False,
+            "presentation_summary_artifacts": True,
+            "classic_outlook_draft_creation": True,
+            "outlook_draft_approval_gate": True,
+            "outlook_send_second_approval_gate": True,
+            "fixed_outlook_sender_account": True,
+            "fixed_email_recipient": False,
+            "approved_email_recipient_allowlist": True,
+            "brightness_independent_recipient_directory": True,
+            "arbitrary_email_recipient": False,
+            "email_send_enabled": False,
+            "approval_gated_email_send_enabled": True,
+            "unrestricted_email_send_enabled": False,
+            "general_office_execution_via_turn": False,
+            "sales_phase0_foundation": True,
+            "sales_phase1_runtime": sales_flags.agent_enabled,
+            "sales_phase1_experience": sales_flags.agent_enabled,
+            "sales_experience_opening_plan": sales_flags.agent_enabled,
+            "sales_experience_output_lifecycle": sales_flags.agent_enabled,
+            "sales_experience_sequential_nudges": sales_flags.proactive_enabled,
+            "sales_controlled_voice_delivery": sales_flags.agent_enabled,
+            "sales_opening_humour": sales_flags.humour_enabled,
+            "sales_configuration_valid": bool(sales_configuration.get("ok")),
+            "sales_agent_enabled": sales_flags.agent_enabled,
+            "sales_proactive_enabled": sales_flags.proactive_enabled,
+            "sales_humour_enabled": sales_flags.humour_enabled,
+            "sales_profile_persistence_enabled": (
+                sales_flags.profile_persistence_enabled
+            ),
+            "sales_explicit_only_profile_extraction": sales_flags.agent_enabled,
+            "sales_appointment_first_runtime": sales_flags.agent_enabled,
+            "sales_single_contact_offer": sales_flags.agent_enabled,
+            "sales_verified_conversion_panel_outcomes": sales_flags.agent_enabled,
+            "sales_anonymous_visit_state_deletion": sales_flags.agent_enabled,
+            "sales_repeated_demo_allowlist": sales_flags.agent_enabled,
+            "sales_quality_baseline": "gpt-realtime-2.1",
+            "sales_runtime_default_unchanged": not sales_flags.agent_enabled,
+            "sales_phase2b_engagement_orchestrator": sales_flags.agent_enabled,
+            "sales_phase2b_all_output_rearm": sales_flags.proactive_enabled,
+            "sales_phase2b_busy_defer_not_cancel": sales_flags.proactive_enabled,
+            "sales_phase2b_contextual_recommendation": sales_flags.agent_enabled,
+            "sales_phase2b_verified_booking_contact_conversion": sales_flags.agent_enabled,
+            "sales_phase2b_warm_conversational_style": sales_flags.agent_enabled,
+            "sales_phase2b_contextual_humour": sales_flags.humour_enabled,
         },
     }
 
@@ -72,7 +222,6 @@ def run_agent(req: AgentRequest):
         for step in steps:
             if step.tool_name is None:
                 continue
-
             result = run_tool(step.tool_name, step.args)
             results.append(result)
 
@@ -92,6 +241,9 @@ async def create_agent_task(req: TaskCreateRequest):
         user_request=req.text,
         execute=req.execute,
         task_graph=task_graph,
+        owner_conversation_id=req.conversation_id,
+        owner_visit_id=req.visit_id,
+        owner_actor_type=req.actor_type,
     )
     event_bus.publish(
         task_id=task.task_id,
@@ -100,6 +252,9 @@ async def create_agent_task(req: TaskCreateRequest):
         data={
             "execute": req.execute,
             "step_count": len(task_graph.steps),
+            "owner_conversation_id": req.conversation_id,
+            "owner_visit_id": req.visit_id,
+            "owner_actor_type": req.actor_type,
             "note": "Task graph is available; executor has been scheduled.",
         },
     )
@@ -151,6 +306,7 @@ def handle_agent_task_approval(task_id: str, req: ApprovalRequest):
             "step_index": waiting_step.index,
             "action": req.action,
             "note": req.note,
+            "owner_visit_id": task.owner_visit_id,
         },
     )
     return state_store.get_task(task_id) or task
@@ -161,6 +317,8 @@ def cancel_agent_task(task_id: str):
     task = state_store.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    if task.status in {"completed", "failed", "cancelled"}:
+        return task
 
     state_store.update_pending_steps(
         task_id,
@@ -176,7 +334,7 @@ def cancel_agent_task(task_id: str):
         task_id=task_id,
         event_type="cancelled",
         message="Task cancellation requested.",
-        data={},
+        data={"owner_visit_id": task.owner_visit_id},
     )
     return state_store.get_task(task_id) or task
 
@@ -184,51 +342,13 @@ def cancel_agent_task(task_id: str):
 @app.get("/agent/tasks/{task_id}/events")
 async def stream_agent_task_events(
     task_id: str,
-    demo: bool = Query(
-        False,
-        description="Send a short fake event sequence for Step 3 SSE testing.",
-    ),
-    timeout_seconds: float = Query(
-        30.0,
-        ge=0.1,
-        le=300.0,
-        description="Maximum time to wait for new events before closing the stream.",
-    ),
+    after: str | None = Query(default=None),
 ):
-    task = state_store.get_task(task_id)
-    if task is None:
+    if state_store.get_task(task_id) is None:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
     async def event_generator():
-        sent_count = 0
-        terminal_events = {"completed", "cancelled", "error"}
-
-        while True:
-            events = event_bus.get_events(task_id)
-            while sent_count < len(events):
-                event = events[sent_count]
-                sent_count += 1
-                yield _sse_payload(event)
-                if event.type in terminal_events:
-                    return
-
-            if demo:
-                for event in event_bus.build_demo_events(task):
-                    await asyncio.sleep(0.2)
-                    yield _sse_payload(event)
-                return
-
-            break
-
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
-        while asyncio.get_running_loop().time() < deadline:
-            events = event_bus.get_events(task_id)
-            while sent_count < len(events):
-                event = events[sent_count]
-                sent_count += 1
-                yield _sse_payload(event)
-                if event.type in terminal_events:
-                    return
-            await asyncio.sleep(0.2)
+        async for event in event_bus.subscribe(task_id, after_event_id=after):
+            yield _sse_payload(event)
 
     return EventSourceResponse(event_generator())

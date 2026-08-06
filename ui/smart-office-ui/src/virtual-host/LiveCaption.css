@@ -1,0 +1,126 @@
+.single-line-caption {
+  display: flex;
+  width: min(1220px, 92vw);
+  min-height: 66px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  overflow: hidden;
+  padding: 11px clamp(18px, 1.8vw, 26px);
+  text-align: left;
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+}
+
+.single-line-caption .caption-role {
+  flex: 0 0 auto;
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  text-shadow: none !important;
+}
+
+.caption-stream-window {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent 0, #000 3%, #000 100%);
+}
+
+.caption-stream-text {
+  width: max-content;
+  min-width: min-content;
+  max-width: none !important;
+  flex: 0 0 auto;
+  margin: 0;
+  overflow: visible;
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  text-shadow: none !important;
+  white-space: nowrap;
+  text-align: right;
+  animation: caption-stream-arrive 140ms ease-out;
+}
+
+.user-live-caption .caption-stream-text,
+.assistant-live-caption .caption-stream-text,
+.welcome-caption .caption-stream-text,
+.user-live-caption .caption-role,
+.assistant-live-caption .caption-role,
+.welcome-caption .caption-role,
+.live-caption.caption-listening .caption-stream-text,
+.live-caption.caption-processing .caption-stream-text,
+.live-caption.caption-speaking .caption-stream-text,
+.live-caption.caption-executing .caption-stream-text {
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  text-shadow: none !important;
+}
+
+.assistant-live-caption .caption-stream-window,
+.welcome-caption .caption-stream-window {
+  justify-content: flex-start;
+  mask-image: linear-gradient(90deg, #000 0, #000 98%, transparent 100%);
+}
+
+.assistant-live-caption .caption-stream-text,
+.welcome-caption .caption-stream-text {
+  text-align: left;
+}
+
+/* Keep every caption variant black even when state/theme styles load later. */
+html[data-smart-office-route='virtual-host'] .live-caption,
+html[data-smart-office-route='virtual-host'] .live-caption *,
+.virtual-host-shell .live-caption,
+.virtual-host-shell .live-caption * {
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  text-shadow: none !important;
+}
+
+/* Keep the exhibition caption substantially wider without moving Sara, the
+   status indicator or the microphone card. */
+html[data-smart-office-route='virtual-host'] .live-caption.single-line-caption {
+  width: min(1180px, 92vw) !important;
+}
+
+@keyframes caption-stream-arrive {
+  from {
+    opacity: 0.55;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 1280px) {
+  html[data-smart-office-route='virtual-host'] .live-caption.single-line-caption {
+    width: min(94vw, 1120px) !important;
+  }
+}
+
+@media (max-width: 980px) {
+  html[data-smart-office-route='virtual-host'] .live-caption.single-line-caption {
+    width: min(96vw, 900px) !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .single-line-caption {
+    width: min(96vw, 860px);
+    gap: 8px;
+    padding-inline: 14px;
+  }
+
+  .single-line-caption .caption-role {
+    font-size: 9px;
+  }
+}

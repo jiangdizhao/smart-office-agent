@@ -32,12 +32,14 @@ def main() -> None:
 
     turn_status = client.get("/agent/turn/status")
     turn_status.raise_for_status()
-    assert turn_status.json()["task_creation_enabled"] is False
+    turn_status_payload = turn_status.json()
+    assert "realtime_direct" in turn_status_payload["routes"]
+    assert "clarification" in turn_status_payload["routes"]
 
     turn = client.post(
         "/agent/turn",
         json={
-            "conversation_id": "phase1-smoke",
+            "conversation_id": "phase1-regression-smoke",
             "text": "你好",
             "language": "zh",
             "input_source": "text",
@@ -53,7 +55,7 @@ def main() -> None:
     unclear = client.post(
         "/agent/turn",
         json={
-            "conversation_id": "phase1-smoke",
+            "conversation_id": "phase1-regression-smoke",
             "text": "__UNCLEAR__",
             "language": "en",
             "input_source": "voice",
@@ -68,7 +70,7 @@ def main() -> None:
     previous_key = os.environ.pop("OPENAI_API_KEY", None)
     try:
         missing_key = client.post(
-            "/api/realtime/session?conversation_id=phase1-smoke",
+            "/api/realtime/session?conversation_id=phase1-regression-smoke",
             content="v=0\r\n",
             headers={"Content-Type": "application/sdp"},
         )
@@ -88,7 +90,7 @@ def main() -> None:
     assert task_payload["task_id"]
     assert isinstance(task_payload["steps"], list)
 
-    print("PASS: Phase 1 voice API and Milestone 2 task contracts are available.")
+    print("PASS: Phase 1 voice API and Milestone 2 task contracts remain available.")
 
 
 if __name__ == "__main__":

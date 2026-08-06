@@ -21,6 +21,8 @@ alembic
 pywinauto
 pywin32
 comtypes
+pycaw
+screen-brightness-control==0.27.2
 pyautogui
 pynput
 pyperclip
@@ -43,6 +45,9 @@ azure-identity
 msgraph-sdk
 requests-oauthlib
 authlib
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
 pytest
 pytest-asyncio
 ruff

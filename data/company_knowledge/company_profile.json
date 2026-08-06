@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.1",
+  "content_version": "phase4-5-exhibition-guide-2026-07-25",
+  "updated_at": "2026-07-25",
+  "disclaimer": {
+    "zh": "当前资料仅用于 Smart Office 内部演示，不代表任何特定客户公司的正式对外资料。",
+    "en": "This content is for the internal Smart Office demonstration and is not an official profile for a specific customer organization."
+  },
+  "entries": [
+    {
+      "id": "assistant_identity",
+      "category": "identity",
+      "title": {"zh": "虚拟助手身份", "en": "Virtual host identity"},
+      "keywords": {
+        "zh": ["你是谁", "您是谁", "介绍一下自己", "介绍一下你自己", "请介绍一下你自己", "你能做什么", "您能做什么", "虚拟助手", "接待员"],
+        "en": ["who are you", "introduce yourself", "tell me about yourself", "what can you do", "virtual host", "receptionist"]
+      },
+      "answer": {
+        "zh": "您好，我是 Smart Office Virtual Host & Agent，也是一名虚拟接待与办公助手。我可以用中英文介绍 Smart Office 方案、回答来访者的问题；在员工模式下，我还可以控制 PowerPoint、调整设备音量、生成演示摘要，并通过确认流程创建和发送 Outlook 邮件。您想先了解 Smart Office 方案，还是让我现场演示一项办公操作？",
+        "en": "Hello, I am the Smart Office Virtual Host and Agent, serving as both a virtual receptionist and an office assistant. I can introduce the Smart Office solution and answer visitor questions in Chinese or English. In employee mode, I can also control PowerPoint, adjust device volume, generate presentation summaries, and create or send Outlook email through confirmation steps. Would you like an introduction to the solution or a live office demonstration first?"
+      },
+      "public": true
+    },
+    {
+      "id": "solution_overview",
+      "category": "company",
+      "title": {"zh": "Smart Office 方案概述", "en": "Smart Office solution overview"},
+      "keywords": {
+        "zh": ["公司", "企业", "业务", "方案", "解决方案", "产品", "做什么", "介绍一下公司", "介绍一下 Smart Office"],
+        "en": ["company", "business", "solution", "product", "what do you do", "tell me about smart office"]
+      },
+      "answer": {
+        "zh": "Smart Office 演示方案把企业虚拟接待、实时语音、多屏内容展示和办公自动化整合为一个统一助手。主屏负责虚拟人、动态字幕和操作确认，副屏用于展示公司资料或运行 PowerPoint、Outlook，以及后续可扩展的 Teams 工作窗口。您更想了解虚拟接待、多屏演示，还是 Office 自动化？",
+        "en": "The Smart Office demonstration combines virtual reception, realtime voice, multi-screen content presentation, and office automation in one assistant. The primary screen hosts the virtual person, dynamic captions, and confirmations, while secondary screens present approved information or run PowerPoint, Outlook, and future Teams integrations. Would you like to explore virtual reception, multi-screen presentation, or Office automation?"
+      },
+      "public": true
+    },
+    {
+      "id": "core_capabilities",
+      "category": "capabilities",
+      "title": {"zh": "核心能力", "en": "Core capabilities"},
+      "keywords": {
+        "zh": ["能力", "功能", "服务", "可以做什么", "核心能力", "主要功能", "有哪些功能"],
+        "en": ["capability", "feature", "service", "functions", "main features"]
+      },
+      "answer": {
+        "zh": "当前核心能力包括中英文语音识别与朗读、接待知识问答、虚拟人状态和歌词式字幕、PowerPoint 打开与翻页、系统音量调整、演示摘要生成，以及经过两次确认的 Outlook 草稿创建与邮件发送。您可以直接说“打开 PowerPoint”“下一页”或“根据摘要创建邮件草稿”来体验。",
+        "en": "Current capabilities include Chinese and English speech recognition and playback, reception Q&A, embodied virtual-host states with lyric-style captions, PowerPoint opening and navigation, system-volume adjustment, presentation-summary generation, and Outlook draft creation and email sending through two confirmation steps. You can try commands such as Open PowerPoint, Next slide, or Create an email draft from the summary."
+      },
+      "public": true
+    },
+    {
+      "id": "deployment_scenarios",
+      "category": "deployment",
+      "title": {"zh": "部署场景", "en": "Deployment scenarios"},
+      "keywords": {
+        "zh": ["场景", "部署", "前台", "展厅", "会议室", "适合哪里", "应用场景"],
+        "en": ["deployment", "scenario", "front desk", "showroom", "meeting room", "where can it be used"]
+      },
+      "answer": {
+        "zh": "方案面向企业前台、展厅、会议室和智能屏演示环境。当前展会版本采用主屏虚拟人加副屏 Office 应用的双屏结构；正式部署前，可替换为客户批准的公司介绍、产品目录、案例、联系方式和权限策略。您希望我重点介绍前台接待、展厅导览还是会议室协作？",
+        "en": "The solution targets corporate reception areas, showrooms, meeting rooms, and smart-display demonstrations. The exhibition build uses a dual-screen layout with the virtual host on the primary display and Office applications on the secondary display. Production deployments can use customer-approved company profiles, product catalogs, case studies, contact details, and permission policies. Would you like to focus on reception, showroom guidance, or meeting-room collaboration?"
+      },
+      "public": true
+    },
+    {
+      "id": "contact_and_appointment",
+      "category": "contact",
+      "title": {"zh": "联系与预约", "en": "Contact and appointment"},
+      "keywords": {
+        "zh": ["联系", "联系方式", "预约", "参观", "报价", "价格"],
+        "en": ["contact", "appointment", "visit", "pricing", "quote"]
+      },
+      "answer": {
+        "zh": "当前演示知识库没有配置正式联系方式、价格或预约渠道。我可以记录您的意向，但不能编造电话、邮箱或报价；正式部署时可以接入客户批准的联系与预约流程。您希望联系工作人员，还是先继续了解方案能力？",
+        "en": "The demonstration knowledge base does not contain official contact details, pricing, or booking channels. I can acknowledge your interest but must not invent phone numbers, email addresses, or quotations. A customer-approved contact and appointment workflow can be connected for production. Would you prefer to contact a staff member or continue exploring the solution?"
+      },
+      "public": true
+    },
+    {
+      "id": "public_information_boundary",
+      "category": "policy",
+      "title": {"zh": "公开信息边界", "en": "Public-information boundary"},
+      "keywords": {
+        "zh": ["客户名单", "内部资料", "机密", "财务", "员工信息", "合同细节"],
+        "en": ["customer list", "internal document", "confidential", "financial", "employee data", "contract details"]
+      },
+      "answer": {
+        "zh": "该问题可能涉及非公开或未批准信息。当前接待助手只能依据公开且经过批准的资料回答，请联系工作人员进一步确认。我也可以继续介绍公开的 Smart Office 方案和演示能力。",
+        "en": "This request may involve non-public or unapproved information. The reception assistant can answer only from approved public sources; please ask a staff member for further assistance. I can continue with the approved Smart Office solution and demonstration capabilities."
+      },
+      "public": true
+    }
+  ]
+}

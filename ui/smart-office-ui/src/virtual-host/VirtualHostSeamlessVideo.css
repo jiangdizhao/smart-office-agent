@@ -1,0 +1,302 @@
+/* The animation clips are authored with matching boundary frames. A hard cut after
+   the next video has decoded its first frame is less visible than the old glow /
+   scale crossfade and never exposes the frame background. */
+.video-avatar-layer {
+  z-index: 1;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateZ(0);
+  transition: none !important;
+  backface-visibility: hidden;
+  contain: paint;
+  will-change: auto;
+  object-position: 50% 44%;
+}
+
+.video-avatar-layer.active {
+  z-index: 2;
+  visibility: visible;
+  opacity: 1;
+  transform: translateZ(0);
+}
+
+.avatar-sequence-arrival-ready .video-avatar-layer.active,
+.avatar-sequence-visitor-hold .video-avatar-layer.active {
+  image-rendering: auto;
+}
+
+.video-avatar-halo,
+.video-avatar-shadow {
+  display: none !important;
+}
+
+.virtual-host-stage::before {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+/* Preserve the optimized source video's exact 538:720 portrait ratio. */
+.virtual-host-avatar.video-host-avatar {
+  width: clamp(418px, 53.8svh, 702px) !important;
+  height: clamp(560px, 72svh, 940px) !important;
+  min-width: 418px !important;
+  min-height: 560px !important;
+  max-width: 702px !important;
+  max-height: 940px !important;
+  aspect-ratio: 538 / 720 !important;
+  margin-top: 0 !important;
+  place-items: stretch;
+}
+
+.video-avatar-frame {
+  border-radius: clamp(18px, 2.2vw, 24px);
+}
+
+.video-avatar-layer {
+  width: 100% !important;
+  height: 100% !important;
+  inset: 0 !important;
+  object-fit: contain !important;
+  object-position: 50% 50% !important;
+  background: #eee8df;
+}
+
+/* Final exhibition palette: warm, static and intentionally quiet. */
+html[data-smart-office-route='virtual-host'],
+html[data-smart-office-route='virtual-host'] body {
+  background: #d8c2aa !important;
+}
+
+.virtual-host-shell {
+  --host-ink: #34271f;
+  --host-muted: #766556;
+  --host-navy: #17233a;
+  --host-gold: #bd8a49;
+  background:
+    linear-gradient(90deg, rgba(92, 68, 50, 0.22), transparent 18%, transparent 82%, rgba(92, 68, 50, 0.22)),
+    radial-gradient(circle at 50% 34%, rgba(255, 248, 234, 0.98) 0%, rgba(247, 229, 202, 0.86) 30%, rgba(218, 191, 160, 0.78) 64%, rgba(150, 119, 94, 0.66) 100%),
+    linear-gradient(135deg, #c5a889 0%, #f0d8b8 50%, #aa8b72 100%) !important;
+  color: var(--host-ink) !important;
+}
+
+.virtual-host-background {
+  opacity: 1 !important;
+}
+
+.virtual-host-background::before,
+.virtual-host-background::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  pointer-events: none;
+}
+
+.virtual-host-background::before {
+  background:
+    linear-gradient(90deg, transparent 0 20%, rgba(255, 248, 232, 0.32) 20.2% 20.5%, transparent 20.7% 78.8%, rgba(255, 248, 232, 0.28) 79% 79.3%, transparent 79.5%),
+    repeating-linear-gradient(90deg, transparent 0 13.5%, rgba(113, 87, 67, 0.08) 13.6% 13.72%, transparent 13.82% 26%);
+  opacity: 0.7;
+}
+
+.virtual-host-background::after {
+  background:
+    radial-gradient(ellipse at 10% 70%, rgba(97, 81, 64, 0.15), transparent 24%),
+    radial-gradient(ellipse at 91% 66%, rgba(255, 243, 220, 0.24), transparent 27%),
+    linear-gradient(120deg, transparent 0 17%, rgba(255, 255, 255, 0.18) 17.15% 17.3%, transparent 17.45% 100%);
+}
+
+.background-grid {
+  display: none !important;
+}
+
+.background-glow {
+  animation: none !important;
+  filter: none !important;
+  opacity: 0.4 !important;
+}
+
+.glow-one {
+  background: radial-gradient(circle, rgba(255, 239, 207, 0.72), transparent 70%) !important;
+}
+
+.glow-two {
+  background: radial-gradient(circle, rgba(146, 105, 75, 0.2), transparent 72%) !important;
+}
+
+.virtual-host-brand strong,
+.virtual-host-brand span,
+.virtual-host-status,
+.system-ready,
+.header-button {
+  color: #3b3028 !important;
+}
+
+.system-ready,
+.header-button,
+.virtual-host-status {
+  border-color: rgba(111, 79, 50, 0.2) !important;
+  background: rgba(255, 247, 233, 0.7) !important;
+  box-shadow: 0 12px 30px rgba(79, 54, 36, 0.1) !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+.brand-symbol {
+  border-color: rgba(206, 160, 95, 0.48) !important;
+  background: linear-gradient(145deg, #31518a, #17305f) !important;
+  color: #fff6e6 !important;
+}
+
+.video-avatar-frame {
+  border-color: rgba(119, 82, 48, 0.18) !important;
+  background: #f2dfc2 !important;
+  box-shadow:
+    0 34px 80px rgba(83, 55, 34, 0.18),
+    0 8px 22px rgba(83, 55, 34, 0.1),
+    inset 0 0 0 1px rgba(255, 252, 244, 0.72) !important;
+}
+
+.video-avatar-vignette {
+  background:
+    linear-gradient(to bottom, rgba(102, 68, 42, 0.025), transparent 18%),
+    linear-gradient(to top, rgba(90, 61, 42, 0.08), transparent 22%) !important;
+}
+
+.video-avatar-topline {
+  border-color: rgba(255, 249, 237, 0.72) !important;
+  background: rgba(45, 39, 34, 0.68) !important;
+}
+
+/* Lift the portrait, caption and microphone block together. */
+.virtual-host-avatar.video-host-avatar {
+  transform: translateY(-44px) !important;
+}
+
+.virtual-host-status {
+  transform: translateY(-44px) !important;
+}
+
+.live-caption {
+  margin-top: -78px !important;
+  border-color: rgba(126, 91, 58, 0.18) !important;
+  background: linear-gradient(180deg, rgba(255, 248, 235, 0.9), rgba(238, 216, 187, 0.84)) !important;
+  box-shadow:
+    0 24px 58px rgba(86, 58, 38, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  color: #3d3026 !important;
+  backdrop-filter: blur(14px) !important;
+}
+
+.caption-role {
+  color: #2d5c92 !important;
+}
+
+.welcome-caption p,
+.user-caption-text,
+.live-caption .lyric-current {
+  color: #34271f !important;
+  text-shadow: none !important;
+}
+
+.live-caption .lyric-previous,
+.live-caption .lyric-next {
+  color: #8a7767 !important;
+}
+
+.continuous-voice-card,
+.voice-dock {
+  transform: translateY(-58px) !important;
+}
+
+.continuous-voice-card {
+  border-color: rgba(49, 68, 91, 0.28) !important;
+  background: linear-gradient(140deg, rgba(35, 51, 72, 0.96), rgba(21, 34, 52, 0.96)) !important;
+  box-shadow: 0 18px 42px rgba(62, 44, 31, 0.18) !important;
+  color: #fffaf0 !important;
+}
+
+@media (orientation: portrait), (max-width: 980px) {
+  html[data-smart-office-route='virtual-host'],
+  html[data-smart-office-route='virtual-host'] body {
+    overflow: hidden !important;
+  }
+
+  .virtual-host-shell {
+    height: 100svh;
+    min-height: 100svh;
+    overflow: hidden;
+  }
+
+  .virtual-host-stage {
+    display: grid;
+    width: min(720px, calc(100vw - 24px));
+    height: 100%;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    align-items: stretch;
+    justify-items: center;
+    gap: 12px;
+    padding: 4px 12px 16px;
+    box-sizing: border-box;
+  }
+
+  .virtual-host-status {
+    display: none;
+  }
+
+  .virtual-host-avatar.video-host-avatar {
+    grid-column: 1;
+    grid-row: 1;
+    width: min(86vw, 540px) !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-width: min(86vw, 540px) !important;
+    max-height: calc(100svh - 230px) !important;
+    aspect-ratio: 538 / 720 !important;
+    margin: 0 !important;
+    place-self: center;
+    transform: translateY(-18px) !important;
+  }
+
+  .video-avatar-frame {
+    border-radius: clamp(18px, 2.4vw, 24px);
+  }
+
+  .live-caption {
+    grid-column: 1;
+    grid-row: 2;
+    width: min(100%, 620px);
+    min-height: 92px;
+    align-self: end;
+    justify-self: center;
+    margin: -24px 0 0 !important;
+    border-radius: 22px;
+  }
+
+  .voice-dock,
+  .continuous-voice-card {
+    grid-column: 1;
+    grid-row: 3;
+    width: min(100%, 620px);
+    align-self: end;
+    justify-self: center;
+    margin-top: 0;
+    transform: translateY(-10px) !important;
+  }
+
+  .video-avatar-audio-bars {
+    right: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-avatar-layer,
+  .video-avatar-layer.active {
+    transition: none !important;
+  }
+}

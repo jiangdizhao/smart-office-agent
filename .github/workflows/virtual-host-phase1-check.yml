@@ -1,4 +1,4 @@
-name: Virtual Host Phase 1 Check
+name: Virtual Host Integration Check
 
 on:
   push:
@@ -7,12 +7,18 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "config/**"
+      - "data/company_knowledge/**"
       - "ui/smart-office-ui/**"
+      - "PHASE4_5_EXHIBITION_ACCEPTANCE.md"
+      - "PHASE5_REMOTE_VISION_CLIENT.md"
       - ".github/workflows/virtual-host-phase1-check.yml"
 
 jobs:
   backend-contract:
     runs-on: ubuntu-latest
+    env:
+      SMART_OFFICE_EMAIL_RECIPIENTS_FILE: config/email_recipients.example.json
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,11 +27,109 @@ jobs:
       - name: Install minimal backend test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "fastapi[standard]" httpx sse-starlette
+          python -m pip install "fastapi[standard]" httpx websockets sse-starlette aiofiles python-docx
       - name: Compile backend
-        run: python -m compileall backend/app backend/scripts/smoke_phase1_voice_contract.py
-      - name: Run Phase 1 contract smoke test
+        run: |
+          python -m compileall backend/app \
+            backend/scripts/test_unified_semantic_router_live.py \
+            backend/scripts/smoke_single_activation_contract.py \
+            backend/scripts/smoke_backend_env_config_contract.py \
+            backend/scripts/smoke_latency_optimization_contract.py \
+            backend/scripts/smoke_sales_phase0_contract.py \
+            backend/scripts/smoke_sales_phase1_runtime_contract.py \
+            backend/scripts/smoke_sales_experience_phase1_contract.py \
+            backend/scripts/smoke_sales_phase2a_contract.py \
+            backend/scripts/smoke_sales_phase2b_contract.py \
+            backend/scripts/smoke_unified_semantic_route_contract.py \
+            backend/scripts/smoke_phase1_voice_contract.py \
+            backend/scripts/smoke_phase2_router_contract.py \
+            backend/scripts/smoke_phase3_gate1_contract.py \
+            backend/scripts/smoke_phase3_powerpoint_rot_fallback_contract.py \
+            backend/scripts/smoke_phase3_gate2a_contract.py \
+            backend/scripts/smoke_phase3_gate2b_contract.py \
+            backend/scripts/smoke_phase3_unified_plan_contract.py \
+            backend/scripts/smoke_phase3_display2_race_contract.py \
+            backend/scripts/smoke_phase3_gate3_5_contract.py \
+            backend/scripts/smoke_phase3_brightness_wmi_contract.py \
+            backend/scripts/smoke_phase3_outlook_recipient_allowlist_contract.py \
+            backend/scripts/smoke_phase3_outlook_summary_dependency_contract.py \
+            backend/scripts/smoke_phase4_5_virtual_host_contract.py \
+            backend/scripts/smoke_conversation_proximity_contract.py \
+            backend/scripts/smoke_conversation_proximity_phase1_contract.py \
+            backend/scripts/smoke_human_recording_general_chat_contract.py \
+            backend/scripts/smoke_phase5_remote_vision_contract.py \
+            backend/scripts/test_phase5_remote_vision_lan.py \
+            backend/scripts/smoke_portable_paths_contract.py \
+            backend/scripts/setup_gmail_oauth.py
+      - name: Run Backend env configuration contract
+        run: python backend/scripts/smoke_backend_env_config_contract.py
+      - name: Run latency optimization backend contract
+        run: python backend/scripts/smoke_latency_optimization_contract.py
+      - name: Run portable path contract
+        run: python backend/scripts/smoke_portable_paths_contract.py
+      - name: Run encoding-safe deterministic semantic contract
+        run: python backend/scripts/test_unified_semantic_router_live.py --offline-contract
+      - name: Run single activation and unified voice contract
+        run: python backend/scripts/smoke_single_activation_contract.py
+      - name: Run Phase 0 sales compatibility contract
+        run: python backend/scripts/smoke_sales_phase0_contract.py
+      - name: Run Phase 1 sales runtime contract
+        run: python backend/scripts/smoke_sales_phase1_runtime_contract.py
+      - name: Run Phase 1 customer experience contract
+        run: python backend/scripts/smoke_sales_experience_phase1_contract.py
+      - name: Run Phase 2A sales continuity compatibility contract
+        run: python backend/scripts/smoke_sales_phase2a_contract.py
+      - name: Run Phase 2B engagement and conversion contract
+        run: python backend/scripts/smoke_sales_phase2b_contract.py
+      - name: Run unified semantic route contract
+        run: python backend/scripts/smoke_unified_semantic_route_contract.py
+      - name: Run Phase 1 regression contract
         run: python backend/scripts/smoke_phase1_voice_contract.py
+      - name: Run Phase 2 router contract
+        run: python backend/scripts/smoke_phase2_router_contract.py
+      - name: Run Phase 3 Gate 1 presentation contract
+        run: python backend/scripts/smoke_phase3_gate1_contract.py
+      - name: Run PowerPoint ROT fallback contract
+        run: python backend/scripts/smoke_phase3_powerpoint_rot_fallback_contract.py
+      - name: Run Phase 3 Gate 2A Realtime presentation contract
+        run: python backend/scripts/smoke_phase3_gate2a_contract.py
+      - name: Run Phase 3 unified presentation-plan contract
+        run: python backend/scripts/smoke_phase3_unified_plan_contract.py
+      - name: Run Phase 3 DISPLAY2 race regression contract
+        run: python backend/scripts/smoke_phase3_display2_race_contract.py
+      - name: Run Phase 3 Gate 3-5 office workflow contract
+        run: python backend/scripts/smoke_phase3_gate3_5_contract.py
+      - name: Run Phase 3 WMI brightness invocation contract
+        run: python backend/scripts/smoke_phase3_brightness_wmi_contract.py
+      - name: Run Outlook recipient file contract
+        run: python backend/scripts/smoke_phase3_outlook_recipient_allowlist_contract.py
+      - name: Run Outlook summary dependency contract
+        run: python backend/scripts/smoke_phase3_outlook_summary_dependency_contract.py
+      - name: Run Phase 4-5 exhibition contract
+        run: python backend/scripts/smoke_phase4_5_virtual_host_contract.py
+      - name: Run Phase 1-aware conversation and proximity contract
+        run: python backend/scripts/smoke_conversation_proximity_phase1_contract.py
+      - name: Run human recording and general chat contract
+        run: python backend/scripts/smoke_human_recording_general_chat_contract.py
+      - name: Run Phase 5 remote vision contract
+        run: python backend/scripts/smoke_phase5_remote_vision_contract.py
+
+  windows-powershell-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deterministic routing dependency
+        shell: powershell
+        run: python -m pip install pydantic
+      - name: Parse ASCII wrapper in Windows PowerShell and run UTF-8 Chinese cases
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File .\backend\scripts\test_unified_semantic_router_live.ps1 `
+            -OfflineContract
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -41,5 +145,29 @@ jobs:
           cache-dependency-path: ui/smart-office-ui/package-lock.json
       - name: Install frontend dependencies
         run: npm ci
+      - name: Run voice command integrity contract
+        run: |
+          rm -rf .contract-build
+          npx --no-install tsc \
+            --ignoreConfig \
+            src/voice/commandTranscriptRepair.ts \
+            src/voice/presentationCommandPlan.ts \
+            --target ES2022 \
+            --module commonjs \
+            --outDir .contract-build \
+            --skipLibCheck \
+            --lib ES2022,DOM
+          printf '{"type":"commonjs"}\n' > .contract-build/package.json
+          node scripts/smoke_voice_command_integrity.cjs
+      - name: Run latency optimization frontend contract
+        run: node scripts/smoke_latency_optimization_frontend.cjs
+      - name: Run Phase 1 customer experience frontend contract
+        run: node scripts/smoke_sales_experience_frontend.cjs
+      - name: Run Phase 2B engagement frontend contract
+        run: node scripts/smoke_sales_phase2a_frontend.cjs
+      - name: Run bilingual Visit language frontend contract
+        run: node scripts/smoke_bilingual_visit_language.cjs
+      - name: Run unified semantic route frontend contract
+        run: node scripts/smoke_unified_semantic_router_frontend.cjs
       - name: Build frontend
         run: npm run build

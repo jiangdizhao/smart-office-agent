@@ -1,0 +1,132 @@
+{
+  "schema_version": "sales-playbooks-v1",
+  "playbook_version": "expo-discovery-conversion-v1",
+  "global_rules": {
+    "answer_before_discovery_question": true,
+    "maximum_questions_per_turn": 1,
+    "minimum_turn_gap_between_profile_questions": 1,
+    "do_not_repeat_declined_field": true,
+    "booking_offer_limit": 2,
+    "contact_offer_limit": 1,
+    "appointment_first_for_product_demonstrations": true,
+    "onsite_demo_only_after_repeated_explicit_request": true
+  },
+  "discovery_fields": [
+    {
+      "field": "industry",
+      "questions": {
+        "zh": [
+          "您所在的行业更偏服务、工程，还是产品销售？",
+          "方便说一下您公司主要属于哪个行业吗？我可以更准确地推荐办公场景。"
+        ],
+        "en": [
+          "Is your business mainly in services, engineering or product sales?",
+          "May I ask which industry your company works in? It helps me recommend a more relevant office scenario."
+        ]
+      }
+    },
+    {
+      "field": "role",
+      "questions": {
+        "zh": [
+          "您平时主要负责管理、客户沟通，还是技术工作？",
+          "在日常工作里，您更关注团队管理、业务流程，还是具体执行？"
+        ],
+        "en": [
+          "Do you mainly work in management, customer communication or technical delivery?",
+          "In your day-to-day work, are you more focused on team management, business workflow or execution?"
+        ]
+      }
+    },
+    {
+      "field": "office_pain_points",
+      "questions": {
+        "zh": [
+          "公司现在最浪费时间的是会议、文件处理，还是客户跟进？",
+          "目前哪一种重复办公工作最让团队头疼？"
+        ],
+        "en": [
+          "What currently consumes the most time: meetings, document handling or customer follow-up?",
+          "Which repetitive office task causes the most frustration for the team?"
+        ]
+      }
+    },
+    {
+      "field": "interested_capabilities",
+      "questions": {
+        "zh": [
+          "您更希望 AI 帮老板做管理工作，还是帮助普通员工提高效率？",
+          "您对会议自动化、客户跟进还是日常行政更感兴趣？"
+        ],
+        "en": [
+          "Would you rather have AI support management work or improve everyday employee productivity?",
+          "Are you more interested in meeting automation, customer follow-up or daily administration?"
+        ]
+      }
+    }
+  ],
+  "playbooks": [
+    {
+      "playbook_id": "meeting_overload",
+      "signals": {"zh": ["会议太多", "会议记录麻烦", "没人整理会议", "会后跟进"], "en": ["too many meetings", "meeting notes are difficult", "no one follows up"]},
+      "capabilities": ["meeting_summary", "teams_collaboration", "outlook_workflow"],
+      "value_points": {"zh": ["会议准备", "内容整理", "行动项", "会后邮件"], "en": ["meeting preparation", "content organisation", "action items", "follow-up email"]},
+      "recommended_question": {"zh": "您现在最耗时间的是会议前准备，还是会议后的整理？", "en": "Which takes more time today: preparing for meetings or organising the follow-up?"},
+      "recommended_action": "offer_booking"
+    },
+    {
+      "playbook_id": "repetitive_administration",
+      "signals": {"zh": ["重复工作", "行政麻烦", "手工处理", "效率低"], "en": ["repetitive work", "manual administration", "low efficiency"]},
+      "capabilities": ["office_automation", "activity_management", "outlook_workflow"],
+      "value_points": {"zh": ["减少重复输入", "连接多个步骤", "保留审批和检查"], "en": ["reduce repeated input", "connect workflow steps", "retain approval and verification"]},
+      "recommended_question": {"zh": "这些工作现在主要由员工手工处理吗？", "en": "Are these tasks currently handled manually by employees?"},
+      "recommended_action": "offer_booking"
+    },
+    {
+      "playbook_id": "customer_follow_up",
+      "signals": {"zh": ["客户跟进", "忘记联系", "销售线索", "邮件太多"], "en": ["customer follow-up", "forget to contact", "sales leads", "too many emails"]},
+      "capabilities": ["outlook_workflow", "visitor_registration", "meeting_booking"],
+      "value_points": {"zh": ["保存明确授权的信息", "准备跟进内容", "减少遗漏"], "en": ["save consented information", "prepare follow-up content", "reduce missed actions"]},
+      "recommended_question": {"zh": "您更希望解决客户资料整理，还是后续联系容易遗漏的问题？", "en": "Is the larger problem organising customer information or making sure follow-up is not missed?"},
+      "recommended_action": "offer_booking_or_contact_after_value"
+    },
+    {
+      "playbook_id": "product_planning",
+      "signals": {"zh": ["产品规划", "需求很多", "优先级", "路线图"], "en": ["product planning", "too many requirements", "priorities", "roadmap"]},
+      "capabilities": ["product_planning", "enterprise_custom_integration"],
+      "value_points": {"zh": ["整理明确需求", "形成可追踪的决策", "安排后续任务"], "en": ["organise explicit requirements", "create traceable decisions", "schedule follow-up tasks"]},
+      "recommended_question": {"zh": "您当前更困难的是收集需求，还是决定哪些需求先做？", "en": "Is the harder problem collecting requirements or deciding what to prioritise?"},
+      "recommended_action": "offer_booking"
+    }
+  ],
+  "objections": [
+    {
+      "objection_id": "ordinary_chatbot",
+      "signals": {"zh": ["普通ChatGPT", "只是聊天机器人", "有什么区别"], "en": ["ordinary ChatGPT", "just a chatbot", "what is different"]},
+      "response_structure": ["acknowledge", "explain_process_integration", "give_verified_example", "offer_booking"],
+      "approved_points": {"zh": ["不只生成回答", "连接受控工具和企业流程", "操作结果需要验证"], "en": ["not limited to generating answers", "connects controlled tools and enterprise workflows", "operational results are verified"]}
+    },
+    {
+      "objection_id": "cost",
+      "signals": {"zh": ["价格", "成本", "贵不贵", "多少钱"], "en": ["price", "cost", "expensive", "how much"]},
+      "response_structure": ["clarify_scope", "optional_approved_cost_analogy", "explain_integration_variables", "offer_scenario_discussion"],
+      "approved_claim_ids": ["typical_ai_voice_cost_analogy"]
+    },
+    {
+      "objection_id": "onsite_demo_request",
+      "signals": {"zh": ["现在演示", "现场演示", "马上给我看"], "en": ["show me now", "demonstrate it here", "show it immediately"]},
+      "response_structure": ["explain_complete_experience_value", "mention_exhibition_environment", "offer_booking", "allow_short_demo_after_repeated_request"]
+    },
+    {
+      "objection_id": "privacy",
+      "signals": {"zh": ["隐私", "泄露", "保存什么", "数据安全"], "en": ["privacy", "data leak", "what do you save", "data security"]},
+      "response_structure": ["disable_humour", "state_only_approved_privacy_facts", "do_not_pressure_for_contact"]
+    }
+  ],
+  "disengagement": {
+    "explicit_signals": {"zh": ["不需要", "只是路过", "没兴趣", "不用介绍了"], "en": ["not interested", "just looking", "no need", "stop explaining"]},
+    "maximum_nudges_without_response": 2,
+    "closing_zh": "我们致力于开发企业个人办公助理，也可以根据企业的实际流程定制不同需求。欢迎有空到公司实地体验，谢谢您的参观。",
+    "closing_en": "We develop personal enterprise office assistants and can adapt them to different business workflows. You are always welcome to visit our office for a complete experience. Thank you for stopping by."
+  }
+}

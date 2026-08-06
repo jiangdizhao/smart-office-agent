@@ -1,0 +1,293 @@
+.meeting-wizard-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  max-width: 820px;
+  margin: 0 auto 18px;
+}
+
+.meeting-wizard-progress > div {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(35, 87, 110, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #728793;
+}
+
+.meeting-wizard-progress b {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #e5edf2;
+  color: #456273;
+  font-size: 14px;
+}
+
+.meeting-wizard-progress span {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-wizard-progress > div.active {
+  border-color: #79a9bd;
+  background: #f4f9fb;
+  color: #285e76;
+}
+
+.meeting-wizard-progress > div.active b,
+.meeting-wizard-progress > div.complete b {
+  background: #367f9e;
+  color: #fff;
+}
+
+.meeting-layout[data-meeting-wizard-step] {
+  display: block;
+  width: min(100%, 820px);
+  min-height: 0;
+  margin: 0 auto;
+}
+
+.meeting-layout[data-meeting-wizard-step] > section {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.meeting-layout[data-meeting-wizard-step="date"] .availability-card {
+  display: none;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .calendar-card,
+.meeting-layout[data-meeting-wizard-step="confirm"] .calendar-card,
+.meeting-layout[data-meeting-wizard-step="success"] .calendar-card {
+  display: none;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-card {
+  display: block;
+  padding: 18px;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header strong {
+  overflow: hidden;
+  font-size: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header span {
+  color: #557481;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.meeting-wizard-back-date,
+.meeting-wizard-restart {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #c8d8df;
+  border-radius: 12px;
+  background: #fff;
+  color: #31566a;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 16px;
+  border: 1px solid #d7e2e8;
+  border-radius: 10px;
+  background: #fff !important;
+  color: #385766;
+  text-align: left;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row strong {
+  grid-column: 1;
+  font-size: 17px;
+  color: #23485b;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row > span,
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row > small,
+.meeting-layout[data-meeting-wizard-step="availability"] .meeting-hour-address {
+  display: none !important;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row > em {
+  grid-column: 2;
+  justify-self: end;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  color: #477286;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="available"] {
+  cursor: pointer;
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="available"]:hover,
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="available"]:focus-visible {
+  border-color: #6d9eb2;
+  background: #fff !important;
+  box-shadow: 0 0 0 3px rgba(54, 127, 158, 0.12);
+}
+
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="booked"],
+.meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row[data-slot-state="past"] {
+  border-color: #e0e7ea;
+  background: #fff !important;
+  color: #9aa6ac;
+  cursor: default;
+}
+
+/* The underlying React component briefly creates a confirmation screen. The
+   enhancement automatically submits it, so visitors see date -> time -> success. */
+.meeting-layout[data-meeting-wizard-step="confirm"] {
+  min-height: 180px;
+}
+
+.meeting-layout[data-meeting-wizard-step="confirm"] .availability-card,
+.meeting-layout[data-meeting-wizard-step="confirm"] .booking-confirmation {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.meeting-layout[data-meeting-wizard-step="confirm"]::after {
+  content: '正在保存预约…';
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  border: 1px solid #dce7ec;
+  border-radius: 20px;
+  background: #fff;
+  color: #416775;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.meeting-layout[data-meeting-wizard-step="success"] .availability-card {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.meeting-layout[data-meeting-wizard-step="success"] .availability-card > header,
+.meeting-layout[data-meeting-wizard-step="success"] .availability-list {
+  display: none;
+}
+
+.meeting-layout[data-meeting-wizard-step="success"] .booking-success {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 38px 28px;
+  border: 1px solid rgba(35, 87, 110, 0.12);
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(39, 80, 99, 0.09);
+  text-align: center;
+}
+
+.meeting-layout[data-meeting-wizard-step="success"] .booking-success > strong {
+  font-size: 27px;
+}
+
+.meeting-success-message {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #315f4a;
+}
+
+.meeting-success-details {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 620px);
+  padding: 16px 18px;
+  border: 1px solid #dce7ec;
+  border-radius: 16px;
+  background: #f8fbfc;
+  text-align: left;
+}
+
+.meeting-success-details p {
+  margin: 0;
+  line-height: 1.6;
+  color: #345966;
+  font-weight: 700;
+}
+
+.meeting-wizard-restart {
+  margin-top: 8px;
+}
+
+@media (max-width: 680px) {
+  .meeting-wizard-progress {
+    gap: 6px;
+  }
+
+  .meeting-wizard-progress > div {
+    grid-template-columns: 26px 1fr;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .meeting-wizard-progress b {
+    width: 26px;
+    height: 26px;
+  }
+
+  .meeting-wizard-progress span {
+    font-size: 11px;
+  }
+
+  .meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .meeting-layout[data-meeting-wizard-step="availability"] .availability-card > header span {
+    grid-column: 1 / -1;
+  }
+
+  .meeting-layout[data-meeting-wizard-step="availability"] .availability-list > button.meeting-hour-row {
+    grid-template-columns: minmax(120px, 1fr) auto;
+    min-height: 52px;
+    padding: 8px 11px;
+  }
+}

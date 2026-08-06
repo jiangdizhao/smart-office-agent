@@ -1,0 +1,29 @@
+.voice-debug-panel {
+  width: min(540px, calc(100vw - 36px));
+}
+
+.voice-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.voice-content-open {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid rgba(103, 187, 255, 0.42);
+  border-radius: 10px;
+  background: rgba(31, 105, 164, 0.34);
+  color: #eaf6ff;
+  padding: 10px 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.voice-content-open:hover {
+  background: rgba(41, 127, 194, 0.46);
+}
+
+@media (max-width: 720px) {
+  .voice-settings-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,180 @@
+/* Final warm showroom composition. Static background + one normal-flow central column. */
+html[data-smart-office-route='virtual-host'],
+html[data-smart-office-route='virtual-host'] body {
+  background: #d7b995 !important;
+}
+
+.virtual-host-shell {
+  min-height: 100svh;
+  overflow: hidden;
+  background-color: #d7b995 !important;
+  background-image: url('/smart-office-warm-showroom-background.webp') !important;
+  background-repeat: no-repeat !important;
+  background-position: center top !important;
+  /* The generated background is already matched to the exhibition viewport ratio.
+     Stretching to both viewport dimensions preserves the complete plate instead of
+     letting cover crop the architectural side and floor details. */
+  background-size: 100% 100% !important;
+}
+
+.virtual-host-background,
+.virtual-host-background::before,
+.virtual-host-background::after,
+.background-glow,
+.background-grid {
+  display: none !important;
+}
+
+.virtual-host-header {
+  position: relative;
+  z-index: 20;
+  min-height: 64px !important;
+  padding-top: 14px !important;
+  padding-bottom: 6px !important;
+}
+
+/* Replace the old SO icon/text block with the uploaded transparent MegaSmartAI mark.
+   The showroom background remains untouched and visible through the logo transparency. */
+.virtual-host-brand {
+  position: relative;
+  display: block !important;
+  width: clamp(240px, 17vw, 340px);
+  height: clamp(42px, 3.3vw, 58px);
+  flex: 0 0 auto;
+  background: transparent url('/branding/megasmartai-logo.svg') left center / contain no-repeat;
+}
+
+.virtual-host-brand > * {
+  display: none !important;
+}
+
+/* Keep status, portrait, caption and microphone prompt as one composition. */
+.virtual-host-stage {
+  position: relative;
+  z-index: 2;
+  display: flex !important;
+  width: min(1180px, calc(100vw - 40px)) !important;
+  height: calc(100svh - 70px) !important;
+  min-height: 0 !important;
+  box-sizing: border-box;
+  align-items: center !important;
+  flex-direction: column !important;
+  justify-content: flex-start !important;
+  gap: clamp(8px, 1.1svh, 14px) !important;
+  margin: 0 auto !important;
+  padding: clamp(14px, 2.2svh, 26px) 0 8px !important;
+}
+
+.virtual-host-status {
+  position: static !important;
+  flex: 0 0 auto;
+  align-self: center !important;
+  justify-self: auto !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+
+/* Enlarge Sara proportionally. A small upward visual offset gives the portrait more
+   room while keeping the caption and microphone controls in normal document flow. */
+.virtual-host-avatar.video-host-avatar {
+  position: relative !important;
+  flex: 0 0 auto;
+  width: auto !important;
+  height: clamp(540px, 70svh, 790px) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: min(58vw, 760px) !important;
+  max-height: none !important;
+  aspect-ratio: 538 / 720 !important;
+  margin: 0 !important;
+  transform: translateY(-24px) !important;
+  transform-origin: center top !important;
+}
+
+.live-caption {
+  position: relative !important;
+  flex: 0 0 auto;
+  width: min(780px, 74vw) !important;
+  min-height: 72px !important;
+  max-height: 108px !important;
+  overflow: hidden !important;
+  box-sizing: border-box;
+  align-self: center !important;
+  justify-self: auto !important;
+  margin: -10px 0 0 !important;
+  padding: 12px 24px 14px !important;
+  transform: none !important;
+  border: 1px solid rgba(144, 103, 67, 0.22) !important;
+  border-radius: 22px !important;
+  background: linear-gradient(180deg, rgba(255, 250, 241, 0.94), rgba(238, 217, 190, 0.9)) !important;
+  box-shadow: 0 18px 44px rgba(92, 61, 37, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+.continuous-voice-card {
+  position: static !important;
+  flex: 0 0 auto;
+  width: min(520px, 58vw) !important;
+  min-width: 0 !important;
+  box-sizing: border-box;
+  align-self: center !important;
+  margin: 6px 0 0 !important;
+  padding: 11px 22px !important;
+  transform: none !important;
+}
+
+/* The exhibition screen is short but very wide. This branch is therefore the
+   important real-device layout, not the portrait media query. */
+@media (max-height: 820px) {
+  .virtual-host-stage {
+    gap: 8px !important;
+    padding: 10px 0 8px !important;
+  }
+
+  .virtual-host-avatar.video-host-avatar {
+    height: clamp(520px, 72svh, 600px) !important;
+    max-width: min(56vw, 700px) !important;
+    transform: translateY(-28px) !important;
+  }
+
+  /* The larger portrait consumes more flow height. The negative top margin offsets
+     most of that increase, leaving this whole lower group only slightly lower. */
+  .live-caption {
+    min-height: 64px !important;
+    margin-top: -46px !important;
+    padding-block: 9px 10px !important;
+  }
+
+  .continuous-voice-card {
+    margin-top: 6px !important;
+    padding-block: 9px !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .virtual-host-stage {
+    width: min(720px, calc(100vw - 24px)) !important;
+    padding-top: 14px !important;
+  }
+
+  .virtual-host-brand {
+    width: clamp(220px, 42vw, 300px);
+    height: clamp(38px, 7vw, 52px);
+  }
+
+  .virtual-host-avatar.video-host-avatar {
+    width: min(88vw, 620px) !important;
+    height: auto !important;
+    max-width: min(88vw, 620px) !important;
+    transform: none !important;
+  }
+
+  .live-caption {
+    width: min(94vw, 680px) !important;
+    margin-top: 4px !important;
+  }
+
+  .continuous-voice-card {
+    width: min(88vw, 520px) !important;
+  }
+}

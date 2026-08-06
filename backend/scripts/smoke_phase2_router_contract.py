@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.main import app  # noqa: E402
+from app.models import ToolResult  # noqa: E402
+from app.turn_router import classify_turn  # noqa: E402
+import app.scoped_system_actions as scoped_system_actions  # noqa: E402
+
+
+def post_turn(client: TestClient, *, conversation_id: str, text: str, actor: str) -> dict:
+    response = client.post(
+        "/agent/turn",
+        json={
+            "conversation_id": conversation_id,
+            "text": text,
+            "language": "zh",
+            "input_source": "text",
+            "actor_context": {"type": actor},
+        },
+    )
+    response.raise_for_status()
+    assert response.headers.get("x-smart-office-exhibition-actor") == "operator"
+    return response.json()
+
+
+def preview_route(client: TestClient, *, text: str, conversation_id: str) -> dict:
+    response = client.post(
+        "/api/conversation-route",
+        json={
+            "conversation_id": conversation_id,
+            "text": text,
+            "language": "zh",
+            "actor_type": "visitor",
+            "visit_id": None,
+        },
+    )
+    response.raise_for_status()
+    assert response.headers.get("x-smart-office-exhibition-actor") == "operator"
+    return response.json()
+
+
+def verify_scoped_volume_contract() -> None:
+    original = scoped_system_actions.set_system_volume
+    try:
+        scoped_system_actions.set_system_volume = lambda target: ToolResult(
+            tool_name="system_set_volume",
+            ok=True,
+            message=f"System volume set to {target}%.",
+            data={
+                "execution_mode": "real",
+                "requested_state": {"volume_percent": target},
+                "volume_percent": target,
+                "volume": {
+                    "available": True,
+                    "volume_percent": target,
+                    "muted": False,
+                },
+            },
+        )
+        result, verification, status = scoped_system_actions.execute_scoped_volume_action(
+            "system_set_volume",
+            {"value_percent": 60},
+        )
+    finally:
+        scoped_system_actions.set_system_volume = original
+
+    assert result.ok is True
+    assert verification.ok is True
+    assert status.ok is True
+    assert status.data["status_scope"] == "volume_only"
+    assert status.data["volume_percent"] == 60
+    assert status.data["unrelated_status_queries_skipped"] == [
+        "powerpoint",
+        "brightness",
+        "outlook",
+        "artifacts",
+    ]
+
+
+def main() -> None:
+    client = TestClient(app)
+
+    health = client.get("/")
+    health.raise_for_status()
+    capabilities = health.json()["capabilities"]
+    assert capabilities["exhibition_admin_mode"] is True
+    assert capabilities["exhibition_actor"] == "operator"
+    assert capabilities["permission_gate"] is False
+
+    status = client.get("/agent/turn/status")
+    status.raise_for_status()
+    status_payload = status.json()
+    assert status_payload["phase"] == "m3a_fusion_phase_3_gate_2b"
+    assert status_payload["task_creation_enabled"] is True
+    assert status_payload["office_execution_enabled"] is False
+    assert status_payload["presentation_execution_enabled"] is True
+    assert status_payload["compound_presentation_execution_enabled"] is True
+    assert "reception_knowledge" in status_payload["routes"]
+    assert "office_planned_task" in status_payload["routes"]
+    assert "approval_action" in status_payload["routes"]
+
+    reception_status = client.get("/api/reception/status")
+    reception_status.raise_for_status()
+    assert reception_status.json()["entry_count"] >= 5
+
+    self_intro = post_turn(
+        client,
+        conversation_id="phase2-self-introduction",
+        text="请介绍一下你自己",
+        actor="visitor",
+    )
+    assert self_intro["route"] == "reception_knowledge"
+    assert self_intro["actor_type"] == "operator"
+    assert self_intro["source_ids"] == ["company_profile:assistant_identity"]
+    assert "Smart Office Virtual Host" in self_intro["spoken_text"]
+    assert "您想先" in self_intro["spoken_text"]
+    assert "我已理解您的话" not in self_intro["spoken_text"]
+    assert "当前请求不需要创建办公任务" not in self_intro["spoken_text"]
+
+    visitor_reception = post_turn(
+        client,
+        conversation_id="phase2-visitor",
+        text="请介绍一下你们的解决方案",
+        actor="visitor",
+    )
+    assert visitor_reception["route"] == "reception_knowledge"
+    assert visitor_reception["actor_type"] == "operator"
+    assert visitor_reception["permission_decision"] == "allowed"
+    assert visitor_reception["source_ids"]
+    assert visitor_reception["content_url"]
+
+    content_page = client.get(visitor_reception["content_url"])
+    content_page.raise_for_status()
+    assert "Smart Office Reception Content" in content_page.text
+
+    # Common exhibition commands must never fall through to general Realtime chat.
+    volume_absolute = preview_route(
+        client,
+        text="把音量调到 60%",
+        conversation_id="phase2-volume-absolute",
+    )
+    assert volume_absolute["answer_engine"] == "office_interpreter"
+    assert volume_absolute["route_reason"].startswith("office_intent:volume_intent")
+
+    volume_relative = preview_route(
+        client,
+        text="把声音调大一点",
+        conversation_id="phase2-volume-relative",
+    )
+    assert volume_relative["answer_engine"] == "office_interpreter"
+
+    slideshow_start = preview_route(
+        client,
+        text="现在开始演示",
+        conversation_id="phase2-slideshow-start",
+    )
+    assert slideshow_start["answer_engine"] == "office_interpreter"
+    assert slideshow_start["route_reason"].startswith("office_intent:presentation_action")
+
+    spaced_ppt = preview_route(
+        client,
+        text="演示 P P T",
+        conversation_id="phase2-spaced-ppt",
+    )
+    assert spaced_ppt["answer_engine"] == "office_interpreter"
+
+    ordinary_voice_question = preview_route(
+        client,
+        text="你的声音听起来很自然吗？",
+        conversation_id="phase2-ordinary-voice",
+    )
+    assert ordinary_voice_question["answer_engine"] == "realtime"
+
+    contextual = classify_turn(
+        "播放这个",
+        "operator",
+        office_context_active=True,
+    )
+    assert contextual.route == "office_direct"
+    assert contextual.reason.startswith("office_intent:presentation_action")
+
+    verify_scoped_volume_contract()
+
+    # Exhibition mode must normalize a client-supplied visitor role before the
+    # legacy permission gate. The request is accepted as Operator, although this
+    # compatibility path still refuses to execute without a controlled Realtime plan.
+    visitor_office = post_turn(
+        client,
+        conversation_id="phase2-visitor",
+        text="打开 PowerPoint",
+        actor="visitor",
+    )
+    assert visitor_office["route"] == "office_direct"
+    assert visitor_office["actor_type"] == "operator"
+    assert visitor_office["permission_decision"] == "allowed"
+    assert visitor_office["task_id"] is None
+    assert "没有执行" in visitor_office["spoken_text"]
+
+    employee_direct = post_turn(
+        client,
+        conversation_id="phase2-employee-direct",
+        text="打开 PowerPoint",
+        actor="employee",
+    )
+    assert employee_direct["route"] == "office_direct"
+    assert employee_direct["actor_type"] == "operator"
+    assert employee_direct["permission_decision"] == "allowed"
+    assert employee_direct["task_id"] is None
+    assert "没有执行" in employee_direct["spoken_text"]
+
+    employee_planned = post_turn(
+        client,
+        conversation_id="phase2-employee-plan",
+        text="准备 Teams 会议并打开 PowerPoint 演示",
+        actor="employee",
+    )
+    assert employee_planned["route"] == "office_planned_task"
+    assert employee_planned["actor_type"] == "operator"
+    assert employee_planned["permission_decision"] == "allowed"
+    assert employee_planned["task_id"]
+    assert employee_planned["approval_required"] is True
+
+    task = client.get(f"/agent/tasks/{employee_planned['task_id']}")
+    task.raise_for_status()
+    assert task.json()["execute"] is False
+
+    cancel = post_turn(
+        client,
+        conversation_id="phase2-employee-plan",
+        text="取消任务",
+        actor="employee",
+    )
+    assert cancel["route"] == "approval_action"
+    assert cancel["approval_action"] == "cancel"
+    assert cancel["task_id"] == employee_planned["task_id"]
+
+    cancelled_task = client.get(f"/agent/tasks/{employee_planned['task_id']}")
+    cancelled_task.raise_for_status()
+    assert cancelled_task.json()["status"] == "cancelled"
+
+    no_active_approval = post_turn(
+        client,
+        conversation_id="phase2-no-task",
+        text="同意",
+        actor="employee",
+    )
+    assert no_active_approval["route"] == "approval_action"
+    assert no_active_approval["task_id"] is None
+    assert "没有" in no_active_approval["spoken_text"]
+
+    conversation = client.get("/agent/conversations/phase2-visitor")
+    conversation.raise_for_status()
+    assert conversation.json()["conversation"]["actor_type"] == "operator"
+
+    print(
+        "PASS: Phase 2 routing, exhibition Operator normalization, common Office "
+        "commands, and scoped volume verification remain healthy."
+    )
+
+
+if __name__ == "__main__":
+    main()

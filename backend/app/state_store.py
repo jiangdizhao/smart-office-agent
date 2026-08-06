@@ -29,6 +29,9 @@ class InMemoryStateStore:
         user_request: str,
         execute: bool,
         task_graph: TaskGraph,
+        owner_conversation_id: str | None = None,
+        owner_visit_id: str | None = None,
+        owner_actor_type: str | None = None,
     ) -> TaskSession:
         task_id = str(uuid4())
         now = task_graph.created_at
@@ -41,12 +44,32 @@ class InMemoryStateStore:
             created_at=now,
             updated_at=now,
             summary=f"Task graph created with {len(task_graph.steps)} planned step(s).",
+            owner_conversation_id=owner_conversation_id,
+            owner_visit_id=owner_visit_id,
+            owner_actor_type=owner_actor_type,
         )
-
         with self._lock:
             self._tasks[task_id] = task
-
         return task
+
+    def bind_task_owner(
+        self,
+        task_id: str,
+        *,
+        conversation_id: str,
+        visit_id: str | None,
+        actor_type: str | None,
+    ) -> TaskSession | None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            task.owner_conversation_id = conversation_id
+            task.owner_visit_id = visit_id
+            task.owner_actor_type = actor_type
+            task.detached_from_visit = False
+            task.updated_at = utc_now()
+            return task
 
     def get_task(self, task_id: str) -> TaskSession | None:
         with self._lock:
@@ -55,6 +78,63 @@ class InMemoryStateStore:
     def list_tasks(self) -> list[TaskSession]:
         with self._lock:
             return list(self._tasks.values())
+
+    def tasks_for_visit(
+        self,
+        *,
+        conversation_id: str,
+        visit_id: str | None,
+    ) -> list[TaskSession]:
+        with self._lock:
+            return [
+                task
+                for task in self._tasks.values()
+                if task.owner_conversation_id == conversation_id
+                and (visit_id is None or task.owner_visit_id == visit_id)
+            ]
+
+    def cancel_tasks_for_visit(
+        self,
+        *,
+        conversation_id: str,
+        visit_id: str | None,
+        reason: str,
+    ) -> list[str]:
+        cancelled: list[str] = []
+        with self._lock:
+            now = utc_now()
+            for task in self._tasks.values():
+                if task.owner_conversation_id != conversation_id:
+                    continue
+                if visit_id is not None and task.owner_visit_id != visit_id:
+                    continue
+                if task.status in {"completed", "failed", "cancelled"}:
+                    continue
+                task.status = "cancelled"
+                task.summary = reason
+                task.updated_at = now
+                task.completed_at = now
+                task.approval_deadline_at = None
+                for step in task.steps:
+                    if step.status in {"pending", "running", "waiting_approval", "verifying"}:
+                        step.status = "cancelled"
+                        step.message = reason
+                        step.finished_at = now
+                    self._approvals.pop((task.task_id, step.step_id), None)
+                cancelled.append(task.task_id)
+
+        # Do not hold the state-store lock while terminating the process. The
+        # Office worker may be returning a result concurrently and must be able
+        # to observe the task's cancelled state without a lock inversion.
+        try:
+            from app.office_worker_process import cancel_office_work_for_visit
+
+            cancel_office_work_for_visit(visit_id, cancelled)
+        except Exception:
+            # Task state is already fenced. Worker termination is best effort and
+            # its hard operation timeout remains the final safety boundary.
+            pass
+        return cancelled
 
     def set_status(
         self,
@@ -67,14 +147,28 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             updated = utc_now()
             task.status = status
             task.updated_at = updated
             if summary is not None:
                 task.summary = summary
+            if status != "waiting_approval":
+                task.approval_deadline_at = None
             if status in {"completed", "failed", "cancelled"}:
                 task.completed_at = updated
+            return task
+
+    def set_approval_deadline(
+        self,
+        task_id: str,
+        deadline: datetime | None,
+    ) -> TaskSession | None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            task.approval_deadline_at = deadline
+            task.updated_at = utc_now()
             return task
 
     def update_step(
@@ -90,12 +184,10 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             updated = utc_now()
             for step in task.steps:
                 if step.step_id != step_id:
                     continue
-
                 step.status = status
                 step.message = message
                 if result is not None:
@@ -106,7 +198,6 @@ class InMemoryStateStore:
                     step.finished_at = updated
                 task.updated_at = updated
                 return task
-
             return task
 
     def update_pending_steps(
@@ -120,13 +211,13 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             updated = utc_now()
             for step in task.steps:
                 if step.status in {"pending", "running", "waiting_approval", "verifying"}:
                     step.status = status
                     step.message = message
                     step.finished_at = updated
+                    self._approvals.pop((task_id, step.step_id), None)
             task.updated_at = updated
             return task
 
@@ -135,7 +226,6 @@ class InMemoryStateStore:
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-
             task.events.append(event)
             task.updated_at = utc_now()
             return task
@@ -147,6 +237,9 @@ class InMemoryStateStore:
         approval: ApprovalRequest,
     ) -> None:
         with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status != "waiting_approval":
+                return
             self._approvals[(task_id, step_id)] = approval
 
     def consume_approval(self, task_id: str, step_id: str) -> ApprovalRequest | None:
