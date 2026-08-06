@@ -29,11 +29,12 @@ def observe(conversation_id: str, visit_id: str) -> None:
             conversation_id=conversation_id,
             visit_id=visit_id,
             language="zh",
-            text="我在建筑行业做项目经理，最麻烦的是会后行动项整理。",
+            text="我是建筑行业的项目经理，最麻烦的是会后行动项整理。",
         )
     )
     require(first["engagement"]["current_industry"] == "construction", "Construction context was not detected.")
     require(first["observed"]["pain_point"] == "会后行动项整理", "Explicit pain point was not retained.")
+    require("项目经理" in str(first["session"]["explicit_facts"].get("role") or ""), "Role-first context was not retained.")
 
     second = sales_phase2b.observe_turn(
         Phase2BObserveRequest(
@@ -219,7 +220,7 @@ def main() -> int:
     print(
         "PASS: Phase 2B provides one Visit engagement owner, all-output rearming, "
         "busy deferral, construction-aware recommendations, bounded humour, booking-first "
-        "conversion, contact fallback and verified form submission semantics."
+        "conversion, role-aware contact fallback and verified form submission semantics."
     )
     return 0
 
