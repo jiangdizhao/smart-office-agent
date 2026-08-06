@@ -57,7 +57,8 @@ def _clean(value: Any, maximum: int = 180) -> str:
 
 
 def _fingerprint(role: str, text: str) -> str:
-    return f"{role}:{re.sub(r'[\W_]+', '', text).casefold()}"
+    normalized = re.sub(r"[\W_]+", "", text).casefold()
+    return f"{role}:{normalized}"
 
 
 def _append_unique(values: list[str], value: str, maximum: int) -> None:
@@ -123,8 +124,6 @@ def _enhanced_summarise_messages(messages: list[dict[str, Any]]) -> dict[str, li
         elif _REQUEST.search(text):
             label = "访客提出："
         else:
-            # Casual conversation is still meaningful conversation. Preserve the
-            # topic or personal remark instead of limiting summaries to Office use.
             label = "访客提到："
         _append_unique(user_points, f"{label}{text}", 150)
         if _REQUEST.search(text):
