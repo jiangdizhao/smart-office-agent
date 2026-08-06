@@ -4,7 +4,9 @@ const {
   recoverCommandTranscript,
 } = require('../.contract-build/commandTranscriptRepair.js')
 const {
+  currentSlideInsightMode,
   deterministicPresentationSteps,
+  mentionsPresentation,
 } = require('../.contract-build/presentationCommandPlan.js')
 
 function names(steps) {
@@ -53,6 +55,7 @@ const capabilityQuestion = recoverCommandTranscript('PowerPoint 是什么', 'zh'
 assert.equal(capabilityQuestion.normalized, 'PowerPoint 是什么')
 assert.equal(capabilityQuestion.ambiguous, false)
 assert.equal(commandClarification(capabilityQuestion), null)
+assert.equal(mentionsPresentation('PowerPoint 是什么'), true)
 
 assert.deepEqual(
   names(deterministicPresentationSteps('请打开并演示 PPT')),
@@ -60,7 +63,7 @@ assert.deepEqual(
 )
 assert.deepEqual(
   names(deterministicPresentationSteps('演示 PPT')),
-  ['presentation_open_configured', 'presentation_start_slideshow'],
+  ['presentation_start_slideshow'],
 )
 assert.deepEqual(
   names(deterministicPresentationSteps('打开 PPT 然后开始放映')),
@@ -72,21 +75,29 @@ assert.deepEqual(
 )
 assert.deepEqual(
   names(deterministicPresentationSteps('下一页')),
-  ['presentation_next_slide'],
+  ['presentation_start_slideshow', 'presentation_next_slide'],
 )
 assert.deepEqual(
   names(deterministicPresentationSteps('上一页')),
-  ['presentation_previous_slide'],
+  ['presentation_start_slideshow', 'presentation_previous_slide'],
 )
 assert.deepEqual(
   names(deterministicPresentationSteps('停止放映')),
   ['presentation_end_slideshow'],
 )
+assert.deepEqual(
+  names(deterministicPresentationSteps('打开 PPT 并跳到第五页')),
+  ['presentation_start_slideshow', 'presentation_go_to_slide'],
+)
+assert.deepEqual(
+  names(deterministicPresentationSteps('打开 PPT 然后下一页')),
+  ['presentation_start_slideshow', 'presentation_next_slide'],
+)
 assert.equal(deterministicPresentationSteps('PowerPoint 是什么'), null)
-assert.equal(deterministicPresentationSteps('打开 PPT 并跳到第五页'), null)
-assert.equal(deterministicPresentationSteps('打开 PPT 然后下一页'), null)
 assert.equal(deterministicPresentationSteps('打开 PPT 并把音量调到 30%'), null)
+assert.equal(currentSlideInsightMode('总结当前页 PPT'), 'summary')
+assert.equal(currentSlideInsightMode('解释这一页 PowerPoint'), 'explanation')
 
 console.log(
-  'PASS: lossless transcript repair preserves compound intents; bounded ASR recovery remains active; complete PowerPoint demonstration commands resolve before generic clarification; rich multi-action and cross-domain requests defer intact to the unified planner.',
+  'PASS: transcript repair preserves compound intents; every PowerPoint mention remains in the Office domain; slide navigation self-starts the configured show; current-slide insight is detected; and cross-domain requests defer intact to the unified planner.',
 )
