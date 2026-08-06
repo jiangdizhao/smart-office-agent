@@ -76,7 +76,14 @@ def _compact_response(response: SalesTurnResponse) -> SalesTurnResponse:
     plan = response.reply_plan
     if plan is not None and plan.maximum_sentences != 2:
         plan = plan.model_copy(update={"maximum_sentences": 2})
-    fallback = _compact_text(response.fallback_text, response.session.language, 2)
+    # Cost and privacy responses already have a bounded one/two-sentence contract.
+    # Do not character-truncate their mandatory scope and consent boundaries.
+    preserve_full = response.reason in {"cost_question", "privacy_question"}
+    fallback = (
+        " ".join(response.fallback_text.strip().split())
+        if preserve_full
+        else _compact_text(response.fallback_text, response.session.language, 2)
+    )
     return response.model_copy(update={"reply_plan": plan, "fallback_text": fallback})
 
 
