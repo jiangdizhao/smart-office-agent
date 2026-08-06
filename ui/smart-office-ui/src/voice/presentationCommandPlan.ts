@@ -1,10 +1,12 @@
+import './unconditionalOfficeInterpreterPatch'
+
 const PRESENTATION_TERM = /(?:power\s*point|powerpoint|\bppt\b|幻灯片|演示文稿|\bslides?\b|slide\s*show|slideshow|presentation)/i
 const OPEN_PRESENTATION = /(?:打开|开启|启动|运行|调出|弄出|\bopen\b|\blaunch\b).{0,14}(?:power\s*point|powerpoint|\bppt\b|幻灯片|演示文稿|presentation)|(?:power\s*point|powerpoint|\bppt\b|幻灯片|演示文稿|presentation).{0,14}(?:打开|开启|启动|运行|调出|弄出|\bopen\b|\blaunch\b)/i
 const CLOSE_PRESENTATION = /(?:关闭|关掉|退出|\bclose\b|\bquit\b|\bexit\b).{0,14}(?:power\s*point|powerpoint|\bppt\b|演示文稿|presentation)|(?:power\s*point|powerpoint|\bppt\b|演示文稿|presentation).{0,14}(?:关闭|关掉|退出|\bclose\b|\bquit\b|\bexit\b)/i
 const NEGATED_CLOSE_PRESENTATION = /(?:不要|别|无需|不需要|do\s*not|don't|without).{0,10}(?:关闭|关掉|退出|close|quit|exit)/i
 const START_SLIDESHOW = /(?:开始|启动|进入|全屏|播放|演示|展示|放映).{0,14}(?:演示|放映|幻灯片|演示文稿|power\s*point|powerpoint|\bppt\b|slide\s*show|slideshow|presentation)|(?:演示|放映|幻灯片|演示文稿|power\s*point|powerpoint|\bppt\b|slide\s*show|slideshow|presentation).{0,14}(?:开始|启动|进入|全屏|播放|演示|展示|放映)|\b(?:start|begin|run|play|demonstrate|show|present)\b.{0,20}\b(?:power\s*point|powerpoint|ppt|slides?|slide\s*show|slideshow|presentation)\b/i
-const NEXT_SLIDE = /(?:下一页|下一张|后一页|后一张|往后翻|向后翻|继续往下)|\b(?:next\s+slide|advance|move\s+forward)\b/i
-const PREVIOUS_SLIDE = /(?:上一页|上一张|前一页|前一张|往前翻|向前翻|翻回前面)|\b(?:previous\s+slide|go\s+back|move\s+back(?:ward)?)\b/i
+const NEXT_SLIDE = /(?:下一页|下一张|后一页|后一张|往后翻|向后翻|继续往下|翻到下一页|继续(?:播放|演示|放映|翻)?|往后|向后)|\b(?:next(?:\s+slide)?|advance|continue|move\s+forward)\b/i
+const PREVIOUS_SLIDE = /(?:上一页|上一张|前一页|前一张|往前翻|向前翻|翻回前面|翻到上一页|返回|翻回去|往前|向前)|\b(?:previous(?:\s+slide)?|go\s+back|move\s+back(?:ward)?)\b/i
 const END_SLIDESHOW = /(?:结束|停止|退出|关闭).{0,12}(?:演示|放映|幻灯片放映)|(?:演示|放映|幻灯片放映).{0,12}(?:结束|停止|退出|关闭)|\b(?:end|stop|exit)\b.{0,20}\b(?:slide\s*show|slideshow|presentation)\b/i
 const PRESENTATION_STATUS = /(?:第几页|哪一页|当前页|现在是第几页|演示状态|放映状态)|\b(?:what|which)\s+slide\b|\bpresentation\s+status\b/i
 const CURRENT_SLIDE_SUMMARY = /(?:总结|概括|归纳|提炼|摘要|summari[sz]e|recap).{0,14}(?:当前|这一|这张|本页|这一页|幻灯片|ppt|powerpoint|slide|presentation)|(?:当前|这一|这张|本页|这一页|幻灯片|ppt|powerpoint|slide|presentation).{0,14}(?:总结|概括|归纳|提炼|摘要|summari[sz]e|recap)/i
@@ -145,5 +147,10 @@ export function deterministicPresentationSteps(
       : [{ name: 'presentation_start_slideshow' }]
   }
   if (hasOpen) return [{ name: 'presentation_open_configured' }]
-  return null
+  return hasTerm
+    ? [
+        { name: 'presentation_open_configured' },
+        { name: 'presentation_start_slideshow' },
+      ]
+    : null
 }
