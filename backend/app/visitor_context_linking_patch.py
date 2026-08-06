@@ -119,6 +119,12 @@ def _profile_contact_dict(row: sqlite3.Row) -> dict:
 contact_record_api._bind_context_records = _safe_bind_context_records
 contact_record_api._contact_dict = _profile_contact_dict
 
+# Install the unconditional exhibition Office route before any request is handled.
+# The patch keeps negated requests non-executable, but all affirmative PPT mentions
+# and supported Office commands bypass ordinary conversation and semantic safety
+# clarification.
+from app import office_direct_route_patch as _office_direct_route_patch  # noqa: E402,F401
+
 # Patches are installed after the base contact router has defined its endpoint
 # functions. The endpoint resolves these module globals at request time, so the
 # enhanced implementation merges browser events with the authoritative backend
