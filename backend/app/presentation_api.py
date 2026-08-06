@@ -163,13 +163,18 @@ async def presentation_current_slide_insight(
 
 @router.post("/guided/start", response_model=PresentationActionResponse)
 async def presentation_guided_start() -> PresentationActionResponse:
+    # One deterministic start path only. presentation_start_slideshow already opens
+    # the configured deck when it is not open and reuses the existing slide-show
+    # window when it is active. Calling presentation_open_configured first duplicated
+    # window-placement/status work and could overrun the worker deadline, which then
+    # killed POWERPNT.EXE and allowed a repeated transcript to restart the cycle.
+    # Start/reuse the show, force slide 1, and return. Never close or restart PPT here.
     return await _execute_sequence(
         [
-            ("presentation_open_configured", {}),
             ("presentation_start_slideshow", {}),
             ("presentation_go_to_slide", {"slide_number": 1}),
         ],
-        timeout_seconds=25.0,
+        timeout_seconds=24.0,
     )
 
 
