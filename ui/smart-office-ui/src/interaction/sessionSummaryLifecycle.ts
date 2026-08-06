@@ -62,6 +62,14 @@ function ensureBuffer(event: SessionMessageEvent): VisitBuffer | null {
   return value
 }
 
+function summaryLanguage(messages: SummaryMessage[]): 'zh' | 'en' {
+  const userText = messages
+    .filter((item) => item.role === 'user')
+    .map((item) => item.text)
+    .join(' ')
+  return /[\u3400-\u9fff]/.test(userText) ? 'zh' : 'en'
+}
+
 async function persist(buffer: VisitBuffer, status: 'draft' | 'final'): Promise<void> {
   if (buffer.saving) {
     buffer.dirty = true
@@ -71,29 +79,40 @@ async function persist(buffer: VisitBuffer, status: 'draft' | 'final'): Promise<
   buffer.saving = true
   buffer.dirty = false
   const revision = buffer.revision
+  const endpoint = status === 'final'
+    ? '/api/visitor-experience/session-summaries/llm'
+    : '/api/visitor-experience/session-summaries'
   try {
-    const response = await fetch(`${API_BASE_URL}/api/visitor-experience/session-summaries`, {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         conversation_id: buffer.conversationId,
         visit_id: buffer.visitId,
-        language: 'zh',
+        language: summaryLanguage(buffer.messages),
         status,
         messages: buffer.messages,
         source_revision: revision,
       }),
-      keepalive: status === 'final',
+      // The main Virtual Host page normally remains open while the Visit changes.
+      // Keepalive is only useful for the small deterministic draft request; the final
+      // LLM request is allowed to finish normally so its response is not size-limited.
+      keepalive: status === 'draft',
     })
     if (!response.ok) {
       throw new Error(`Session summary persistence failed: ${response.status}`)
     }
+    const payload = await response.json().catch(() => null) as {
+      summary_mode?: string
+      summary?: { summary_mode?: string }
+    } | null
     window.dispatchEvent(new CustomEvent('smartoffice:session-summary-updated', {
       detail: {
         conversationId: buffer.conversationId,
         visitId: buffer.visitId,
         revision,
         status,
+        summaryMode: payload?.summary?.summary_mode ?? payload?.summary_mode ?? null,
       },
     }))
   } catch (error) {
