@@ -42,7 +42,7 @@ def main() -> None:
     assert opening.question_field == "role"
     assert "数字管理员" in opening.text
     assert "企业解决方案顾问" in opening.text
-    assert "您主要从事什么工作" in opening.text
+    assert "您平时主要负责管理、客户沟通，还是技术工作" in opening.text
     assert "虚拟接待员" not in opening.text
     assert "虚拟助手" not in opening.text
     assert "PowerPoint 语音控制、Outlook 助手" not in opening.text
@@ -107,7 +107,7 @@ def main() -> None:
     )
     assert other.visit_id == other_visit
     assert other.question_field == "role"
-    assert "What kind of work" in other.text
+    assert "Do you mainly work in management, customer communication or technical delivery" in other.text
     assert sales_session_store.snapshot(conversation, other_visit) is not None
     assert sales_session_store.snapshot(conversation, visit) is not None
 
