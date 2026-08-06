@@ -48,7 +48,7 @@ type OptimizedContext = {
   purpose: 'background_action_accepted' | 'direct_volume_result'
 }
 
-type PriorityOfficeKind = 'presentation' | 'volume'
+type PriorityOfficeKind = 'presentation' | 'volume' | 'office'
 
 function optimizedContext(context: OptimizedContext): string {
   return `${OPTIMIZED_CONTEXT_PREFIX}${JSON.stringify(context)}`
@@ -162,24 +162,23 @@ function explicitPriorityOfficeAction(text: string): PriorityOfficeKind | null {
   const clean = stripPoliteness(text).replace(/[。.!！]/g, '').trim()
   if (!clean) return null
 
-  // Discussion, hypothetical and negated wording must never execute. These guards
-  // intentionally run before the positive action patterns. Polite requests such as
-  // “能不能打开 PPT” and “Can you open PowerPoint?” remain executable requests.
-  if (
-    /不要|别|无需|不用|仅介绍|只介绍|解释|比较|对比|假设|如果|为什么|怎么实现|如何实现|是什么|有什么|do not|don't|without|explain|compare|imagine|hypothetical|what is|how does/i.test(clean)
-  ) return null
+  // PowerPoint is a hard command domain. Any mention is routed to the Office
+  // interpreter, including questions, summaries and explanations. Unsupported or
+  // ambiguous wording receives a PPT-specific clarification instead of general chat.
+  const presentationMentioned = /ppt|power\s*point|powerpoint|幻灯片|演示文稿|presentation|\bslides?\b|slide\s*show|slideshow/i.test(clean)
+  if (presentationMentioned) return 'presentation'
 
   const volumeMentioned = /音量|系统声音|电脑声音|扬声器声音|\bvolume\b|\baudio volume\b/i.test(clean)
   const volumeAction = /调|设|改|提高|降低|增大|减小|升高|静音|取消静音|多少|当前|set|adjust|change|increase|decrease|raise|lower|turn up|turn down|mute|unmute|current/i.test(clean)
   if (volumeMentioned && volumeAction) return 'volume'
 
-  const presentationMentioned = /ppt|power\s*point|powerpoint|幻灯片|演示文稿|presentation|slide\s*show|slideshow/i.test(clean)
-  const presentationAction = /打开|开启|启动|执行|演示|放映|播放|开始|继续|结束|停止|关闭|退出|跳到|翻到|下一页|上一页|下一张|上一张|open|launch|start|begin|run|present|show|play|continue|end|stop|close|exit|go to|next slide|previous slide/i.test(clean)
-  if (presentationMentioned && presentationAction) return 'presentation'
-
   if (/^(?:下一页|上一页|下一张|上一张|后一页|前一页|最后一页|结束放映|开始放映|next slide|previous slide|last slide|start the show|end the show)$/i.test(clean)) {
     return 'presentation'
   }
+
+  const officeEntity = /teams|one\s*note|onenote|outlook|word|excel|邮件|邮箱|草稿|会议|音量|亮度|音乐|录音|文档|系统设置|office/i.test(clean)
+  const officeIntent = /打开|关闭|启动|停止|创建|生成|发送|调整|设置|播放|执行|总结|整理|查看|读取|预约|操作|open|close|launch|start|stop|create|generate|send|adjust|set|play|execute|summari[sz]e|review|read|book/i.test(clean)
+  if (officeEntity && officeIntent) return 'office'
   return null
 }
 
@@ -215,8 +214,6 @@ function localGeneralFastPath(request: RouteRequest): SalesAwareConversationRout
   const clean = normalize(request.text)
   if (!clean || clean.length > 180) return null
 
-  // Pending sales answers, references and all business/Office/privacy language must
-  // still pass through the unified semantic and sales routers.
   if (/^(可以|好|好的|行|愿意|不用|不用了|不了|不需要|yes|no|ok|okay|sure|not now)$/i.test(clean)) return null
   if (/这个|那个|刚才|上一个|下一个|第二个|它|this|that|it|previous|second/i.test(clean)) return null
   if (
@@ -340,7 +337,7 @@ export async function generateSimpleRealtimeAnswer(
 ): Promise<string> {
   const optimized = parseOptimizedContext(recentContext)
   if (optimized) {
-    return ensureOptimizedHumanLikeText(optimized.text.trim(), language, optimized.purpose)
+    return ensureOptimizedHumanLikeText(optimized.text.trim(), language)
   }
   return await generateSalesAwareAnswer(text, language, recentContext, lease)
 }
@@ -348,22 +345,16 @@ export async function generateSimpleRealtimeAnswer(
 function ensureOptimizedHumanLikeText(
   text: string,
   language: VoiceLanguage,
-  purpose: OptimizedContext['purpose'],
 ): string {
   if (!text) return text
-  if (/^(?:啊|哦|嗯|好嘞|好的|好，|行，|ah|oh|mm|right|well|all right|there we go)/i.test(text)) {
-    return text
-  }
   const failed = /没有完成|未完成|失败|did not complete|failed/i.test(text)
   if (failed) {
     return language === 'zh'
-      ? `嗯，后台刚才眨了一下眼睛。${text} 我可以再试一次。`
-      : `Mm, the backend blinked for a moment. ${text} I can try again.`
+      ? `后台刚才没有顺利完成。${text} 我可以再试一次。`
+      : `The backend did not complete that action. ${text} I can try again.`
   }
-  if (purpose === 'background_action_accepted') {
-    return language === 'zh'
-      ? `好嘞，交给我。${text}`
-      : `Right, leave it with me. ${text}`
-  }
-  return language === 'zh' ? `啊，搞定了。${text}` : `Ah, there we go. ${text}`
+  // Fast Office acknowledgements are already concise and verified. Do not prepend
+  // the same fixed catchphrase on every action; the Visit-level delivery scheduler
+  // handles occasional human-like reactions elsewhere.
+  return text
 }
