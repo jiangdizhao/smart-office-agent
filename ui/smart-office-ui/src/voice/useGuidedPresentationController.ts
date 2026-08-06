@@ -16,6 +16,7 @@ type SessionState =
   | 'slide_waiting'
   | 'answering_question'
   | 'opening_registration'
+  | 'ending'
 
 type ScriptPayload = {
   ok: boolean
@@ -32,15 +33,18 @@ type QuestionPayload = {
   model?: string | null
 }
 
-type StatusPayload = {
+type PresentationStatusData = {
+  current_slide?: number | null
+  total_slides?: number | null
+  slideshow_active?: boolean
+}
+
+type PresentationActionPayload = {
   ok?: boolean
+  operation_id?: string
   status?: {
     ok?: boolean
-    data?: {
-      current_slide?: number | null
-      total_slides?: number | null
-      slideshow_active?: boolean
-    }
+    data?: PresentationStatusData
   }
 }
 
@@ -61,6 +65,13 @@ const CHINESE_NUMBERS: Record<string, number> = {
   四: 4,
 }
 
+const TRANSIENT_STATE_BUDGET_MS: Partial<Record<SessionState, number>> = {
+  slide_narrating: 65_000,
+  answering_question: 18_000,
+  opening_registration: 15_000,
+  ending: 20_000,
+}
+
 let globalPresentationActive = false
 
 export function guidedPresentationActive(): boolean {
@@ -75,13 +86,47 @@ function requestedSlide(text: string): number | null {
   return CHINESE_NUMBERS[token] ?? null
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${OFFICE_API_BASE}${path}`, init)
-  if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(`${path} failed: ${response.status}${detail ? ` ${detail}` : ''}`)
+function abortError(message: string): Error {
+  const error = new Error(message)
+  error.name = 'AbortError'
+  return error
+}
+
+async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+  options: { timeoutMs: number; signal?: AbortSignal },
+): Promise<T> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs)
+  const abortFromParent = () => controller.abort()
+  options.signal?.addEventListener('abort', abortFromParent, { once: true })
+  try {
+    const response = await fetch(`${OFFICE_API_BASE}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...(init.body === undefined ? {} : { 'Content-Type': 'application/json; charset=utf-8' }),
+        ...(init.headers ?? {}),
+      },
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(`${path} failed: ${response.status}${detail ? ` ${detail}` : ''}`)
+    }
+    return await response.json() as T
+  } catch (error) {
+    if (controller.signal.aborted) throw abortError(`${path} was cancelled or exceeded ${options.timeoutMs} ms.`)
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortFromParent)
   }
-  return await response.json() as T
+}
+
+function observedSlide(payload: PresentationActionPayload, fallback: number): number {
+  const current = Number(payload.status?.data?.current_slide)
+  return Number.isInteger(current) && current >= 1 && current <= 4 ? current : fallback
 }
 
 function sessionEvent(state: SessionState, slideNumber: number): void {
@@ -108,21 +153,40 @@ export function useGuidedPresentationController(
   controllerRef.current = controller
   const activeRef = useRef(false)
   const stateRef = useRef<SessionState>('inactive')
+  const stateStartedAtRef = useRef(performance.now())
   const slideRef = useRef(1)
   const scriptRef = useRef<ScriptPayload | null>(null)
   const operationRef = useRef(0)
+  const operationAbortRef = useRef<AbortController | null>(null)
 
   const setSessionState = useCallback((state: SessionState, slide = slideRef.current) => {
     stateRef.current = state
+    stateStartedAtRef.current = performance.now()
     slideRef.current = slide
     activeRef.current = state !== 'inactive'
     globalPresentationActive = activeRef.current
     sessionEvent(state, slide)
   }, [])
 
-  const loadScript = useCallback(async (): Promise<ScriptPayload> => {
+  const beginOperation = useCallback((): { id: number; signal: AbortSignal } => {
+    operationAbortRef.current?.abort()
+    const controller = new AbortController()
+    operationAbortRef.current = controller
+    const id = ++operationRef.current
+    return { id, signal: controller.signal }
+  }, [])
+
+  const operationCurrent = useCallback((id: number, signal: AbortSignal): boolean => (
+    id === operationRef.current && !signal.aborted
+  ), [])
+
+  const loadScript = useCallback(async (signal: AbortSignal): Promise<ScriptPayload> => {
     if (scriptRef.current) return scriptRef.current
-    const payload = await requestJson<ScriptPayload>('/api/presentation/session/script')
+    const payload = await requestJson<ScriptPayload>(
+      '/api/presentation/session/script',
+      {},
+      { timeoutMs: 6_000, signal },
+    )
     scriptRef.current = payload
     return payload
   }, [])
@@ -133,11 +197,13 @@ export function useGuidedPresentationController(
     route: string,
     slideNumber: number,
     stateWhileSpeaking: SessionState,
+    operationId: number,
+    signal: AbortSignal,
   ): Promise<boolean> => {
     const clean = text.trim()
-    if (!clean) return false
-    const token = ++operationRef.current
+    if (!clean || !operationCurrent(operationId, signal)) return false
     await controllerRef.current.stopSpeaking()
+    if (!operationCurrent(operationId, signal)) return false
     setSessionState(stateWhileSpeaking, slideNumber)
     directCaption(clean, route, slideNumber)
     registerVoiceOutputContext(clean, {
@@ -159,134 +225,250 @@ export function useGuidedPresentationController(
     try {
       await voiceOutputManager.speak(clean, language, {
         lease: visitLeaseRegistry.current(),
-        signal: visitLeaseRegistry.current()?.signal,
+        signal,
         purpose: route,
         replyMode: 'exact_operational',
         expectUserResponse: true,
       })
-      return token === operationRef.current
+      return operationCurrent(operationId, signal)
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return false
       throw error
     }
-  }, [setSessionState])
+  }, [operationCurrent, setSessionState])
 
-  const status = useCallback(async (): Promise<number> => {
-    const payload = await requestJson<StatusPayload>('/api/presentation/status')
-    const current = Number(payload.status?.data?.current_slide ?? 1)
-    return Number.isFinite(current) && current >= 1 ? current : 1
+  const action = useCallback(async (
+    path: string,
+    body: unknown | undefined,
+    timeoutMs: number,
+    signal: AbortSignal,
+    fallbackSlide: number,
+  ): Promise<number> => {
+    const payload = await requestJson<PresentationActionPayload>(
+      path,
+      {
+        method: 'POST',
+        body: body === undefined ? undefined : JSON.stringify(body),
+      },
+      { timeoutMs, signal },
+    )
+    if (payload.ok === false) throw new Error(`${path} returned an unsuccessful PowerPoint result.`)
+    return observedSlide(payload, fallbackSlide)
   }, [])
 
-  const action = useCallback(async (path: string, body?: unknown): Promise<number> => {
-    await requestJson(path, {
-      method: 'POST',
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json; charset=utf-8' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    return await status()
-  }, [status])
-
-  const narrateSlide = useCallback(async (slideNumber: number, language: VoiceLanguage): Promise<void> => {
-    const script = await loadScript()
+  const narrateSlide = useCallback(async (
+    slideNumber: number,
+    language: VoiceLanguage,
+    operationId: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const script = await loadScript(signal)
     const narration = script.slides[String(slideNumber)]?.narration?.trim()
     if (!narration) {
-      setSessionState(slideNumber === 1 ? 'cover_waiting' : 'slide_waiting', slideNumber)
+      if (operationCurrent(operationId, signal)) {
+        setSessionState(slideNumber === 1 ? 'cover_waiting' : 'slide_waiting', slideNumber)
+      }
       return
     }
-    const completed = await speakExact(
-      narration,
-      language,
-      'presentation_slide_narration',
-      slideNumber,
-      'slide_narrating',
-    )
-    if (completed) setSessionState('slide_waiting', slideNumber)
-  }, [loadScript, setSessionState, speakExact])
+    try {
+      await speakExact(
+        narration,
+        language,
+        'presentation_slide_narration',
+        slideNumber,
+        'slide_narrating',
+        operationId,
+        signal,
+      )
+    } finally {
+      if (operationCurrent(operationId, signal)) setSessionState('slide_waiting', slideNumber)
+    }
+  }, [loadScript, operationCurrent, setSessionState, speakExact])
 
-  const startSession = useCallback(async (language: VoiceLanguage): Promise<void> => {
-    const script = await loadScript()
+  const startSession = useCallback(async (
+    language: VoiceLanguage,
+    operationId: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    setSessionState('cover_waiting', 1)
+    const script = await loadScript(signal)
     await controllerRef.current.stopSpeaking()
-    await action('/api/presentation/open')
-    await action('/api/presentation/slideshow/start')
-    await action('/api/presentation/slideshow/goto', { slide_number: 1 })
-    const intro = script.cover_intro[language] || script.cover_intro.zh
-    const completed = await speakExact(
-      intro,
-      language,
-      'presentation_cover_intro',
+    const current = await action(
+      '/api/presentation/guided/start',
+      undefined,
+      28_000,
+      signal,
       1,
-      'cover_waiting',
     )
-    if (completed) setSessionState('cover_waiting', 1)
-  }, [action, loadScript, setSessionState, speakExact])
+    if (!operationCurrent(operationId, signal)) return
+    slideRef.current = current
+    const intro = script.cover_intro[language] || script.cover_intro.zh
+    try {
+      await speakExact(
+        intro,
+        language,
+        'presentation_cover_intro',
+        1,
+        'cover_waiting',
+        operationId,
+        signal,
+      )
+    } finally {
+      if (operationCurrent(operationId, signal)) setSessionState('cover_waiting', 1)
+    }
+  }, [action, loadScript, operationCurrent, setSessionState, speakExact])
 
-  const moveTo = useCallback(async (slideNumber: number, language: VoiceLanguage): Promise<void> => {
+  const moveTo = useCallback(async (
+    slideNumber: number,
+    language: VoiceLanguage,
+    operationId: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
     await controllerRef.current.stopSpeaking()
-    const current = await action('/api/presentation/slideshow/goto', { slide_number: slideNumber })
+    const current = await action(
+      '/api/presentation/slideshow/goto',
+      { slide_number: slideNumber },
+      6_000,
+      signal,
+      slideNumber,
+    )
+    if (!operationCurrent(operationId, signal)) return
     slideRef.current = current
     if (current === 1) {
-      const script = await loadScript()
+      const script = await loadScript(signal)
       const intro = script.cover_intro[language] || script.cover_intro.zh
-      const completed = await speakExact(intro, language, 'presentation_cover_intro', 1, 'cover_waiting')
-      if (completed) setSessionState('cover_waiting', 1)
+      try {
+        await speakExact(
+          intro,
+          language,
+          'presentation_cover_intro',
+          1,
+          'cover_waiting',
+          operationId,
+          signal,
+        )
+      } finally {
+        if (operationCurrent(operationId, signal)) setSessionState('cover_waiting', 1)
+      }
       return
     }
-    await narrateSlide(current, language)
-  }, [action, loadScript, narrateSlide, setSessionState, speakExact])
+    await narrateSlide(current, language, operationId, signal)
+  }, [action, loadScript, narrateSlide, operationCurrent, setSessionState, speakExact])
 
-  const answerQuestion = useCallback(async (question: string, language: VoiceLanguage): Promise<void> => {
+  const answerQuestion = useCallback(async (
+    question: string,
+    language: VoiceLanguage,
+    operationId: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
     const slideNumber = slideRef.current
     if (slideNumber < 2 || slideNumber > 4) {
       await controllerRef.current.submit(question, 'voice')
       return
     }
     await controllerRef.current.stopSpeaking()
+    if (!operationCurrent(operationId, signal)) return
     setSessionState('answering_question', slideNumber)
-    const payload = await requestJson<QuestionPayload>('/api/presentation/session/answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({
-        slide_number: slideNumber,
-        question,
+    let openingRegistration = false
+    try {
+      const payload = await requestJson<QuestionPayload>(
+        '/api/presentation/session/answer',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            slide_number: slideNumber,
+            question,
+            language,
+          }),
+        },
+        { timeoutMs: 14_000, signal },
+      )
+      if (!operationCurrent(operationId, signal)) return
+      const route = payload.open_registration
+        ? 'presentation_knowledge_fallback'
+        : 'presentation_slide_answer'
+      openingRegistration = payload.open_registration
+      const completed = await speakExact(
+        payload.spoken_text,
         language,
-      }),
-    })
-    const route = payload.open_registration
-      ? 'presentation_knowledge_fallback'
-      : 'presentation_slide_answer'
-    const completed = await speakExact(
-      payload.spoken_text,
-      language,
-      route,
-      slideNumber,
-      payload.open_registration ? 'opening_registration' : 'answering_question',
-    )
-    if (!completed) return
-    if (payload.open_registration) {
-      await openInteractionWindow({
-        kind: 'contact',
-        conversationId: controllerRef.current.conversationId,
-        visitId: visitLeaseRegistry.current()?.visitId ?? null,
-        language,
-      })
+        route,
+        slideNumber,
+        payload.open_registration ? 'opening_registration' : 'answering_question',
+        operationId,
+        signal,
+      )
+      if (!completed || !operationCurrent(operationId, signal)) return
+      if (payload.open_registration) {
+        await openInteractionWindow({
+          kind: 'contact',
+          conversationId: controllerRef.current.conversationId,
+          visitId: visitLeaseRegistry.current()?.visitId ?? null,
+          language,
+        })
+      }
+    } finally {
+      if (operationCurrent(operationId, signal)) {
+        setSessionState('slide_waiting', slideNumber)
+      } else if (openingRegistration && activeRef.current && stateRef.current === 'opening_registration') {
+        setSessionState('slide_waiting', slideNumber)
+      }
     }
-    setSessionState('slide_waiting', slideNumber)
-  }, [setSessionState, speakExact])
+  }, [operationCurrent, setSessionState, speakExact])
 
-  const finishAfterLastSlide = useCallback(async (language: VoiceLanguage): Promise<void> => {
-    await controllerRef.current.stopSpeaking()
-    await action('/api/presentation/slideshow/goto', { slide_number: 1 })
-    await action('/api/presentation/slideshow/end')
-    const ending = language === 'en' ? END_OF_DECK_EN : END_OF_DECK_ZH
-    const completed = await speakExact(
-      ending,
-      language,
-      'presentation_completed',
-      1,
-      'slide_waiting',
-    )
-    if (completed) setSessionState('inactive', 1)
-  }, [action, setSessionState, speakExact])
+  const finishAfterLastSlide = useCallback(async (
+    language: VoiceLanguage,
+    operationId: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    setSessionState('ending', 4)
+    try {
+      await controllerRef.current.stopSpeaking()
+      try {
+        await action(
+          '/api/presentation/guided/finish',
+          undefined,
+          16_000,
+          signal,
+          1,
+        )
+      } catch (error) {
+        if (!(error instanceof Error && error.name === 'AbortError')) {
+          console.error('[GuidedPresentation] finish-action-failed', error)
+        }
+      }
+      if (!operationCurrent(operationId, signal)) return
+      const ending = language === 'en' ? END_OF_DECK_EN : END_OF_DECK_ZH
+      await speakExact(
+        ending,
+        language,
+        'presentation_completed',
+        1,
+        'ending',
+        operationId,
+        signal,
+      )
+    } finally {
+      setSessionState('inactive', 1)
+    }
+  }, [action, operationCurrent, setSessionState, speakExact])
+
+  const endSessionSilently = useCallback(async (
+    signal: AbortSignal,
+  ): Promise<void> => {
+    setSessionState('ending', slideRef.current)
+    try {
+      await controllerRef.current.stopSpeaking()
+      await action(
+        '/api/presentation/guided/finish',
+        undefined,
+        16_000,
+        signal,
+        1,
+      ).catch(() => undefined)
+    } finally {
+      setSessionState('inactive', 1)
+    }
+  }, [action, setSessionState])
 
   const submit = useCallback(async (
     text: string,
@@ -296,67 +478,139 @@ export function useGuidedPresentationController(
     if (!clean) return
     const language = /[\u3400-\u9fff]/.test(clean) ? 'zh' : controllerRef.current.language
 
-    if (!activeRef.current) {
-      if (START_PRESENTATION.test(clean)) {
-        await startSession(language)
-        return
-      }
+    if (!activeRef.current && !START_PRESENTATION.test(clean)) {
       await controllerRef.current.submit(text, source)
       return
     }
 
-    if (END_PRESENTATION.test(clean)) {
-      await controllerRef.current.stopSpeaking()
-      await action('/api/presentation/slideshow/goto', { slide_number: 1 })
-      await action('/api/presentation/slideshow/end')
-      setSessionState('inactive', 1)
-      return
-    }
-    if (PAUSE_PRESENTATION.test(clean)) {
-      await controllerRef.current.stopSpeaking()
-      setSessionState(slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting', slideRef.current)
-      return
-    }
-    if (RESUME_PRESENTATION.test(clean)) {
-      if (slideRef.current === 1) {
-        const script = await loadScript()
-        const intro = script.cover_intro[language] || script.cover_intro.zh
-        const completed = await speakExact(intro, language, 'presentation_cover_intro', 1, 'cover_waiting')
-        if (completed) setSessionState('cover_waiting', 1)
-      } else {
-        await narrateSlide(slideRef.current, language)
-      }
-      return
-    }
-    if (NEXT_SLIDE.test(clean)) {
-      if (slideRef.current >= 4) {
-        await finishAfterLastSlide(language)
+    const operation = beginOperation()
+    try {
+      if (!activeRef.current) {
+        await startSession(language, operation.id, operation.signal)
         return
       }
-      await moveTo(slideRef.current + 1, language)
-      return
+      if (END_PRESENTATION.test(clean)) {
+        await endSessionSilently(operation.signal)
+        return
+      }
+      if (PAUSE_PRESENTATION.test(clean)) {
+        await controllerRef.current.stopSpeaking()
+        if (operationCurrent(operation.id, operation.signal)) {
+          setSessionState(slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting', slideRef.current)
+        }
+        return
+      }
+      if (RESUME_PRESENTATION.test(clean)) {
+        if (slideRef.current === 1) {
+          const script = await loadScript(operation.signal)
+          const intro = script.cover_intro[language] || script.cover_intro.zh
+          try {
+            await speakExact(
+              intro,
+              language,
+              'presentation_cover_intro',
+              1,
+              'cover_waiting',
+              operation.id,
+              operation.signal,
+            )
+          } finally {
+            if (operationCurrent(operation.id, operation.signal)) setSessionState('cover_waiting', 1)
+          }
+        } else {
+          await narrateSlide(slideRef.current, language, operation.id, operation.signal)
+        }
+        return
+      }
+      if (NEXT_SLIDE.test(clean)) {
+        if (slideRef.current >= 4) {
+          await finishAfterLastSlide(language, operation.id, operation.signal)
+          return
+        }
+        await moveTo(slideRef.current + 1, language, operation.id, operation.signal)
+        return
+      }
+      if (PREVIOUS_SLIDE.test(clean)) {
+        await moveTo(Math.max(1, slideRef.current - 1), language, operation.id, operation.signal)
+        return
+      }
+      const target = requestedSlide(clean)
+      if (target !== null) {
+        await moveTo(
+          Math.max(1, Math.min(4, target)),
+          language,
+          operation.id,
+          operation.signal,
+        )
+        return
+      }
+      await answerQuestion(clean, language, operation.id, operation.signal)
+    } catch (error) {
+      const aborted = error instanceof Error && error.name === 'AbortError'
+      if (!aborted) console.error('[GuidedPresentation] operation-failed', error)
+      if (activeRef.current && stateRef.current !== 'ending') {
+        setSessionState(slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting', slideRef.current)
+      }
     }
-    if (PREVIOUS_SLIDE.test(clean)) {
-      await moveTo(Math.max(1, slideRef.current - 1), language)
-      return
-    }
-    const target = requestedSlide(clean)
-    if (target !== null) {
-      await moveTo(Math.max(1, Math.min(4, target)), language)
-      return
-    }
-
-    await answerQuestion(clean, language)
-  }, [action, answerQuestion, finishAfterLastSlide, loadScript, moveTo, narrateSlide, setSessionState, speakExact, startSession])
+  }, [
+    answerQuestion,
+    beginOperation,
+    endSessionSilently,
+    finishAfterLastSlide,
+    loadScript,
+    moveTo,
+    narrateSlide,
+    operationCurrent,
+    setSessionState,
+    speakExact,
+    startSession,
+  ])
 
   useEffect(() => {
     const reset = () => {
+      operationAbortRef.current?.abort()
+      operationAbortRef.current = null
       operationRef.current += 1
       setSessionState('inactive', 1)
       scriptRef.current = null
     }
+    const onBargeIn = () => {
+      if (!activeRef.current) return
+      const state = stateRef.current
+      if (!['slide_narrating', 'answering_question', 'opening_registration'].includes(state)) return
+      operationAbortRef.current?.abort()
+      operationRef.current += 1
+      void voiceOutputManager.stop('presentation-visitor-barge-in')
+      setSessionState(slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting', slideRef.current)
+    }
     window.addEventListener('smartoffice:visit-revoked', reset)
-    return () => window.removeEventListener('smartoffice:visit-revoked', reset)
+    window.addEventListener('smartoffice:realtime-vad-speech-started', onBargeIn)
+    return () => {
+      window.removeEventListener('smartoffice:visit-revoked', reset)
+      window.removeEventListener('smartoffice:realtime-vad-speech-started', onBargeIn)
+    }
+  }, [setSessionState])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const state = stateRef.current
+      const budget = TRANSIENT_STATE_BUDGET_MS[state]
+      if (!budget || performance.now() - stateStartedAtRef.current <= budget) return
+      console.error('[GuidedPresentation] state-watchdog-recovery', {
+        state,
+        slide: slideRef.current,
+        elapsedMs: Math.round(performance.now() - stateStartedAtRef.current),
+        budgetMs: budget,
+      })
+      operationAbortRef.current?.abort()
+      operationRef.current += 1
+      void voiceOutputManager.stop('presentation-state-watchdog')
+      setSessionState(
+        state === 'ending' ? 'inactive' : slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting',
+        state === 'ending' ? 1 : slideRef.current,
+      )
+    }, 1_000)
+    return () => window.clearInterval(timer)
   }, [setSessionState])
 
   return {
