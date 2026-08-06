@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.openai_services import generate_response_text
 
-router = APIRouter(prefix="/api/presentation/session", tags=["presentation-session"])
+router = APIRouter(prefix="/session", tags=["presentation-session"])
 
 Language = Literal["zh", "en"]
 _FALLBACK_ZH = "我们今天时间有限，详细的细节欢迎私下与我们讨论，可以留下您的联系方式，我后续会为您服务。"
@@ -222,7 +222,7 @@ async def presentation_session_answer(req: PresentationQuestionRequest) -> Prese
             model=used_model,
             source_path=str(path),
         )
-    except Exception as exc:
+    except Exception:
         # Do not improvise when the grounded answer service is unavailable.
         fallback = _FALLBACK_EN if req.language == "en" else _FALLBACK_ZH
         return PresentationQuestionResponse(
