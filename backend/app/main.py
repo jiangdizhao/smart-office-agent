@@ -43,6 +43,7 @@ from app.task_logger import log_task_record
 from app.tool_registry import run_tool
 from app.turn_api import router as turn_router
 from app import visitor_context_linking_patch as _visitor_context_linking_patch  # noqa: F401
+from app import conversation_style_patch as _conversation_style_patch  # noqa: F401
 
 install_lightweight_system_status_policy()
 start_display_role_service()
