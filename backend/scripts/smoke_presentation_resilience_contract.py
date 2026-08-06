@@ -76,6 +76,8 @@ def main() -> None:
         "'/api/presentation/guided/finish'",
         "setSessionState('inactive', 1)",
         "sessionWasActive",
+        "any explicit PowerPoint/PPT",
+        "const START_PRESENTATION = /(?:\\bppt\\b|\\bpower\\s*point\\b|\\bpowerpoint\\b|幻灯片|演示文稿)/i",
     )
 
     preemptive = source(
