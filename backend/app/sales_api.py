@@ -220,6 +220,7 @@ def sales_status() -> dict:
             "consent_gated_sales_profile_persistence",
             "visit_scoped_invitation_limits",
             "allowlisted_repeated_demo_delegation",
+            "single_post_value_contact_offer",
             "fast_role_to_contact_funnel",
             "two_sentence_sales_limit",
         ],
@@ -387,7 +388,7 @@ def demonstration_policy(
     decision = sales_runtime_policy.demonstration_decision(
         capability_id,
         language=language,
-        explicit_demo_request_count=explicit_request_count,
+        explicit_request_count=explicit_request_count,
     )
     return {
         "ok": decision.capability_status != "unknown",
