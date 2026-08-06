@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import zipfile
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from app.models import ToolResult, VerificationResult
@@ -41,6 +42,12 @@ PRESENTATION_TOOL_NAMES: set[str] = {
     "presentation_get_status",
     "presentation_end_slideshow",
     "presentation_close",
+}
+
+_FAST_NAVIGATION_NAMES = {
+    "presentation_next_slide",
+    "presentation_previous_slide",
+    "presentation_go_to_slide",
 }
 
 
@@ -116,19 +123,19 @@ def _ensure_content_display(
     tool_result: ToolResult,
     status: ToolResult,
 ) -> dict[str, Any] | None:
-    if name in {"presentation_close", "presentation_end_slideshow", "presentation_get_status"}:
+    if name in {
+        "presentation_close",
+        "presentation_end_slideshow",
+        "presentation_get_status",
+        *_FAST_NAVIGATION_NAMES,
+    }:
         return None
 
     existing = tool_result.data.get("window_placement")
     if isinstance(existing, dict) and existing.get("placement_verified"):
         return existing
 
-    slideshow = name in {
-        "presentation_start_slideshow",
-        "presentation_next_slide",
-        "presentation_previous_slide",
-        "presentation_go_to_slide",
-    }
+    slideshow = name == "presentation_start_slideshow"
     title_keywords = (
         (
             "PowerPoint Slide Show",
@@ -155,14 +162,7 @@ def _merge_monitor_verification(
     *,
     slideshow_active: bool,
 ) -> VerificationResult:
-    """Retain monitor observations without making them a success condition."""
-
-    monitor_relevant = slideshow_active and name in {
-        "presentation_start_slideshow",
-        "presentation_next_slide",
-        "presentation_previous_slide",
-        "presentation_go_to_slide",
-    }
+    monitor_relevant = slideshow_active and name == "presentation_start_slideshow"
     monitor_ok = bool(monitor_state.get("monitor_placement_enforced"))
     return verification.model_copy(
         update={
@@ -186,9 +186,6 @@ def _merge_desktop_verification(
     placement_relevant = name in {
         "presentation_open_configured",
         "presentation_start_slideshow",
-        "presentation_next_slide",
-        "presentation_previous_slide",
-        "presentation_go_to_slide",
     }
     placement_ok = bool(placement and placement.get("placement_verified"))
     return verification.model_copy(
@@ -229,15 +226,6 @@ def _align_status_with_successful_action(
     verification: VerificationResult,
     status: ToolResult,
 ) -> ToolResult:
-    """Keep the spoken result aligned with a successful bounded action.
-
-    When a new worker cannot reconnect through the PowerPoint ROT immediately, the
-    verifier may legitimately use the successful COM action as secondary evidence.
-    The status envelope must then carry the requested state instead of stale False/
-    None values; otherwise the response layer can say the action failed or report
-    "None" even though the visible action completed.
-    """
-
     if (
         not verification.ok
         or verification.raw.get("verification_source") != "successful_action_result"
@@ -275,11 +263,7 @@ def _align_status_with_successful_action(
     elif name == "presentation_start_slideshow":
         data["slideshow_active"] = True
         data["current_slide"] = requested.get("current_slide") or data.get("current_slide") or 1
-    elif name in {
-        "presentation_next_slide",
-        "presentation_previous_slide",
-        "presentation_go_to_slide",
-    }:
+    elif name in _FAST_NAVIGATION_NAMES:
         data["slideshow_active"] = True
         if isinstance(requested.get("current_slide"), int):
             data["current_slide"] = requested["current_slide"]
@@ -301,6 +285,29 @@ def _align_status_with_successful_action(
     data["status_aligned_from_successful_action"] = True
     data["status_alignment_source"] = verification.raw.get("verification_source")
     return status.model_copy(update={"data": data})
+
+
+def _fast_action_verification(tool_result: ToolResult) -> VerificationResult:
+    return VerificationResult(
+        ok=tool_result.ok,
+        message=(
+            "PowerPoint COM accepted the navigation action. Synchronous polling was skipped."
+            if tool_result.ok
+            else tool_result.message
+        ),
+        process_ok=True if tool_result.ok else None,
+        window_ok=True if tool_result.ok else None,
+        expected_process_names=list(tool_result.expected_process_names),
+        expected_window_keywords=list(tool_result.expected_window_keywords),
+        require_window_match=False,
+        raw={
+            "verification_source": "successful_action_result",
+            "synchronous_polling": False,
+            "window_repositioning": False,
+            "exhibition_fast_navigation": True,
+        },
+        checked_at=datetime.now(UTC),
+    )
 
 
 def execute_presentation_tool_call(
@@ -377,6 +384,16 @@ def execute_presentation_tool_call(
             tool_result = end_configured_slideshow()
         else:
             tool_result = close_powerpoint_discarding_changes()
+
+    # Slide navigation is an exhibition control, not a safety-sensitive workflow.
+    # A successful COM return is the final synchronous result. One lightweight
+    # status read keeps the UI current, while polling and DISPLAY2 repositioning are
+    # deliberately skipped.
+    if name in _FAST_NAVIGATION_NAMES:
+        verification = _fast_action_verification(tool_result)
+        status = get_presentation_status()
+        status = _align_status_with_successful_action(name, tool_result, verification, status)
+        return tool_result, verification, status
 
     status = get_presentation_status()
     placement = _ensure_content_display(name, tool_result, status)
