@@ -1,4 +1,5 @@
 import './nonBlockingTurnErrors.css'
+import './realtimeLatestUtterancePatch'
 import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
 import type { OfficeVoiceController } from './useOfficeVoiceController'
 import { realtimeAgent } from './realtimeAgentRuntime'
