@@ -48,8 +48,7 @@ html[data-smart-office-route='virtual-host'] body {
   display: none !important;
 }
 
-/* Keep status, portrait, caption and microphone prompt as one composition.
-   Top padding lowers the whole group without introducing independent transforms. */
+/* Keep status, portrait, caption and microphone prompt as one composition. */
 .virtual-host-stage {
   position: relative;
   z-index: 2;
@@ -61,9 +60,9 @@ html[data-smart-office-route='virtual-host'] body {
   align-items: center !important;
   flex-direction: column !important;
   justify-content: flex-start !important;
-  gap: clamp(10px, 1.35svh, 18px) !important;
+  gap: clamp(8px, 1.1svh, 14px) !important;
   margin: 0 auto !important;
-  padding: clamp(22px, 3.2svh, 38px) 0 10px !important;
+  padding: clamp(14px, 2.2svh, 26px) 0 8px !important;
 }
 
 .virtual-host-status {
@@ -75,33 +74,34 @@ html[data-smart-office-route='virtual-host'] body {
   transform: none !important;
 }
 
-/* Height drives both dimensions. The fixed aspect ratio guarantees that increasing
-   the portrait height also increases its width without stretching Sara. */
+/* Enlarge Sara proportionally. A small upward visual offset gives the portrait more
+   room while keeping the caption and microphone controls in normal document flow. */
 .virtual-host-avatar.video-host-avatar {
   position: relative !important;
   flex: 0 0 auto;
   width: auto !important;
-  height: clamp(480px, 64svh, 700px) !important;
+  height: clamp(540px, 70svh, 790px) !important;
   min-width: 0 !important;
   min-height: 0 !important;
-  max-width: min(50vw, 660px) !important;
+  max-width: min(58vw, 760px) !important;
   max-height: none !important;
   aspect-ratio: 538 / 720 !important;
   margin: 0 !important;
-  transform: none !important;
+  transform: translateY(-24px) !important;
+  transform-origin: center top !important;
 }
 
 .live-caption {
   position: relative !important;
   flex: 0 0 auto;
-  width: min(760px, 72vw) !important;
+  width: min(780px, 74vw) !important;
   min-height: 72px !important;
   max-height: 108px !important;
   overflow: hidden !important;
   box-sizing: border-box;
   align-self: center !important;
   justify-self: auto !important;
-  margin: 0 !important;
+  margin: -10px 0 0 !important;
   padding: 12px 24px 14px !important;
   transform: none !important;
   border: 1px solid rgba(144, 103, 67, 0.22) !important;
@@ -118,7 +118,7 @@ html[data-smart-office-route='virtual-host'] body {
   min-width: 0 !important;
   box-sizing: border-box;
   align-self: center !important;
-  margin: 2px 0 0 !important;
+  margin: 6px 0 0 !important;
   padding: 11px 22px !important;
   transform: none !important;
 }
@@ -127,22 +127,26 @@ html[data-smart-office-route='virtual-host'] body {
    important real-device layout, not the portrait media query. */
 @media (max-height: 820px) {
   .virtual-host-stage {
-    gap: 9px !important;
-    padding: clamp(20px, 3svh, 28px) 0 6px !important;
+    gap: 8px !important;
+    padding: 10px 0 8px !important;
   }
 
   .virtual-host-avatar.video-host-avatar {
-    height: clamp(440px, 64svh, 540px) !important;
-    max-width: min(50vw, 610px) !important;
+    height: clamp(520px, 72svh, 600px) !important;
+    max-width: min(56vw, 700px) !important;
+    transform: translateY(-28px) !important;
   }
 
+  /* The larger portrait consumes more flow height. The negative top margin offsets
+     most of that increase, leaving this whole lower group only slightly lower. */
   .live-caption {
     min-height: 64px !important;
+    margin-top: -46px !important;
     padding-block: 9px 10px !important;
   }
 
   .continuous-voice-card {
-    margin-top: 2px !important;
+    margin-top: 6px !important;
     padding-block: 9px !important;
   }
 }
@@ -159,13 +163,15 @@ html[data-smart-office-route='virtual-host'] body {
   }
 
   .virtual-host-avatar.video-host-avatar {
-    width: min(82vw, 550px) !important;
+    width: min(88vw, 620px) !important;
     height: auto !important;
-    max-width: min(82vw, 550px) !important;
+    max-width: min(88vw, 620px) !important;
+    transform: none !important;
   }
 
   .live-caption {
     width: min(94vw, 680px) !important;
+    margin-top: 4px !important;
   }
 
   .continuous-voice-card {
