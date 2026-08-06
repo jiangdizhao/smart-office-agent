@@ -51,6 +51,8 @@ const PAUSE_PRESENTATION = /^(?:停一下|暂停|先停|别讲了|停止讲解|p
 const RESUME_PRESENTATION = /^(?:继续讲|继续介绍|接着讲|重新讲这一页|resume|continue speaking)\s*[。.!！]?$/i
 const END_PRESENTATION = /^(?:结束演示|停止演示|退出演示|回到第一页|结束ppt|end presentation|stop presentation|exit presentation)\s*[。.!！]?$/i
 const GOTO_SLIDE = /(?:跳到|翻到|切到|转到|前往)\s*第?\s*([一二三四\d]+)\s*(?:页|张)|\b(?:go|jump|move)\s+to\s+(?:slide\s+)?([1-4])\b/i
+const END_OF_DECK_ZH = '当前幻灯片已经结束，想要更多的体验欢迎线下来我们展馆参观。'
+const END_OF_DECK_EN = 'This presentation has ended. For more experiences, you are welcome to visit our exhibition booth in person.'
 
 const CHINESE_NUMBERS: Record<string, number> = {
   一: 1,
@@ -271,6 +273,21 @@ export function useGuidedPresentationController(
     setSessionState('slide_waiting', slideNumber)
   }, [setSessionState, speakExact])
 
+  const finishAfterLastSlide = useCallback(async (language: VoiceLanguage): Promise<void> => {
+    await controllerRef.current.stopSpeaking()
+    await action('/api/presentation/slideshow/goto', { slide_number: 1 })
+    await action('/api/presentation/slideshow/end')
+    const ending = language === 'en' ? END_OF_DECK_EN : END_OF_DECK_ZH
+    const completed = await speakExact(
+      ending,
+      language,
+      'presentation_completed',
+      1,
+      'slide_waiting',
+    )
+    if (completed) setSessionState('inactive', 1)
+  }, [action, setSessionState, speakExact])
+
   const submit = useCallback(async (
     text: string,
     source: 'text' | 'voice' = 'text',
@@ -291,6 +308,7 @@ export function useGuidedPresentationController(
     if (END_PRESENTATION.test(clean)) {
       await controllerRef.current.stopSpeaking()
       await action('/api/presentation/slideshow/goto', { slide_number: 1 })
+      await action('/api/presentation/slideshow/end')
       setSessionState('inactive', 1)
       return
     }
@@ -311,12 +329,11 @@ export function useGuidedPresentationController(
       return
     }
     if (NEXT_SLIDE.test(clean)) {
-      const target = Math.min(4, slideRef.current + 1)
-      if (target === slideRef.current) {
-        setSessionState('slide_waiting', slideRef.current)
+      if (slideRef.current >= 4) {
+        await finishAfterLastSlide(language)
         return
       }
-      await moveTo(target, language)
+      await moveTo(slideRef.current + 1, language)
       return
     }
     if (PREVIOUS_SLIDE.test(clean)) {
@@ -330,7 +347,7 @@ export function useGuidedPresentationController(
     }
 
     await answerQuestion(clean, language)
-  }, [action, answerQuestion, loadScript, moveTo, narrateSlide, setSessionState, speakExact, startSession])
+  }, [action, answerQuestion, finishAfterLastSlide, loadScript, moveTo, narrateSlide, setSessionState, speakExact, startSession])
 
   useEffect(() => {
     const reset = () => {
