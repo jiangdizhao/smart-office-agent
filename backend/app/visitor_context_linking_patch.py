@@ -119,26 +119,10 @@ def _profile_contact_dict(row: sqlite3.Row) -> dict:
 contact_record_api._bind_context_records = _safe_bind_context_records
 contact_record_api._contact_dict = _profile_contact_dict
 
-# Install the unconditional exhibition Office route before any request is handled.
-# The patch keeps negated requests non-executable, but all affirmative PPT mentions
-# and supported Office commands bypass ordinary conversation and semantic safety
-# clarification.
 from app import office_direct_route_patch as _office_direct_route_patch  # noqa: E402,F401
-
-# Patches are installed after the base contact router has defined its endpoint
-# functions. The endpoint resolves these module globals at request time, so the
-# enhanced implementation merges browser events with the authoritative backend
-# conversation store and summarizes casual chat as well as Office activity.
 from app import session_summary_patch as _session_summary_patch  # noqa: E402,F401
 from app import session_summary_followup_patch as _session_summary_followup_patch  # noqa: E402,F401
-
-# Finalized Visit summaries use the language model to synthesize a coherent overview
-# and visitor profile. Drafts and any model/API failure keep the deterministic summary
-# as an explicitly labelled fallback rather than blocking the result center.
 from app import session_summary_llm_patch as _session_summary_llm_patch  # noqa: E402,F401
 from app import session_summary_llm_draft_patch as _session_summary_llm_draft_patch  # noqa: E402,F401
-
-# Install the 09:00-18:00 hourly timeline after the base contact/booking module is
-# loaded. This replaces the built-in fake employee fallback with the real staff
-# catalog from config/demo_meeting_staff.json.
+from app import session_summary_llm_only_patch as _session_summary_llm_only_patch  # noqa: E402,F401
 from app import meeting_hourly_timeline_patch as _meeting_hourly_timeline_patch  # noqa: E402,F401
