@@ -12,40 +12,20 @@ _DISCOUNT = re.compile(r"折扣|优惠|\bdiscounts?\b", re.I)
 _EXPENSIVE = re.compile(r"贵不贵|贵吗|太贵|很贵|\b(?:expensive|too costly|too much)\b", re.I)
 _PRIVACY = re.compile(r"隐私|个人信息|人脸|身份|录音|数据安全|privacy|personal information|face data|identity|data security", re.I)
 _ACTION = re.compile(r"打开|关闭|启动|停止|播放|发送|创建|调整|设置|执行|演示|放映|open|close|launch|start|stop|play|send|create|adjust|set|execute|present", re.I)
-_SUCCESS = re.compile(r"已(?:经)?(?:打开|关闭|完成|设置|调整|发送|创建|启动|停止|验证)|成功|搞定|完成并验证|is open|is closed|completed|verified|successfully|all sorted", re.I)
 _FAILURE = re.compile(r"没有成功|未成功|失败|未完成|没有完成|无法确认|did not complete|did not open|failed|not completed|could not verify", re.I)
 _UNKNOWN = re.compile(r"不知道|不清楚|没有这方面的资料|资料中没有|无法回答|不确定|i don'?t know|not sure|no information|cannot answer|can'?t answer", re.I)
 _UNAVAILABLE = re.compile(r"不能执行|无法执行|暂时不能|目前不能|尚未接入|没有权限|功能未开放|not connected|not available|cannot perform|can'?t perform|not enabled|not implemented", re.I)
-_EXPRESSIVE_ZH = re.compile(r"^(?:啊|哦|嗯|嗯哼|好嘞|好的|好，|行，|来吧|对，|这就|现在我们聊到重点了)")
-_EXPRESSIVE_EN = re.compile(r"^(?:ah|oh|mm|mm-hm|right|well|all right|here we go|there we go|now we're talking)\b", re.I)
-
-_ZH_GENERAL = (
-    "嗯哼，我来看看。",
-    "哦，这就有意思了。",
-    "啊，这就说得通了。",
-    "好，我大概抓到重点了。",
-    "对，就是这个点。",
+_GENERIC_OPENING = re.compile(
+    r"^(?:嗯哼[，,]?我来看看|哦[，,]?我来看看|嗯[，,]?我来看看|"
+    r"好[，,]?我大概抓到重点了|我抓到重点了|"
+    r"Mm-hm,? let me see|Right,? I think I have the picture)[。.!！]?\s*",
+    re.I,
 )
-_EN_GENERAL = (
-    "Mm-hm, let me see.",
-    "Oh, now this is interesting.",
-    "Ah, that makes sense.",
-    "Right, I think I have the picture.",
-    "Now we're talking.",
-)
-_ZH_SUCCESS = ("啊，搞定了。", "好了，漂亮。", "完成，轻轻松松。", "嗯，这次很顺利。", "好，一切就位。")
-_EN_SUCCESS = ("Ah, there we go.", "There we are—lovely.", "Done—nice and easy.", "Mm, that went smoothly.", "Right, everything's in place.")
-_ZH_ACTION = ("啊，来了。", "好嘞，交给我。", "好，我们开始。", "行，我来处理。", "好的，让我和系统聊聊。")
-_EN_ACTION = ("Ah, here we go.", "Right, leave it with me.", "All right, let's do it.", "Right, I'll handle it.", "Okay, let me have a word with the system.")
 
 
 def _pick(values: tuple[str, ...], seed: str) -> str:
     digest = hashlib.sha256(seed.encode("utf-8")).digest()
     return values[int.from_bytes(digest[:4], "big") % len(values)]
-
-
-def _already_expressive(text: str, language: Language) -> bool:
-    return bool((_EXPRESSIVE_ZH if language == "zh" else _EXPRESSIVE_EN).search(text))
 
 
 def _price_reply(user_text: str, language: Language) -> str:
@@ -75,46 +55,38 @@ def _price_reply(user_text: str, language: Language) -> str:
 
 def ensure_human_like_reply(*, user_text: str, answer: str, language: Language) -> str:
     clean_user = " ".join(user_text.split())
-    clean_answer = " ".join(answer.split())
+    clean_answer = _GENERIC_OPENING.sub("", " ".join(answer.split())).strip()
 
     if (_PRICE_ZH if language == "zh" else _PRICE_EN).search(clean_user):
         return _price_reply(clean_user, language)
     if not clean_answer:
         return (
-            "哦，这个问题已经走到我当前资料库的边缘了。它值得一个准确答案，不值得我现场靠气势编一个；我可以把它列为后续确认项，让专业同事接棒。"
+            "这个问题已经走到我当前资料库的边缘了。它值得一个准确答案，不值得我现场靠气势编一个；我可以把它列为后续确认项，让专业同事接棒。"
             if language == "zh"
-            else "Oh, you've reached the edge of my current knowledge base. It deserves an accurate answer rather than one improvised with confidence; I can mark it for follow-up by the relevant specialist."
+            else "This question has reached the edge of my current knowledge base. It deserves an accurate answer rather than one improvised with confidence; I can mark it for specialist follow-up."
         )
     if _PRIVACY.search(clean_user) or _PRIVACY.search(clean_answer):
-        if _already_expressive(clean_answer, language):
-            return clean_answer
-        return ("嗯，我明白您的顾虑。" if language == "zh" else "Mm, I understand the concern. ") + clean_answer
+        return clean_answer
     if _FAILURE.search(clean_answer):
         return (
-            f"嗯，后台刚才眨了一下眼睛，这次还没有完成。{clean_answer} 我可以再试一次，或者帮您换一种方式。"
+            f"后台刚才眨了一下眼睛，这次还没有完成。{clean_answer} 我可以再试一次，或者换一种方式。"
             if language == "zh"
-            else f"Mm, the backend blinked for a moment, so that action has not completed. {clean_answer} I can try again or take a different route."
+            else f"The backend blinked for a moment, so that action has not completed. {clean_answer} I can try again or take a different route."
         )
     if _UNAVAILABLE.search(clean_answer) or (_ACTION.search(clean_user) and _UNKNOWN.search(clean_answer)):
         return (
-            "啊，这项技能今天还没装到我的工具箱里，不过别急，我也在跟着 AI 一起进步。现在我可以先演示最接近的流程，或者帮您完成已经接入的部分。"
+            "这项技能今天还没装到我的工具箱里，不过我可以先演示最接近的流程，或者完成已经接入的部分。"
             if language == "zh"
-            else "Ah, that skill has not reached my toolbox just yet, but don't worry—I'm evolving with AI. For now, I can demonstrate the closest workflow or complete the part that is already connected."
+            else "That skill has not reached my toolbox yet, but I can demonstrate the closest workflow or complete the part that is already connected."
         )
     if _UNKNOWN.search(clean_answer):
         return (
-            "哦，这个问题已经走到我当前资料库的边缘了。它值得一个准确答案，不值得我现场靠气势编一个；我可以把它列为后续确认项，让专业同事接棒。"
+            "这个问题已经走到我当前资料库的边缘了。它值得一个准确答案，不值得我现场靠气势编一个；我可以把它列为后续确认项，让专业同事接棒。"
             if language == "zh"
-            else "Oh, you've reached the edge of my current knowledge base. It deserves an accurate answer rather than one improvised with confidence; I can mark it for follow-up by the relevant specialist."
+            else "This question has reached the edge of my current knowledge base. It deserves an accurate answer rather than one improvised with confidence; I can mark it for specialist follow-up."
         )
-    if _already_expressive(clean_answer, language):
-        return clean_answer
 
-    seed = f"{clean_user}|{clean_answer}"
-    if _SUCCESS.search(clean_answer):
-        reaction = _pick(_ZH_SUCCESS if language == "zh" else _EN_SUCCESS, seed)
-    elif _ACTION.search(clean_user):
-        reaction = _pick(_ZH_ACTION if language == "zh" else _EN_ACTION, seed)
-    else:
-        reaction = _pick(_ZH_GENERAL if language == "zh" else _EN_GENERAL, seed)
-    return f"{reaction} {clean_answer}".strip()
+    # Normal conversational answers stay unprefixed here. The browser's Visit-level
+    # scheduler decorates only every second reply and alternates expression types,
+    # preventing two independent layers from repeating the same catchphrase.
+    return clean_answer
