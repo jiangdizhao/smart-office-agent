@@ -1,5 +1,3 @@
-import './unconditionalOfficeInterpreterPatch'
-
 const PRESENTATION_TERM = /(?:power\s*point|powerpoint|\bppt\b|幻灯片|演示文稿|\bslides?\b|slide\s*show|slideshow|presentation)/i
 const OPEN_PRESENTATION = /(?:打开|开启|启动|运行|调出|弄出|\bopen\b|\blaunch\b).{0,14}(?:power\s*point|powerpoint|\bppt\b|幻灯片|演示文稿|presentation)|(?:power\s*point|powerpoint|\bppt\b|幻灯片|演示文稿|presentation).{0,14}(?:打开|开启|启动|运行|调出|弄出|\bopen\b|\blaunch\b)/i
 const CLOSE_PRESENTATION = /(?:关闭|关掉|退出|\bclose\b|\bquit\b|\bexit\b).{0,14}(?:power\s*point|powerpoint|\bppt\b|演示文稿|presentation)|(?:power\s*point|powerpoint|\bppt\b|演示文稿|presentation).{0,14}(?:关闭|关掉|退出|\bclose\b|\bquit\b|\bexit\b)/i
@@ -101,8 +99,6 @@ export function deterministicPresentationSteps(
 
   if (currentSlideInsightMode(clean) !== null) return null
 
-  // Cross-domain requests remain in the Office domain, but defer intact to the
-  // unified Office planner so no requested action (for example volume) is dropped.
   if (OTHER_DOMAIN.test(clean)) return null
 
   if (LAST_SLIDE.test(clean)) {
