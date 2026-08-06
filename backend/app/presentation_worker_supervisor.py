@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 from uuid import uuid4
 
+from app import windows_window_placement_tasklist_patch as _tasklist_timeout_patch  # noqa: F401
 from app.models import ToolResult, VerificationResult
 
 
@@ -329,7 +330,15 @@ class PresentationWorkerSupervisor:
             name="smart-office-powerpoint-worker",
             daemon=True,
         )
-        self._process.start()
+        previous_worker_marker = os.environ.get("SMART_OFFICE_WORKER_CHILD")
+        os.environ["SMART_OFFICE_WORKER_CHILD"] = "1"
+        try:
+            self._process.start()
+        finally:
+            if previous_worker_marker is None:
+                os.environ.pop("SMART_OFFICE_WORKER_CHILD", None)
+            else:
+                os.environ["SMART_OFFICE_WORKER_CHILD"] = previous_worker_marker
 
     def _stop_worker(self) -> None:
         process = self._process
