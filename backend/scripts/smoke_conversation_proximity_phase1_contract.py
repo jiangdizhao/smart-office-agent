@@ -80,8 +80,9 @@ def verify_phase1_registered_opening() -> None:
         assert opening["reply_mode"] == "opening"
         assert opening["purpose"] == "sales_opening"
         assert opening["humour_theme"] is None
-        assert opening["question_field"] == "interested_capabilities"
-        assert opening["delivery"]["style"] == "warm_confident"
+        assert opening["question_field"] == "role"
+        assert "management, customer communication or technical delivery" in opening["text"]
+        assert opening["delivery"]["style"] == "light_playful"
         assert payload["registered_return"] is True
 
 
@@ -94,9 +95,9 @@ def main() -> None:
     finally:
         legacy.TestClient = original
     print(
-        "PASS: Phase 1 registered visitors receive the full controlled sales opening "
-        "without humour, while the complete legacy Visit, task, memory, Realtime, VAD "
-        "and remote-vision lifecycle contract remains intact."
+        "PASS: Phase 1 registered visitors receive the compact role-first sales opening "
+        "without textual humour, while the complete legacy Visit, task, memory, Realtime, "
+        "VAD and remote-vision lifecycle contract remains intact."
     )
 
 
