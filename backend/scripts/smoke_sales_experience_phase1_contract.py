@@ -39,25 +39,22 @@ def main() -> None:
     assert opening.reply_mode == "opening"
     assert opening.purpose == "sales_opening"
     assert opening.expect_user_response is True
-    assert opening.question_field == "industry"
+    assert opening.question_field == "role"
     assert "数字管理员" in opening.text
     assert "企业解决方案顾问" in opening.text
+    assert "您主要从事什么工作" in opening.text
     assert "虚拟接待员" not in opening.text
     assert "虚拟助手" not in opening.text
     assert "PowerPoint 语音控制、Outlook 助手" not in opening.text
-    assert opening.humour_theme in {
-        "digital_employee_intro",
-        "office_resources",
-        "multilingual",
-    }
-    assert opening.delivery.style in {"light_playful", "warm_confident"}
+    assert opening.humour_theme is None
+    assert opening.delivery.style == "light_playful"
     assert opening.delivery.question_tone == "curious"
     assert opening.delivery.pause_before_question is True
 
     session = sales_session_store.snapshot(conversation, visit)
     assert session is not None
-    assert "industry" in session.asked_fields
-    assert session.humour_used_count == 1
+    assert "role" in session.asked_fields
+    assert session.humour_used_count == 0
 
     first = sales_experience.plan_proactive(
         SalesExperienceProactiveRequest(
@@ -70,8 +67,8 @@ def main() -> None:
     assert first.reply is not None
     assert first.reply.purpose == "sales_proactive_first"
     assert first.reply.expect_user_response is True
-    assert first.reply.question_field == "industry"
-    assert "不方便说具体行业也没关系" in first.reply.text
+    assert first.reply.question_field == "role"
+    assert "按您的岗位来演示" in first.reply.text
     assert first.reply.delivery.style == "curious_discovery"
 
     second = sales_experience.plan_proactive(
@@ -86,7 +83,8 @@ def main() -> None:
     assert second.reply.purpose == "sales_proactive_second"
     assert second.reply.expect_user_response is False
     assert second.reply.question_field is None
-    assert "先自由参观" in second.reply.text
+    assert "打开 PPT" in second.reply.text
+    assert "播放演示" in second.reply.text
     assert second.reply.delivery.style == "calm_reassuring"
 
     third = sales_experience.plan_proactive(
@@ -108,7 +106,8 @@ def main() -> None:
         greeting_kind="returning_anonymous",
     )
     assert other.visit_id == other_visit
-    assert other.question_field == "interested_capabilities"
+    assert other.question_field == "role"
+    assert "What kind of work" in other.text
     assert sales_session_store.snapshot(conversation, other_visit) is not None
     assert sales_session_store.snapshot(conversation, visit) is not None
 
@@ -121,6 +120,7 @@ def main() -> None:
     )
     assert "欢迎回来，Rico" in registered.text
     assert registered.humour_theme is None
+    assert registered.question_field == "role"
 
     with TestClient(app) as client:
         self_test = client.get("/api/sales/experience/self-test")
@@ -139,7 +139,7 @@ def main() -> None:
         status_payload = status.json()
         assert status_payload["ok"] is True
         assert status_payload["experience"]["opening_completed"] is True
-        assert status_payload["experience"]["pending_question_field"] == "industry"
+        assert status_payload["experience"]["pending_question_field"] is None
         assert status_payload["sales_session"]["proactive_nudge_count"] == 2
 
     sales_experience.end_visit(conversation, visit)
@@ -147,10 +147,10 @@ def main() -> None:
     assert sales_session_store.snapshot(conversation, other_visit) is not None
 
     print(
-        "PASS: Phase 1 customer experience uses the Digital Manager and Solution "
-        "Consultant opening, approved opening humour, one pending discovery question, "
-        "sequential 7s/8s proactive follow-ups, expressive delivery metadata, Visit "
-        "isolation and a hard two-nudge limit."
+        "PASS: Phase 1 customer experience uses a compact role-first Digital Manager "
+        "opening, asks occupation once, then offers direct PPT commands on the second "
+        "silent follow-up while preserving expressive delivery, Visit isolation and "
+        "the hard two-nudge limit."
     )
 
 
