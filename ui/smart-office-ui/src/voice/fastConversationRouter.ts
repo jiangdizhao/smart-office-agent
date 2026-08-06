@@ -9,6 +9,7 @@ import {
   startManagedBackgroundAction,
   type ManagedBackgroundAction,
 } from './backgroundTaskRuntime'
+import { currentSlideInsightMode } from './presentationCommandPlan'
 import { installSemanticOfficeInterpreterBridge } from './semanticOfficeInterpreterBridge'
 
 export type { FastConversationAnswerEngine } from './fastConversationRouterCore'
@@ -45,7 +46,7 @@ type RouteRequest = {
 
 type OptimizedContext = {
   text: string
-  purpose: 'background_action_accepted' | 'direct_volume_result'
+  purpose: 'background_action_accepted' | 'direct_volume_result' | 'current_slide_insight'
 }
 
 type PriorityOfficeKind = 'presentation' | 'volume' | 'office'
@@ -162,9 +163,6 @@ function explicitPriorityOfficeAction(text: string): PriorityOfficeKind | null {
   const clean = stripPoliteness(text).replace(/[。.!！]/g, '').trim()
   if (!clean) return null
 
-  // PowerPoint is a hard command domain. Any mention is routed to the Office
-  // interpreter, including questions, summaries and explanations. Unsupported or
-  // ambiguous wording receives a PPT-specific clarification instead of general chat.
   const presentationMentioned = /ppt|power\s*point|powerpoint|幻灯片|演示文稿|presentation|\bslides?\b|slide\s*show|slideshow/i.test(clean)
   if (presentationMentioned) return 'presentation'
 
@@ -180,6 +178,28 @@ function explicitPriorityOfficeAction(text: string): PriorityOfficeKind | null {
   const officeIntent = /打开|关闭|启动|停止|创建|生成|发送|调整|设置|播放|执行|总结|整理|查看|读取|预约|操作|open|close|launch|start|stop|create|generate|send|adjust|set|play|execute|summari[sz]e|review|read|book/i.test(clean)
   if (officeEntity && officeIntent) return 'office'
   return null
+}
+
+async function currentSlideInsightDirect(request: RouteRequest): Promise<string | null> {
+  const mode = currentSlideInsightMode(request.text)
+  if (!mode) return null
+  const response = await fetch(`${API_BASE_URL}/api/presentation/current-slide/insight`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ mode, language: request.language }),
+    signal: request.lease?.signal,
+  })
+  if (!response.ok) {
+    throw new Error(`Current-slide insight failed: ${response.status} ${await response.text()}`)
+  }
+  const payload = await response.json() as { ok?: boolean; spoken_text?: string }
+  const text = String(payload.spoken_text ?? '').trim()
+  if (!payload.ok || !text) {
+    return request.language === 'zh'
+      ? '当前页还没有成功读取，请确认配置的 PPT 文件可以访问。'
+      : 'The current slide could not be read. Check that the configured presentation is accessible.'
+  }
+  return text
 }
 
 async function setVolumeDirect(percent: number, request: RouteRequest): Promise<string> {
@@ -280,6 +300,21 @@ export async function previewConversationRoute(
   request: RouteRequest,
 ): Promise<SalesAwareConversationRoute> {
   const startedAt = performance.now()
+
+  const insight = await currentSlideInsightDirect(request)
+  if (insight !== null) {
+    console.info('[ConversationLatency] current-slide-insight-complete', {
+      elapsedMs: Math.round(performance.now() - startedAt),
+      visitId: request.visitId,
+    })
+    return immediateRoute(
+      request,
+      insight,
+      'direct_current_slide_insight',
+      'current_slide_insight',
+    )
+  }
+
   const volume = clearVolumePercent(request.text)
   if (volume !== null) {
     const text = await setVolumeDirect(volume, request)
@@ -353,8 +388,5 @@ function ensureOptimizedHumanLikeText(
       ? `后台刚才没有顺利完成。${text} 我可以再试一次。`
       : `The backend did not complete that action. ${text} I can try again.`
   }
-  // Fast Office acknowledgements are already concise and verified. Do not prepend
-  // the same fixed catchphrase on every action; the Visit-level delivery scheduler
-  // handles occasional human-like reactions elsewhere.
   return text
 }
