@@ -109,6 +109,26 @@ def _contact_value(role: str, language: str) -> str:
     return f"哦，{clean_role}这类工作很适合把客户跟进、会议和重复办公流程串起来。"
 
 
+def _compact_funnel_plan(plan: SalesReplyPlan, **updates: object) -> SalesReplyPlan:
+    quiet_humour = plan.humour.model_copy(
+        update={
+            "allowed": False,
+            "intensity": "none",
+            "theme": None,
+            "text": None,
+            "reason": "fast_exhibition_funnel_uses_voice_tone_instead",
+            "maximum_lines": 0,
+        }
+    )
+    return plan.model_copy(
+        update={
+            **updates,
+            "humour": quiet_humour,
+            "maximum_sentences": 2,
+        }
+    )
+
+
 def _maybe_offer_contact(response: SalesTurnResponse) -> SalesTurnResponse:
     """Implement the short exhibition funnel without touching Office routing.
 
@@ -131,12 +151,10 @@ def _maybe_offer_contact(response: SalesTurnResponse) -> SalesTurnResponse:
     role = " ".join(str(state.explicit_facts.get("role") or "").split())[:80]
     if not role:
         question = _role_question(state.language)
-        plan = plan.model_copy(
-            update={
-                "suggested_question": question,
-                "recommended_action": None,
-                "maximum_sentences": 2,
-            }
+        plan = _compact_funnel_plan(
+            plan,
+            suggested_question=question,
+            recommended_action=None,
         )
         fallback = _compact_text(
             f"{_first_value_sentence(response.fallback_text, state.language)} {question}",
@@ -162,12 +180,10 @@ def _maybe_offer_contact(response: SalesTurnResponse) -> SalesTurnResponse:
         if state.language == "en"
         else "需要我打开登记信息表，让顾问根据您的工作场景继续联系吗？"
     )
-    plan = plan.model_copy(
-        update={
-            "suggested_question": question,
-            "recommended_action": "offer_contact",
-            "maximum_sentences": 2,
-        }
+    plan = _compact_funnel_plan(
+        plan,
+        suggested_question=question,
+        recommended_action="offer_contact",
     )
     sales_telemetry.emit(
         "contact_offered",
