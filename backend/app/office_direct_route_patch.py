@@ -83,9 +83,6 @@ def _ppt_actions(text: str) -> list[SemanticAction]:
         return [_action("start", "powerpoint", evidence)]
     if re.search(r"打开|开启|启动|调出|弄出|open|launch", text, re.I):
         return [_action("open", "powerpoint", evidence)]
-
-    # Exhibition rule: any affirmative PPT mention is a command. The default
-    # visible action is to open the configured deck and start its slide show.
     return [
         _action("open", "powerpoint", evidence, sequence=1),
         _action("start", "powerpoint", evidence, sequence=2),
@@ -127,19 +124,28 @@ def _office_verb(text: str) -> str:
     return "open"
 
 
+def _primary_intent(target: str) -> str:
+    if target in {"system_volume", "system_brightness", "music"}:
+        return "system_action"
+    if target == "recording":
+        return "open_recording"
+    if target == "result_center":
+        return "open_result_center"
+    return "application_action"
+
+
 def _forced_route(request: SemanticRouteRequest) -> SemanticRoute | None:
     text = request.text.strip()
     if not text or _NEGATED.search(text):
         return None
 
     if _PPT.search(text) or _PPT_CONTEXT.search(text):
-        actions = _ppt_actions(text)
         return SemanticRoute(
-            primary_intent=("multi_action_workflow" if len(actions) > 1 else "presentation_action"),
+            primary_intent="presentation_action",
             domain="office",
             action_mode="execute",
             confidence=1.0,
-            actions=actions,
+            actions=_ppt_actions(text),
             entities={"language": request.language, "office_direct": True},
             risk="low",
             reason_codes=["exhibition_unconditional_presentation_execution"],
@@ -151,8 +157,8 @@ def _forced_route(request: SemanticRouteRequest) -> SemanticRoute | None:
     if _OFFICE_ENTITY.search(text) and _OFFICE_ACTION.search(text):
         target = _office_target(text)
         return SemanticRoute(
-            primary_intent="office_action",
-            domain="office",
+            primary_intent=_primary_intent(target),  # type: ignore[arg-type]
+            domain="office" if target not in {"recording", "result_center"} else "interaction",
             action_mode="execute",
             confidence=1.0,
             actions=[_action(_office_verb(text), target, text)],
