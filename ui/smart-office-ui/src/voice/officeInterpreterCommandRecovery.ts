@@ -2,7 +2,11 @@ import {
   commandClarification,
   recoverCommandTranscript,
 } from './commandTranscriptRepair'
-import { deterministicPresentationSteps } from './presentationCommandPlan'
+import {
+  deterministicPresentationSteps,
+  mentionsPresentation,
+  presentationClarification,
+} from './presentationCommandPlan'
 import {
   realtimeOfficeInterpreter,
   type RealtimeOfficeDecision,
@@ -45,18 +49,25 @@ export function installOfficeInterpreterCommandRecovery(): void {
     language: VoiceLanguage,
   ): Promise<RealtimeOfficeDecision> => {
     const recovered = recoverCommandTranscript(text, language)
+    const raw = recovered.raw || text
 
-    // A complete domain intent is resolved before generic bare-application
-    // clarification. Rich compound requests remain intact for the model planner.
-    const presentationSteps = deterministicPresentationSteps(
-      recovered.raw || text,
-    ) ?? deterministicPresentationSteps(recovered.normalized)
+    // PowerPoint is a hard command domain. Resolve every supported action before
+    // generic clarification and never let a PPT mention fall through to normal
+    // conversation about personal PowerPoint usage.
+    const presentationSteps = deterministicPresentationSteps(raw)
+      ?? deterministicPresentationSteps(recovered.normalized)
     if (presentationSteps) {
       return deterministicDecision(
         presentationSteps,
         recovered.raw,
         recovered.normalized,
       )
+    }
+    if (mentionsPresentation(raw) || mentionsPresentation(recovered.normalized)) {
+      return {
+        kind: 'clarify',
+        clarification: presentationClarification(language),
+      }
     }
 
     const clarification = commandClarification(recovered)
