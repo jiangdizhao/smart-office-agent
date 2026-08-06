@@ -9,11 +9,13 @@ from app.current_slide_insight import current_slide_insight
 from app.models import ToolResult, VerificationResult
 from app.presentation_actions import execute_presentation_tool_call
 from app.presentation_config import presentation_config
+from app.presentation_session_api import router as presentation_session_router
 from app.tools.presentation_controller import get_presentation_status
 from app.whole_presentation_insight import whole_presentation_insight
 
 
 router = APIRouter(prefix="/api/presentation", tags=["presentation-gate1"])
+router.include_router(presentation_session_router)
 
 
 class GoToSlideRequest(BaseModel):
