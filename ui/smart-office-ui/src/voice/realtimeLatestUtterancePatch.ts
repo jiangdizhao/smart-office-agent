@@ -1,3 +1,4 @@
+import './presentationLanguageFetchPatch'
 import { realtimeAgent } from './realtimeAgentRuntime'
 
 type RealtimeTranscriptionInternals = {
