@@ -98,6 +98,26 @@ def main() -> None:
         "latestStoppedItemId",
     )
 
+    speech_runtime = source(
+        "ui/smart-office-ui/src/voice/realtimeSpeechRuntime.ts"
+    )
+    require(
+        speech_runtime,
+        "VITE_REALTIME_SEPARATE_SPEECH_SESSION",
+        "new PersistentRealtimeAgent()",
+        "originalPrimaryStopOutput",
+        "realtimeSpeechAgent.shutdown()",
+    )
+
+    expressive = source(
+        "ui/smart-office-ui/src/voice/expressiveRealtimeSpeech.ts"
+    )
+    require(
+        expressive,
+        "realtimeSpeechAgent",
+        "Continuous ASR remains on the primary session",
+    )
+
     print("presentation resilience contract: PASS")
 
 
