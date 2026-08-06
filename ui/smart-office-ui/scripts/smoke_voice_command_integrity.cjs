@@ -78,6 +78,10 @@ assert.deepEqual(
   ['presentation_start_slideshow', 'presentation_next_slide'],
 )
 assert.deepEqual(
+  names(deterministicPresentationSteps('翻到下一页')),
+  ['presentation_start_slideshow', 'presentation_next_slide'],
+)
+assert.deepEqual(
   names(deterministicPresentationSteps('上一页')),
   ['presentation_start_slideshow', 'presentation_previous_slide'],
 )
@@ -93,11 +97,14 @@ assert.deepEqual(
   names(deterministicPresentationSteps('打开 PPT 然后下一页')),
   ['presentation_start_slideshow', 'presentation_next_slide'],
 )
-assert.equal(deterministicPresentationSteps('PowerPoint 是什么'), null)
+assert.deepEqual(
+  names(deterministicPresentationSteps('PowerPoint 是什么')),
+  ['presentation_open_configured', 'presentation_start_slideshow'],
+)
 assert.equal(deterministicPresentationSteps('打开 PPT 并把音量调到 30%'), null)
 assert.equal(currentSlideInsightMode('总结当前页 PPT'), 'summary')
 assert.equal(currentSlideInsightMode('解释这一页 PowerPoint'), 'explanation')
 
 console.log(
-  'PASS: transcript repair preserves compound intents; every PowerPoint mention remains in the Office domain; slide navigation self-starts the configured show; current-slide insight is detected; and cross-domain requests defer intact to the unified planner.',
+  'PASS: transcript repair preserves compound intents; every affirmative PowerPoint mention executes in the Office domain; slide navigation self-starts the configured show; current-slide insight is detected; and cross-domain requests defer intact to the unified planner.',
 )
