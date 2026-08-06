@@ -10,6 +10,7 @@ from app.models import ToolResult, VerificationResult
 from app.presentation_actions import execute_presentation_tool_call
 from app.presentation_config import presentation_config
 from app.tools.presentation_controller import get_presentation_status
+from app.whole_presentation_insight import whole_presentation_insight
 
 
 router = APIRouter(prefix="/api/presentation", tags=["presentation-gate1"])
@@ -24,7 +25,7 @@ class ClosePresentationRequest(BaseModel):
 
 
 class CurrentSlideInsightRequest(BaseModel):
-    mode: Literal["summary", "explanation"] = "summary"
+    mode: Literal["summary", "explanation", "whole_summary"] = "summary"
     language: Literal["zh", "en"] = "zh"
 
 
@@ -44,8 +45,8 @@ class PresentationActionResponse(BaseModel):
 
 class CurrentSlideInsightResponse(BaseModel):
     ok: bool
-    phase: str = "current_slide_insight_v1"
-    mode: Literal["summary", "explanation"]
+    phase: str = "presentation_insight_v2"
+    mode: Literal["summary", "explanation", "whole_summary"]
     spoken_text: str
     result: ToolResult
 
@@ -73,10 +74,14 @@ def presentation_status() -> PresentationStatusResponse:
 
 
 @router.post("/current-slide/insight", response_model=CurrentSlideInsightResponse)
-def presentation_current_slide_insight(
+async def presentation_current_slide_insight(
     req: CurrentSlideInsightRequest,
 ) -> CurrentSlideInsightResponse:
-    result = current_slide_insight(mode=req.mode, language=req.language)
+    result = (
+        await whole_presentation_insight(language=req.language)
+        if req.mode == "whole_summary"
+        else current_slide_insight(mode=req.mode, language=req.language)
+    )
     return CurrentSlideInsightResponse(
         ok=result.ok,
         mode=req.mode,
