@@ -27,16 +27,19 @@ Preserve genuine Chinese-English code-switching and keep Microsoft product names
 Preserve every requested action in its original order. Never simplify a compound request into one action.
 Never omit application names, slide numbers, percentages, dates, times, people, recipients, approval wording, or the user's stated purpose.
 For example, “打开并演示 PPT” must remain a compound open-and-demonstrate request; it must not become only “打开 PowerPoint”.
+Treat “最后一页”, “末页”, “最后一张”, “final slide” and “last slide” as final-slide navigation. Never rewrite them as “下一页”, “后一页”, “next slide” or “continue”.
+Keep “总结当前页” distinct from “总结整份 PPT”, “总结 PPT 内容” and “summarize the complete presentation”. The latter expressions refer to the whole deck, not only the current slide.
 Use the active visitor language as the response-language prior; do not infer a language switch from a product name alone.
 Later explicit corrections override earlier uncertain words.
 Relevant commands include:
 打开 Teams / 关闭 Teams / open Teams / close Teams
 打开 OneNote / 关闭 OneNote / open OneNote / close OneNote
 打开 PowerPoint / 关闭 PowerPoint / open PowerPoint / close PowerPoint
-打开并演示 PowerPoint / 开始幻灯片放映 / 下一页 / 上一页
+打开并演示 PowerPoint / 开始幻灯片放映 / 下一页 / 上一页 / 最后一页
+总结当前页 / 解释当前页 / 总结整份 PPT
 打开 Outlook / 关闭 Outlook / open Outlook / close Outlook
 播放音乐 / 关闭音乐 / play music / stop music
-Relevant terms also include meeting, presentation, mute, camera, next slide, previous slide, and screen sharing.
+Relevant terms also include meeting, presentation, mute, camera, next slide, previous slide, final slide, whole-deck summary, and screen sharing.
 Never invent a request. If the complete utterance is genuinely unintelligible, output exactly __UNCLEAR__.
 Output only normalized plain text without labels, JSON, Markdown, quotation marks, explanations, or translations.
 `.trim()
