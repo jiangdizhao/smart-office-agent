@@ -56,7 +56,8 @@ def _clean(value: Any, maximum: int = 220) -> str:
 
 
 def _fingerprint(role: str, text: str) -> str:
-    return f"{role}:{re.sub(r'[\W_]+', '', text).casefold()}"
+    normalized = re.sub(r"[\W_]+", "", text).casefold()
+    return f"{role}:{normalized}"
 
 
 def _append_unique(values: list[str], value: str, maximum: int = 180) -> None:
