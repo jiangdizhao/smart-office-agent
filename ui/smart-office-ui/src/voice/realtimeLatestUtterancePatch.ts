@@ -18,7 +18,9 @@ if (!runtimeWindow[PATCH_KEY]) {
   let latestStoppedItemId = ''
 
   window.addEventListener('smartoffice:realtime-vad-speech-stopped', (event: Event) => {
-    const detail = event instanceof CustomEvent<SpeechStoppedDetail> ? event.detail : null
+    const detail = event instanceof CustomEvent
+      ? (event as CustomEvent<SpeechStoppedDetail>).detail
+      : null
     latestStoppedItemId = String(detail?.itemId ?? '').trim()
   })
   window.addEventListener('smartoffice:visit-activated', () => {
