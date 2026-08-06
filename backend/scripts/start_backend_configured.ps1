@@ -80,18 +80,18 @@ $existingListeners = @(
     Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 )
 if ($existingListeners.Count -gt 0) {
-    $pids = @($existingListeners | Select-Object -ExpandProperty OwningProcess -Unique)
+    $listenerPids = @($existingListeners | Select-Object -ExpandProperty OwningProcess -Unique)
     $descriptions = @()
-    foreach ($processId in $pids) {
-        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+    foreach ($listenerPid in $listenerPids) {
+        $process = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
         $name = if ($null -ne $process) { $process.ProcessName } else { "unknown" }
-        $descriptions += "PID $processId ($name)"
+        $descriptions += "PID $listenerPid ($name)"
     }
     throw @"
 Backend port $Port is already occupied by: $($descriptions -join ', ').
 The browser would continue talking to that old process, which may not contain the newly loaded password.
 Stop it first, for example:
-  Stop-Process -Id $($pids -join ',') -Force
+  Stop-Process -Id $($listenerPids -join ',') -Force
 Then run start_backend_configured.ps1 again.
 "@
 }
