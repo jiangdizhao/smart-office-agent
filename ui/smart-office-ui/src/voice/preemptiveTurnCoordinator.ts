@@ -9,6 +9,7 @@ const TURN_SCOPED_PATHS = [
   '/api/semantic-route',
   '/api/general-chat',
   '/api/conversation-route',
+  '/api/presentation',
   '/agent/turn',
   '/agent/office-turn',
 ]
@@ -64,11 +65,8 @@ class PreemptiveTurnCoordinator {
 
   constructor() {
     // Only requests that belong to one conversational turn inherit the turn signal.
-    // Unified semantic routing, general answers and Office interpretation are all
-    // cancelled immediately when a newer visitor utterance supersedes the turn.
-    // Background Office tasks are deliberately outside this scope: ordinary barge-in
-    // must never mean "cancel the task". Explicit task cancellation remains available
-    // through the task approval/cancel commands and UI.
+    // Presentation control and grounded slide answers are included so a new spoken
+    // command cancels the old HTTP request as well as the old audio output.
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const turnSignal = this.turnAbort?.signal
       if (!turnSignal || turnSignal.aborted || !isTurnScoped(input)) {
@@ -248,8 +246,8 @@ class PreemptiveTurnCoordinator {
     })
 
     // Barge-in has the highest conversational priority: stop audio and the current
-    // LLM/Office interpretation immediately. It must not cancel an already accepted
-    // background Office task. Task cancellation is an explicit user action only.
+    // LLM/Office/presentation request immediately. It must not cancel an already
+    // accepted background Office task. Task cancellation is explicit only.
     const interruption = Promise.allSettled([
       voiceOutputManager.stop(reason),
       realtimeAgent.stopOutput(),
