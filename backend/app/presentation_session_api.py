@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import threading
 import zipfile
 from pathlib import Path
 from typing import Literal
@@ -23,6 +25,9 @@ _COVER_EN = "I will now introduce this presentation. When you are ready, say nex
 _SLIDE_HEADING = re.compile(r"第\s*([234])\s*页")
 _NARRATION_MARKER = re.compile(r"Agent\s*简短讲解稿", re.IGNORECASE)
 _TECH_MARKER = re.compile(r"技术答疑稿")
+_SCRIPT_CACHE_LOCK = threading.RLock()
+_SCRIPT_CACHE_KEY: tuple[str, int, int] | None = None
+_SCRIPT_CACHE_VALUE: dict[int, dict[str, str]] | None = None
 
 
 class PresentationSessionScriptResponse(BaseModel):
@@ -53,7 +58,11 @@ def _repository_root() -> Path:
 
 def _script_directory() -> Path:
     configured = os.getenv("SMART_OFFICE_PRESENTATION_SCRIPT_DIR", "").strip()
-    return Path(configured).expanduser().resolve() if configured else (_repository_root() / "config" / "presentation_knowledge")
+    return (
+        Path(configured).expanduser().resolve()
+        if configured
+        else (_repository_root() / "config" / "presentation_knowledge")
+    )
 
 
 def _script_path() -> Path:
@@ -101,9 +110,17 @@ def _parse_script(path: Path) -> dict[int, dict[str, str]]:
     for slide_number in (2, 3, 4):
         values = sections.get(slide_number, [])
         if not values:
-            raise ValueError(f"The DOCX does not contain a recognizable section for slide {slide_number}.")
-        narration_index = next((i for i, value in enumerate(values) if _NARRATION_MARKER.search(value)), -1)
-        tech_index = next((i for i, value in enumerate(values) if _TECH_MARKER.search(value)), -1)
+            raise ValueError(
+                f"The DOCX does not contain a recognizable section for slide {slide_number}."
+            )
+        narration_index = next(
+            (i for i, value in enumerate(values) if _NARRATION_MARKER.search(value)),
+            -1,
+        )
+        tech_index = next(
+            (i for i, value in enumerate(values) if _TECH_MARKER.search(value)),
+            -1,
+        )
         if narration_index < 0 or tech_index <= narration_index:
             raise ValueError(
                 f"Slide {slide_number} must contain both 'Agent 简短讲解稿' and '技术答疑稿' markers."
@@ -113,9 +130,13 @@ def _parse_script(path: Path) -> dict[int, dict[str, str]]:
         narration = "".join(narration_lines).strip()
         knowledge = "\n".join(knowledge_lines).strip()
         if not narration:
-            raise ValueError(f"Slide {slide_number} has no narration after the narration marker.")
+            raise ValueError(
+                f"Slide {slide_number} has no narration after the narration marker."
+            )
         if not knowledge:
-            raise ValueError(f"Slide {slide_number} has no technical knowledge after the technical marker.")
+            raise ValueError(
+                f"Slide {slide_number} has no technical knowledge after the technical marker."
+            )
         parsed[slide_number] = {
             "narration": narration,
             "knowledge": knowledge,
@@ -124,8 +145,22 @@ def _parse_script(path: Path) -> dict[int, dict[str, str]]:
 
 
 def _load_script() -> tuple[Path, dict[int, dict[str, str]]]:
+    global _SCRIPT_CACHE_KEY, _SCRIPT_CACHE_VALUE
     path = _script_path()
-    return path, _parse_script(path)
+    stat = path.stat()
+    key = (str(path), int(stat.st_mtime_ns), int(stat.st_size))
+    with _SCRIPT_CACHE_LOCK:
+        if _SCRIPT_CACHE_KEY == key and _SCRIPT_CACHE_VALUE is not None:
+            return path, {
+                number: dict(content)
+                for number, content in _SCRIPT_CACHE_VALUE.items()
+            }
+        parsed = _parse_script(path)
+        _SCRIPT_CACHE_KEY = key
+        _SCRIPT_CACHE_VALUE = {
+            number: dict(content) for number, content in parsed.items()
+        }
+        return path, parsed
 
 
 def _clean_json_payload(value: str) -> dict:
@@ -141,6 +176,14 @@ def _clean_json_payload(value: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("Model output was not a JSON object.")
     return payload
+
+
+def _qa_timeout_seconds() -> float:
+    try:
+        value = float(os.getenv("SMART_OFFICE_PRESENTATION_QA_TIMEOUT_SECONDS", "10"))
+    except ValueError:
+        value = 10.0
+    return max(3.0, min(30.0, value))
 
 
 def _answer_instructions(language: Language) -> str:
@@ -171,9 +214,9 @@ Return only JSON with this schema:
 
 
 @router.get("/script", response_model=PresentationSessionScriptResponse)
-def presentation_session_script() -> PresentationSessionScriptResponse:
+async def presentation_session_script() -> PresentationSessionScriptResponse:
     try:
-        path, slides = _load_script()
+        path, slides = await asyncio.to_thread(_load_script)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return PresentationSessionScriptResponse(
@@ -184,9 +227,11 @@ def presentation_session_script() -> PresentationSessionScriptResponse:
 
 
 @router.post("/answer", response_model=PresentationQuestionResponse)
-async def presentation_session_answer(req: PresentationQuestionRequest) -> PresentationQuestionResponse:
+async def presentation_session_answer(
+    req: PresentationQuestionRequest,
+) -> PresentationQuestionResponse:
     try:
-        path, slides = _load_script()
+        path, slides = await asyncio.to_thread(_load_script)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -202,11 +247,14 @@ async def presentation_session_answer(req: PresentationQuestionRequest) -> Prese
         indent=2,
     )
     try:
-        raw, used_model = await generate_response_text(
-            input_text=input_text,
-            instructions=_answer_instructions(req.language),
-            model=model_name,
-            max_output_tokens=900,
+        raw, used_model = await asyncio.wait_for(
+            generate_response_text(
+                input_text=input_text,
+                instructions=_answer_instructions(req.language),
+                model=model_name,
+                max_output_tokens=900,
+            ),
+            timeout=_qa_timeout_seconds(),
         )
         payload = _clean_json_payload(raw)
         related = bool(payload.get("related"))
@@ -214,7 +262,9 @@ async def presentation_session_answer(req: PresentationQuestionRequest) -> Prese
         if not related:
             spoken_text = _FALLBACK_EN if req.language == "en" else _FALLBACK_ZH
         if related and not spoken_text:
-            raise ValueError("The model marked the question related but returned an empty answer.")
+            raise ValueError(
+                "The model marked the question related but returned an empty answer."
+            )
         return PresentationQuestionResponse(
             related=related,
             spoken_text=spoken_text,
@@ -223,7 +273,8 @@ async def presentation_session_answer(req: PresentationQuestionRequest) -> Prese
             source_path=str(path),
         )
     except Exception:
-        # Do not improvise when the grounded answer service is unavailable.
+        # Exhibition fallback is immediate and deterministic. Never keep the
+        # visitor waiting on a failed or over-budget grounded answer request.
         fallback = _FALLBACK_EN if req.language == "en" else _FALLBACK_ZH
         return PresentationQuestionResponse(
             related=False,
