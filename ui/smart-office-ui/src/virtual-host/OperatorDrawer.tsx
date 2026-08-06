@@ -8,9 +8,9 @@ import type {
   OfficeVoiceController,
 } from '../voice/useOfficeVoiceController'
 
-const SYSTEM_PAUSED_KEY = 'smartoffice_system_temporarily_paused'
-const SYSTEM_PAUSE_RESTORE_KEY = 'smartoffice_system_pause_restore_proximity'
 const PROXIMITY_ENABLED_KEY = 'smartoffice_proximity_greeting_enabled'
+let runtimeSystemPaused = false
+let runtimeRestoreProximity = true
 
 type OperatorDrawerProps = {
   controller: OfficeVoiceController
@@ -57,9 +57,7 @@ export default function OperatorDrawer({
   const settingsDisabled = controller.listening || controller.busy
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
   const serviceReady = controller.runtime.connected
-  const [systemPaused, setSystemPaused] = useState(
-    () => sessionStorage.getItem(SYSTEM_PAUSED_KEY) === 'true',
-  )
+  const [systemPaused, setSystemPaused] = useState(() => runtimeSystemPaused)
   const remoteDetection = isRemoteVisionDetection(proximity.lastDetection)
     ? proximity.lastDetection
     : null
@@ -67,9 +65,8 @@ export default function OperatorDrawer({
   async function toggleSystemPause(): Promise<void> {
     if (!systemPaused) {
       const persistentPreference = localStorage.getItem(PROXIMITY_ENABLED_KEY)
-      const restoreEnabled = proximity.enabled
-      sessionStorage.setItem(SYSTEM_PAUSE_RESTORE_KEY, String(restoreEnabled))
-      sessionStorage.setItem(SYSTEM_PAUSED_KEY, 'true')
+      runtimeRestoreProximity = proximity.enabled
+      runtimeSystemPaused = true
 
       await controller.stopSpeaking().catch(() => undefined)
       proximity.setEnabled(false)
@@ -86,10 +83,8 @@ export default function OperatorDrawer({
       return
     }
 
-    const restoreEnabled = sessionStorage.getItem(SYSTEM_PAUSE_RESTORE_KEY) !== 'false'
-    sessionStorage.removeItem(SYSTEM_PAUSED_KEY)
-    sessionStorage.removeItem(SYSTEM_PAUSE_RESTORE_KEY)
-    proximity.setEnabled(restoreEnabled)
+    runtimeSystemPaused = false
+    proximity.setEnabled(runtimeRestoreProximity)
     setSystemPaused(false)
     window.dispatchEvent(new CustomEvent('smartoffice:system-pause-changed', {
       detail: { paused: false },
