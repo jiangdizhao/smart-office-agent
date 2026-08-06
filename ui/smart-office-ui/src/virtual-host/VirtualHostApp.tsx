@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { publishSessionMessage } from '../interaction/sessionEventBus'
 import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
 import { useProximityGreeting } from '../vision/useProximityGreeting'
+import { useForcedInteractionServiceController } from '../voice/useForcedInteractionServiceController'
 import { useGuidedPresentationController } from '../voice/useGuidedPresentationController'
 import type { VoiceLanguage } from '../voice/realtimeAgentRuntime'
 import { visitLanguagePreference } from '../voice/visitLanguagePreference'
@@ -84,7 +85,8 @@ function publicError(message: string, language: VoiceLanguage): string {
 export default function VirtualHostApp() {
   const baseController = useOfficeVoiceController()
   const languageAwareController = useVisitLanguageAwareOfficeVoiceController(baseController)
-  const controller = useGuidedPresentationController(languageAwareController)
+  const presentationController = useGuidedPresentationController(languageAwareController)
+  const controller = useForcedInteractionServiceController(presentationController)
   const proximity = useProximityGreeting(controller)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [lastUserText, setLastUserText] = useState('')
