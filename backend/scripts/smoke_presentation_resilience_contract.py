@@ -43,10 +43,15 @@ def main() -> None:
     session = source("backend/app/presentation_session_api.py")
     require(
         session,
-        "_SCRIPT_CACHE_KEY",
-        "asyncio.to_thread(_load_script)",
-        "asyncio.wait_for",
+        "MEGA_SMART_Exhibition_Narration_and_QA_EN.docx",
+        "MEGA_SMART_展览讲解稿与技术答疑知识库.docx",
+        "_SCRIPT_CACHE",
+        "asyncio.to_thread(_load_script, language)",
+        "asyncio.to_thread(_load_script, req.language)",
         "SMART_OFFICE_PRESENTATION_QA_TIMEOUT_SECONDS",
+        "_SLIDE_HEADING_EN",
+        "_NARRATION_MARKER_EN",
+        "_TECH_MARKER_EN",
     )
 
     current_slide = source("backend/app/current_slide_insight.py")
@@ -80,6 +85,28 @@ def main() -> None:
         "const START_PRESENTATION = /(?:\\bppt\\b|\\bpower\\s*point\\b|\\bpowerpoint\\b|幻灯片|演示文稿)/i",
     )
 
+    language_patch = source(
+        "ui/smart-office-ui/src/voice/presentationLanguageFetchPatch.ts"
+    )
+    require(
+        language_patch,
+        "visitLanguagePreference.current()",
+        "/api/presentation/session/script",
+        "url.searchParams.set('language'",
+    )
+
+    drawer = source("ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx")
+    require(
+        drawer,
+        "smartoffice_system_temporarily_paused",
+        "toggleSystemPause",
+        "proximity.setEnabled(false)",
+        "controller.stopSpeaking()",
+        "smartoffice:system-pause-changed",
+        "恢复系统与摄像头",
+        "Resume system and camera",
+    )
+
     preemptive = source(
         "ui/smart-office-ui/src/voice/preemptiveTurnCoordinator.ts"
     )
@@ -96,6 +123,7 @@ def main() -> None:
     )
     require(
         latest,
+        "presentationLanguageFetchPatch",
         "stale-vad-transcription-skipped",
         "latestStoppedItemId",
     )
