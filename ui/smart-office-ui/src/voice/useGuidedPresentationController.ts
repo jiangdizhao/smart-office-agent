@@ -48,10 +48,9 @@ type PresentationActionPayload = {
   }
 }
 
-// Product rule: outside an active guided session, any explicit PowerPoint/PPT
-// mention enters the fixed DOCX-driven guided presentation flow. This is a hard
-// deterministic route and must never fall through to ordinary chat or semantic
-// routing.
+// Product rule: any explicit PowerPoint/PPT mention enters the fixed DOCX-driven
+// guided presentation flow. It never falls through to ordinary chat, the semantic
+// router or a second generic PowerPoint action path.
 const START_PRESENTATION = /(?:\bppt\b|\bpower\s*point\b|\bpowerpoint\b|幻灯片|演示文稿)/i
 const NEXT_SLIDE = /^(?:请|麻烦|帮我)?\s*(?:下一页|下一张|翻页|往后翻|向后翻|继续下一页|继续往下|继续播放|继续演示|next(?:\s+slide)?|continue|advance)\s*[。.!！]?$/i
 const PREVIOUS_SLIDE = /^(?:请|麻烦|帮我)?\s*(?:上一页|上一张|往前翻|向前翻|返回上一页|previous(?:\s+slide)?|go\s+back)\s*[。.!！]?$/i
@@ -61,6 +60,7 @@ const END_PRESENTATION = /^(?:结束演示|停止演示|退出演示|回到第�
 const GOTO_SLIDE = /(?:跳到|翻到|切到|转到|前往)\s*第?\s*([一二三四\d]+)\s*(?:页|张)|\b(?:go|jump|move)\s+to\s+(?:slide\s+)?([1-4])\b/i
 const END_OF_DECK_ZH = '当前幻灯片已经结束，想要更多的体验欢迎线下来我们展馆参观。'
 const END_OF_DECK_EN = 'This presentation has ended. For more experiences, you are welcome to visit our exhibition booth in person.'
+const PRESENTATION_START_DEDUP_MS = 8_000
 
 const CHINESE_NUMBERS: Record<string, number> = {
   一: 1,
@@ -163,6 +163,8 @@ export function useGuidedPresentationController(
   const scriptRef = useRef<ScriptPayload | null>(null)
   const operationRef = useRef(0)
   const operationAbortRef = useRef<AbortController | null>(null)
+  const lastStartAtRef = useRef(0)
+  const lastStartTextRef = useRef('')
 
   const setSessionState = useCallback((state: SessionState, slide = slideRef.current) => {
     stateRef.current = state
@@ -482,17 +484,41 @@ export function useGuidedPresentationController(
     const clean = text.normalize('NFKC').replace(/\s+/g, ' ').trim()
     if (!clean) return
     const language = /[\u3400-\u9fff]/.test(clean) ? 'zh' : controllerRef.current.language
+    const startRequested = START_PRESENTATION.test(clean)
 
-    if (!activeRef.current && !START_PRESENTATION.test(clean)) {
+    if (!activeRef.current && !startRequested) {
       await controllerRef.current.submit(text, source)
+      return
+    }
+
+    const now = performance.now()
+    if (
+      startRequested
+      && activeRef.current
+      && clean === lastStartTextRef.current
+      && now - lastStartAtRef.current < PRESENTATION_START_DEDUP_MS
+    ) {
+      console.info('[GuidedPresentation] duplicate-start-utterance-ignored', {
+        text: clean,
+        state: stateRef.current,
+        slide: slideRef.current,
+      })
       return
     }
 
     const sessionWasActive = activeRef.current
     const operation = beginOperation()
     try {
-      if (!sessionWasActive) {
-        await startSession(language, operation.id, operation.signal)
+      if (startRequested) {
+        lastStartAtRef.current = now
+        lastStartTextRef.current = clean
+        if (!sessionWasActive) {
+          await startSession(language, operation.id, operation.signal)
+        } else {
+          // A deliberate later PPT request restarts the guided explanation from
+          // slide 1 without reopening, closing or restarting PowerPoint.
+          await moveTo(1, language, operation.id, operation.signal)
+        }
         return
       }
       if (END_PRESENTATION.test(clean)) {
@@ -579,6 +605,8 @@ export function useGuidedPresentationController(
       operationAbortRef.current?.abort()
       operationAbortRef.current = null
       operationRef.current += 1
+      lastStartAtRef.current = 0
+      lastStartTextRef.current = ''
       setSessionState('inactive', 1)
       scriptRef.current = null
     }
