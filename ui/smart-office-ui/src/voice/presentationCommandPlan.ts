@@ -97,11 +97,11 @@ export function deterministicPresentationSteps(
     || currentSlideInsightMode(clean) !== null
   if (!hasTerm && !contextualControl) return null
 
-  // Current-slide insight is handled by a dedicated fast API before the Office
-  // interpreter. Returning null here prevents an unsupported plan action if that
-  // direct path is unavailable; the caller will keep the request in PPT-specific
-  // clarification instead of falling into general chat.
   if (currentSlideInsightMode(clean) !== null) return null
+
+  // Cross-domain requests remain in the Office domain, but defer intact to the
+  // unified Office planner so no requested action (for example volume) is dropped.
+  if (OTHER_DOMAIN.test(clean)) return null
 
   if (LAST_SLIDE.test(clean)) {
     return [
@@ -145,7 +145,5 @@ export function deterministicPresentationSteps(
       : [{ name: 'presentation_start_slideshow' }]
   }
   if (hasOpen) return [{ name: 'presentation_open_configured' }]
-
-  if (OTHER_DOMAIN.test(clean)) return null
   return null
 }
