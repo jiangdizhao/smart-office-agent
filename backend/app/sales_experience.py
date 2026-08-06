@@ -319,7 +319,7 @@ class SalesExperienceService:
                 request.visit_id,
             )
 
-        if not role:
+        if not role and session.proactive_nudge_count == 1:
             text = (
                 "What kind of work are you mainly responsible for? I can tailor the demonstration to your role."
                 if request.language == "en"
