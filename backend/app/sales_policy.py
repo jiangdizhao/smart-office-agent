@@ -186,12 +186,14 @@ class SalesRuntimePolicy:
 
     @staticmethod
     def can_offer_contact(state: SalesSessionState) -> bool:
+        role = str(state.explicit_facts.get("role") or "").strip()
         return (
             state.stage != "close"
             and not state.contact_rejected
             and not state.contact_opened
             and state.contact_offer_count < 1
-            and state.effective_user_turn_count >= 2
+            and bool(role)
+            and state.effective_user_turn_count >= 1
             and state.value_delivered
         )
 
