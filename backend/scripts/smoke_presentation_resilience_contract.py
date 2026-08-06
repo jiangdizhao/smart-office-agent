@@ -98,7 +98,8 @@ def main() -> None:
     drawer = source("ui/smart-office-ui/src/virtual-host/OperatorDrawer.tsx")
     require(
         drawer,
-        "smartoffice_system_temporarily_paused",
+        "runtimeSystemPaused",
+        "runtimeRestoreProximity",
         "toggleSystemPause",
         "proximity.setEnabled(false)",
         "controller.stopSpeaking()",
