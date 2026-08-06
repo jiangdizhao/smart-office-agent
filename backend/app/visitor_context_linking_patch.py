@@ -130,6 +130,7 @@ from app import office_direct_route_patch as _office_direct_route_patch  # noqa:
 # enhanced implementation merges browser events with the authoritative backend
 # conversation store and summarizes casual chat as well as Office activity.
 from app import session_summary_patch as _session_summary_patch  # noqa: E402,F401
+from app import session_summary_followup_patch as _session_summary_followup_patch  # noqa: E402,F401
 
 # Install the 09:00-18:00 hourly timeline after the base contact/booking module is
 # loaded. This replaces the built-in fake employee fallback with the real staff
