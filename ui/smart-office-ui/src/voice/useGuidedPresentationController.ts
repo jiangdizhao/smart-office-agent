@@ -101,14 +101,15 @@ async function requestJson<T>(
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs)
   const abortFromParent = () => controller.abort()
   options.signal?.addEventListener('abort', abortFromParent, { once: true })
+  const headers = new Headers(init.headers)
+  if (init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json; charset=utf-8')
+  }
   try {
     const response = await fetch(`${OFFICE_API_BASE}${path}`, {
       ...init,
       signal: controller.signal,
-      headers: {
-        ...(init.body === undefined ? {} : { 'Content-Type': 'application/json; charset=utf-8' }),
-        ...(init.headers ?? {}),
-      },
+      headers,
     })
     if (!response.ok) {
       const detail = await response.text().catch(() => '')
@@ -483,9 +484,10 @@ export function useGuidedPresentationController(
       return
     }
 
+    const sessionWasActive = activeRef.current
     const operation = beginOperation()
     try {
-      if (!activeRef.current) {
+      if (!sessionWasActive) {
         await startSession(language, operation.id, operation.signal)
         return
       }
@@ -548,7 +550,9 @@ export function useGuidedPresentationController(
     } catch (error) {
       const aborted = error instanceof Error && error.name === 'AbortError'
       if (!aborted) console.error('[GuidedPresentation] operation-failed', error)
-      if (activeRef.current && stateRef.current !== 'ending') {
+      if (!sessionWasActive) {
+        setSessionState('inactive', 1)
+      } else if (activeRef.current && stateRef.current !== 'ending') {
         setSessionState(slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting', slideRef.current)
       }
     }
@@ -577,11 +581,15 @@ export function useGuidedPresentationController(
     const onBargeIn = () => {
       if (!activeRef.current) return
       const state = stateRef.current
-      if (!['slide_narrating', 'answering_question', 'opening_registration'].includes(state)) return
+      if (!['slide_narrating', 'answering_question', 'opening_registration', 'ending'].includes(state)) return
       operationAbortRef.current?.abort()
       operationRef.current += 1
       void voiceOutputManager.stop('presentation-visitor-barge-in')
-      setSessionState(slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting', slideRef.current)
+      if (state === 'ending') {
+        setSessionState('inactive', 1)
+      } else {
+        setSessionState(slideRef.current === 1 ? 'cover_waiting' : 'slide_waiting', slideRef.current)
+      }
     }
     window.addEventListener('smartoffice:visit-revoked', reset)
     window.addEventListener('smartoffice:realtime-vad-speech-started', onBargeIn)
