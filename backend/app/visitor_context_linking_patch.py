@@ -132,6 +132,11 @@ from app import office_direct_route_patch as _office_direct_route_patch  # noqa:
 from app import session_summary_patch as _session_summary_patch  # noqa: E402,F401
 from app import session_summary_followup_patch as _session_summary_followup_patch  # noqa: E402,F401
 
+# Finalized Visit summaries use the language model to synthesize a coherent overview
+# and visitor profile. Drafts and any model/API failure keep the deterministic summary
+# as an explicitly labelled fallback rather than blocking the result center.
+from app import session_summary_llm_patch as _session_summary_llm_patch  # noqa: E402,F401
+
 # Install the 09:00-18:00 hourly timeline after the base contact/booking module is
 # loaded. This replaces the built-in fake employee fallback with the real staff
 # catalog from config/demo_meeting_staff.json.
