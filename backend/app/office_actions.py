@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.current_slide_insight import current_slide_insight
 from app.models import ToolResult, VerificationResult
 from app.office_artifacts import (
     generate_presentation_summary,
@@ -31,8 +32,14 @@ from app.tools.system_controller import (
 
 logger = logging.getLogger(__name__)
 
+CURRENT_SLIDE_INSIGHT_TOOLS = {
+    "presentation_summarize_current_slide",
+    "presentation_explain_current_slide",
+}
+
 OFFICE_TOOL_NAMES: set[str] = {
     *PRESENTATION_TOOL_NAMES,
+    *CURRENT_SLIDE_INSIGHT_TOOLS,
     "system_get_status",
     "system_set_volume",
     "system_adjust_volume",
@@ -145,12 +152,7 @@ def get_office_status_direct() -> ToolResult:
 
 
 def get_office_status() -> ToolResult:
-    """Public status inspection with a hard process deadline.
-
-    The Office child process calls the direct implementation. Every Backend
-    caller goes through the restartable broker, so a stuck COM status query never
-    consumes a Uvicorn worker indefinitely.
-    """
+    """Public status inspection with a hard process deadline."""
 
     if os.getenv("SMART_OFFICE_WORKER_CHILD", "").strip() == "1":
         return get_office_status_direct()
@@ -203,6 +205,32 @@ def _verify_non_presentation(result: ToolResult, status: ToolResult) -> Verifica
             ),
             result=result,
             observed=observed,
+        )
+    if result.tool_name in CURRENT_SLIDE_INSIGHT_TOOLS:
+        slide_number = result.data.get("slide_number")
+        spoken = str(result.data.get("spoken_insight") or "").strip()
+        ok = bool(
+            result.data.get("current_slide_insight") is True
+            and isinstance(slide_number, int)
+            and slide_number >= 1
+            and spoken
+        )
+        return _verification(
+            ok=ok,
+            message=(
+                f"Verified current-slide insight for slide {slide_number}."
+                if ok
+                else "Current-slide insight did not contain a valid slide number and spoken result."
+            ),
+            result=result,
+            observed={
+                **observed,
+                "current_slide_insight": result.data.get("current_slide_insight"),
+                "insight_mode": result.data.get("insight_mode"),
+                "slide_number": slide_number,
+                "slide_title": result.data.get("slide_title"),
+                "spoken_insight": spoken,
+            },
         )
     if result.tool_name == "office_generate_presentation_summary":
         summary_path = result.data.get("summary_path")
@@ -427,6 +455,16 @@ def execute_office_tool_call_direct(
         result = set_system_brightness(int(clean["value_percent"]))
     elif name == "system_adjust_brightness":
         result = adjust_system_brightness(int(clean["delta_percent"]))
+    elif name == "presentation_summarize_current_slide":
+        result = current_slide_insight(
+            mode="summary",
+            language="en" if clean.get("language") == "en" else "zh",
+        )
+    elif name == "presentation_explain_current_slide":
+        result = current_slide_insight(
+            mode="explanation",
+            language="en" if clean.get("language") == "en" else "zh",
+        )
     elif name == "office_generate_presentation_summary":
         result = generate_presentation_summary(
             language="en" if clean.get("language") == "en" else "zh",
@@ -459,6 +497,11 @@ def execute_office_tool_call_direct(
                 "summary_json_path",
                 "summary_json_path_relative",
                 "artifact_url",
+                "current_slide_insight",
+                "insight_mode",
+                "slide_number",
+                "slide_title",
+                "spoken_insight",
                 "outlook_draft_created",
                 "outlook_draft_verified",
                 "outlook_draft_entry_id",
