@@ -1,4 +1,5 @@
 import './nonBlockingTurnErrors.css'
+import { visitLeaseRegistry } from '../vision/visitLeaseRegistry'
 import type { OfficeVoiceController } from './useOfficeVoiceController'
 import { realtimeAgent } from './realtimeAgentRuntime'
 import { realtimeOfficeInterpreter } from './realtimeOfficeInterpreter'
@@ -34,15 +35,38 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 }
 
-function isTurnScoped(input: RequestInfo | URL): boolean {
+function requestUrl(input: RequestInfo | URL): URL | null {
   const source = input instanceof Request ? input.url : String(input)
-  let url: URL
   try {
-    url = new URL(source, window.location.href)
+    return new URL(source, window.location.href)
   } catch {
-    return false
+    return null
   }
-  return TURN_SCOPED_PATHS.some((path) => url.pathname.startsWith(path))
+}
+
+function isTurnScoped(input: RequestInfo | URL): boolean {
+  const url = requestUrl(input)
+  return Boolean(url && TURN_SCOPED_PATHS.some((path) => url.pathname.startsWith(path)))
+}
+
+function requestDeadlineMs(input: RequestInfo | URL): number | null {
+  const path = requestUrl(input)?.pathname ?? ''
+  if (path.startsWith('/api/realtime/status')) return 5_000
+  if (path.startsWith('/api/realtime/session')) return 15_000
+  if (path.startsWith('/api/presentation/guided/start')) return 30_000
+  if (path.startsWith('/api/presentation/guided/finish')) return 18_000
+  if (path.startsWith('/api/presentation/session/answer')) return 15_000
+  if (path.startsWith('/api/presentation/session/script')) return 8_000
+  if (path.startsWith('/api/presentation/status')) return 6_000
+  if (path.startsWith('/api/presentation/slideshow/')) return 10_000
+  if (path.startsWith('/api/presentation/open')) return 20_000
+  return null
+}
+
+function maxUtteranceMs(): number {
+  const configured = Number(import.meta.env.VITE_REALTIME_MAX_UTTERANCE_MS)
+  if (!Number.isFinite(configured)) return 20_000
+  return Math.max(8_000, Math.min(60_000, Math.round(configured)))
 }
 
 function requestWithSignal(
@@ -62,31 +86,44 @@ class PreemptiveTurnCoordinator {
   private controllerGetter: ControllerGetter | null = null
   private cancelPromise: Promise<void> = Promise.resolve()
   private recovering: Promise<boolean> | null = null
+  private vadLivenessTimer: number | null = null
+  private vadItemId: string | null = null
 
   constructor() {
-    // Only requests that belong to one conversational turn inherit the turn signal.
-    // Presentation control and grounded slide answers are included so a new spoken
-    // command cancels the old HTTP request as well as the old audio output.
+    // Turn-scoped requests inherit the current turn signal. Realtime connection and
+    // presentation endpoints also receive hard network deadlines even before a turn
+    // exists, so a half-open TCP request cannot hold the UI indefinitely.
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const turnSignal = this.turnAbort?.signal
-      if (!turnSignal || turnSignal.aborted || !isTurnScoped(input)) {
+      const scoped = isTurnScoped(input)
+      const turnSignal = scoped ? this.turnAbort?.signal : undefined
+      const sourceSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+      const deadlineMs = requestDeadlineMs(input)
+      const usableTurnSignal = turnSignal && !turnSignal.aborted ? turnSignal : undefined
+      if (!usableTurnSignal && !sourceSignal && deadlineMs === null) {
         return await nativeFetch(input, init)
       }
+
       const requestAbort = new AbortController()
-      const sourceSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
       const abort = () => requestAbort.abort()
-      turnSignal.addEventListener('abort', abort, { once: true })
+      if (usableTurnSignal?.aborted || sourceSignal?.aborted) abort()
+      usableTurnSignal?.addEventListener('abort', abort, { once: true })
       sourceSignal?.addEventListener('abort', abort, { once: true })
+      const deadlineTimer = deadlineMs === null
+        ? null
+        : window.setTimeout(abort, deadlineMs)
       try {
         const [nextInput, nextInit] = requestWithSignal(input, init, requestAbort.signal)
         return await nativeFetch(nextInput, nextInit)
       } finally {
-        turnSignal.removeEventListener('abort', abort)
+        if (deadlineTimer !== null) window.clearTimeout(deadlineTimer)
+        usableTurnSignal?.removeEventListener('abort', abort)
         sourceSignal?.removeEventListener('abort', abort)
       }
     }
 
-    window.addEventListener('smartoffice:realtime-vad-speech-started', () => {
+    window.addEventListener('smartoffice:realtime-vad-speech-started', (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : null
+      this.armVadLiveness(String(detail?.itemId ?? '').trim() || null)
       const controller = this.controllerGetter?.()
       const hasActiveTurn = Boolean(this.turnAbort && !this.turnAbort.signal.aborted)
       const shouldPreempt = Boolean(
@@ -97,6 +134,9 @@ class PreemptiveTurnCoordinator {
         || controller?.active,
       )
       if (shouldPreempt) void this.preempt('visitor_barge_in')
+    })
+    window.addEventListener('smartoffice:realtime-vad-speech-stopped', () => {
+      this.clearVadLiveness()
     })
     window.addEventListener('smartoffice:visit-activated', () => {
       this.reset('visit_activated')
@@ -257,9 +297,6 @@ class PreemptiveTurnCoordinator {
         : Promise.resolve(),
     ]).then(() => undefined)
 
-    // Every later turn must wait for the real cancellation sequence. The previous
-    // implementation exposed an already-resolved Promise here, allowing the old
-    // answer, Office interpreter and the new command to overlap.
     this.cancelPromise = interruption
     if (backgroundTaskActive) {
       window.dispatchEvent(new CustomEvent('smartoffice:background-task-preserved-during-barge-in', {
@@ -271,7 +308,44 @@ class PreemptiveTurnCoordinator {
     await this.recoverToReady(reason)
   }
 
+  private armVadLiveness(itemId: string | null): void {
+    this.clearVadLiveness()
+    this.vadItemId = itemId
+    this.vadLivenessTimer = window.setTimeout(() => {
+      void this.recoverStuckVad(itemId)
+    }, maxUtteranceMs())
+  }
+
+  private clearVadLiveness(): void {
+    if (this.vadLivenessTimer !== null) window.clearTimeout(this.vadLivenessTimer)
+    this.vadLivenessTimer = null
+    this.vadItemId = null
+  }
+
+  private async recoverStuckVad(expectedItemId: string | null): Promise<void> {
+    if (this.vadItemId !== expectedItemId) return
+    this.clearVadLiveness()
+    console.error('[RealtimeDiagnostics] vad-liveness-timeout', {
+      itemId: expectedItemId,
+      maxUtteranceMs: maxUtteranceMs(),
+      epoch: this.epoch,
+    })
+    await voiceOutputManager.stop('vad-liveness-timeout').catch(() => undefined)
+    await realtimeAgent.stopOutput().catch(() => undefined)
+    await realtimeAgent.stopContinuousCapture(false).catch(() => undefined)
+    const controller = this.controllerGetter?.()
+    const lease = visitLeaseRegistry.current()
+    if (controller && lease && !lease.signal.aborted) {
+      await realtimeAgent.startContinuousCapture(controller.language, lease.signal).catch(() => undefined)
+    }
+    window.dispatchEvent(new CustomEvent('smartoffice:realtime-vad-liveness-recovered', {
+      detail: { itemId: expectedItemId, epoch: this.epoch },
+    }))
+    await this.recoverToReady('vad_liveness_timeout')
+  }
+
   reset(reason: string): void {
+    this.clearVadLiveness()
     this.turnAbort?.abort()
     this.turnAbort = null
     this.cancelPromise = Promise.resolve()
