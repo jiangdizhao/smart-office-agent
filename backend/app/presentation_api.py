@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -7,10 +8,13 @@ from pydantic import BaseModel, Field
 
 from app.current_slide_insight import current_slide_insight
 from app.models import ToolResult, VerificationResult
-from app.presentation_actions import execute_presentation_tool_call
 from app.presentation_config import presentation_config
 from app.presentation_session_api import router as presentation_session_router
-from app.tools.presentation_controller import get_presentation_status
+from app.presentation_worker_supervisor import (
+    PresentationWorkerError,
+    PresentationWorkerTimeoutError,
+    presentation_worker,
+)
 from app.whole_presentation_insight import whole_presentation_insight
 
 
@@ -36,6 +40,7 @@ class PresentationStatusResponse(BaseModel):
     phase: str = "m3a_fusion_phase_3_gate_1"
     config: dict
     status: ToolResult
+    worker_process_isolation: bool = True
 
 
 class PresentationActionResponse(BaseModel):
@@ -43,6 +48,11 @@ class PresentationActionResponse(BaseModel):
     phase: str = "m3a_fusion_phase_3_gate_1"
     tool_result: ToolResult
     verification_result: VerificationResult
+    status: ToolResult
+    operation_id: str
+    worker_duration_ms: int
+    worker_process_isolation: bool = True
+    step_count: int = 1
 
 
 class CurrentSlideInsightResponse(BaseModel):
@@ -53,21 +63,71 @@ class CurrentSlideInsightResponse(BaseModel):
     result: ToolResult
 
 
-def _execute(name: str, arguments: dict | None = None) -> PresentationActionResponse:
-    tool_result, verification, _status = execute_presentation_tool_call(
-        name,
-        arguments or {},
+def _http_error(exc: PresentationWorkerError) -> HTTPException:
+    status_code = 504 if isinstance(exc, PresentationWorkerTimeoutError) else 503
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "message": str(exc),
+            "worker_process_isolation": True,
+            "recoverable": True,
+        },
     )
+
+
+def _response_from_execution(execution) -> PresentationActionResponse:
+    final = execution.final
     return PresentationActionResponse(
-        ok=tool_result.ok and verification.ok,
-        tool_result=tool_result,
-        verification_result=verification,
+        ok=execution.ok,
+        tool_result=final.tool_result,
+        verification_result=final.verification_result,
+        status=final.status,
+        operation_id=execution.operation_id,
+        worker_duration_ms=execution.duration_ms,
+        step_count=len(execution.steps),
     )
+
+
+async def _execute(
+    name: str,
+    arguments: dict | None = None,
+    *,
+    timeout_seconds: float | None = None,
+) -> PresentationActionResponse:
+    try:
+        execution = await asyncio.to_thread(
+            presentation_worker.execute,
+            name,
+            arguments or {},
+            timeout_seconds=timeout_seconds,
+        )
+    except PresentationWorkerError as exc:
+        raise _http_error(exc) from exc
+    return _response_from_execution(execution)
+
+
+async def _execute_sequence(
+    commands: list[tuple[str, dict]],
+    *,
+    timeout_seconds: float,
+) -> PresentationActionResponse:
+    try:
+        execution = await asyncio.to_thread(
+            presentation_worker.execute_sequence,
+            commands,
+            timeout_seconds=timeout_seconds,
+        )
+    except PresentationWorkerError as exc:
+        raise _http_error(exc) from exc
+    return _response_from_execution(execution)
 
 
 @router.get("/status", response_model=PresentationStatusResponse)
-def presentation_status() -> PresentationStatusResponse:
-    status = get_presentation_status()
+async def presentation_status() -> PresentationStatusResponse:
+    try:
+        status = await asyncio.to_thread(presentation_worker.status)
+    except PresentationWorkerError as exc:
+        raise _http_error(exc) from exc
     return PresentationStatusResponse(
         ok=status.ok,
         config=presentation_config.public_dict(),
@@ -82,7 +142,11 @@ async def presentation_current_slide_insight(
     result = (
         await whole_presentation_insight(language=req.language)
         if req.mode == "whole_summary"
-        else current_slide_insight(mode=req.mode, language=req.language)
+        else await asyncio.to_thread(
+            current_slide_insight,
+            mode=req.mode,
+            language=req.language,
+        )
     )
     return CurrentSlideInsightResponse(
         ok=result.ok,
@@ -92,41 +156,67 @@ async def presentation_current_slide_insight(
     )
 
 
+@router.post("/guided/start", response_model=PresentationActionResponse)
+async def presentation_guided_start() -> PresentationActionResponse:
+    return await _execute_sequence(
+        [
+            ("presentation_open_configured", {}),
+            ("presentation_start_slideshow", {}),
+            ("presentation_go_to_slide", {"slide_number": 1}),
+        ],
+        timeout_seconds=25.0,
+    )
+
+
+@router.post("/guided/finish", response_model=PresentationActionResponse)
+async def presentation_guided_finish() -> PresentationActionResponse:
+    return await _execute_sequence(
+        [
+            ("presentation_go_to_slide", {"slide_number": 1}),
+            ("presentation_end_slideshow", {}),
+        ],
+        timeout_seconds=14.0,
+    )
+
+
 @router.post("/open", response_model=PresentationActionResponse)
-def presentation_open() -> PresentationActionResponse:
-    return _execute("presentation_open_configured")
+async def presentation_open() -> PresentationActionResponse:
+    return await _execute("presentation_open_configured")
 
 
 @router.post("/slideshow/start", response_model=PresentationActionResponse)
-def presentation_start_slideshow() -> PresentationActionResponse:
-    return _execute("presentation_start_slideshow")
+async def presentation_start_slideshow() -> PresentationActionResponse:
+    return await _execute("presentation_start_slideshow")
 
 
 @router.post("/slideshow/next", response_model=PresentationActionResponse)
-def presentation_next_slide() -> PresentationActionResponse:
-    return _execute("presentation_next_slide")
+async def presentation_next_slide() -> PresentationActionResponse:
+    return await _execute("presentation_next_slide")
 
 
 @router.post("/slideshow/previous", response_model=PresentationActionResponse)
-def presentation_previous_slide() -> PresentationActionResponse:
-    return _execute("presentation_previous_slide")
+async def presentation_previous_slide() -> PresentationActionResponse:
+    return await _execute("presentation_previous_slide")
 
 
 @router.post("/slideshow/goto", response_model=PresentationActionResponse)
-def presentation_go_to_slide(req: GoToSlideRequest) -> PresentationActionResponse:
-    return _execute("presentation_go_to_slide", {"slide_number": req.slide_number})
+async def presentation_go_to_slide(req: GoToSlideRequest) -> PresentationActionResponse:
+    return await _execute(
+        "presentation_go_to_slide",
+        {"slide_number": req.slide_number},
+    )
 
 
 @router.post("/slideshow/end", response_model=PresentationActionResponse)
-def presentation_end_slideshow() -> PresentationActionResponse:
-    return _execute("presentation_end_slideshow")
+async def presentation_end_slideshow() -> PresentationActionResponse:
+    return await _execute("presentation_end_slideshow")
 
 
 @router.post("/close", response_model=PresentationActionResponse)
-def presentation_close(req: ClosePresentationRequest) -> PresentationActionResponse:
+async def presentation_close(req: ClosePresentationRequest) -> PresentationActionResponse:
     if not req.confirmed:
         raise HTTPException(
             status_code=409,
             detail="Closing PowerPoint without saving changes requires confirmed=true.",
         )
-    return _execute("presentation_close")
+    return await _execute("presentation_close")
