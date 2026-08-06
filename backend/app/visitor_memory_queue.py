@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +21,51 @@ class VisitorMemoryJob:
     memory_summary: str
     recent_messages: list[dict[str, Any]]
     visit_id: str | None
+
+
+def _clean_text(value: Any, maximum: int = 180) -> str:
+    return " ".join(str(value or "").strip().split())[:maximum].rstrip()
+
+
+def _summary_with_explicit_preferences(
+    memory_summary: str,
+    recent_messages: list[dict[str, Any]],
+) -> str:
+    """Keep concise summaries while retaining explicit long-term preferences.
+
+    The conversation summary intentionally omits raw dialogue. Registered visitor
+    memory still needs explicit statements such as a preference for PowerPoint
+    demonstrations, so extract only clearly stated preference/remember requests and
+    append them as de-duplicated bullet points.
+    """
+
+    summary = _clean_text(memory_summary, 8_000)
+    comparison = re.sub(r"[\W_]+", "", summary).casefold()
+    points: list[str] = []
+    preference_pattern = re.compile(
+        r"喜欢|偏好|更喜欢|优先|感兴趣|请记住|记住|"
+        r"\bprefer\b|\bpreference\b|\binterested in\b|"
+        r"\bplease remember\b|\bremember that\b",
+        re.IGNORECASE,
+    )
+    for message in recent_messages:
+        if str(message.get("role") or "").strip().casefold() != "user":
+            continue
+        text = _clean_text(message.get("text"), 180)
+        if not text or not preference_pattern.search(text):
+            continue
+        fingerprint = re.sub(r"[\W_]+", "", text).casefold()
+        if not fingerprint or fingerprint in comparison:
+            continue
+        language_is_zh = bool(re.search(r"[\u3400-\u9fff]", text))
+        points.append(f"• {'偏好' if language_is_zh else 'Preference'}：{text}")
+        comparison += fingerprint
+        if len(points) >= 3:
+            break
+
+    if not points:
+        return summary
+    return "\n".join(part for part in [summary, *points] if part).strip()[:8_000]
 
 
 class VisitorMemoryQueue:
@@ -54,12 +100,16 @@ class VisitorMemoryQueue:
         with self._lock:
             if key in self._queued_keys or key in self._completed_keys:
                 return True, None
+            messages = list(recent_messages or [])
             job = VisitorMemoryJob(
                 job_id=f"memory_{uuid4().hex}",
                 identity_id=clean_identity,
                 display_name=str(display_name or clean_identity),
-                memory_summary=str(memory_summary or ""),
-                recent_messages=list(recent_messages or []),
+                memory_summary=_summary_with_explicit_preferences(
+                    memory_summary,
+                    messages,
+                ),
+                recent_messages=messages,
                 visit_id=clean_visit or None,
             )
             try:
