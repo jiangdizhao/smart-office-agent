@@ -38,6 +38,7 @@ class PresentationWorkerExecution:
     operation_id: str
     steps: tuple[PresentationWorkerStep, ...]
     duration_ms: int
+    worker_process_isolation: bool
 
     @property
     def final(self) -> PresentationWorkerStep:
@@ -126,10 +127,14 @@ def _float_env(name: str, default: float, minimum: float, maximum: float) -> flo
 class PresentationWorkerSupervisor:
     """Serialize PowerPoint actions through a killable child process.
 
-    Python threads cannot safely stop a blocked COM call. This supervisor instead
+    Python threads cannot safely stop a blocked COM call. On Windows this supervisor
     places all PowerPoint automation in one spawned process. When a command misses
     its deadline, the process is terminated, optional dedicated-demo PowerPoint
     cleanup is performed, and the next request receives a fresh worker.
+
+    Non-Windows contract environments execute in-process by default so existing
+    monkeypatch-based tests remain deterministic. The behavior can be overridden
+    with SMART_OFFICE_POWERPOINT_WORKER_ENABLED.
     """
 
     def __init__(self) -> None:
@@ -138,6 +143,9 @@ class PresentationWorkerSupervisor:
         self._process: mp.Process | None = None
         self._command_queue: Any | None = None
         self._response_queue: Any | None = None
+
+    def worker_enabled(self) -> bool:
+        return _truthy_env("SMART_OFFICE_POWERPOINT_WORKER_ENABLED", os.name == "nt")
 
     def timeout_for(self, name: str) -> float:
         defaults = {
@@ -185,6 +193,9 @@ class PresentationWorkerSupervisor:
             raise ValueError("At least one PowerPoint command is required.")
 
         operation_id = str(uuid4())
+        if not self.worker_enabled():
+            return self._execute_direct(normalized, operation_id)
+
         with self._lock:
             self._ensure_worker()
             assert self._command_queue is not None
@@ -237,7 +248,40 @@ class PresentationWorkerSupervisor:
                     operation_id=operation_id,
                     steps=steps,
                     duration_ms=int(payload.get("duration_ms") or 0),
+                    worker_process_isolation=True,
                 )
+
+    def _execute_direct(
+        self,
+        normalized: list[dict[str, Any]],
+        operation_id: str,
+    ) -> PresentationWorkerExecution:
+        from app.presentation_actions import execute_presentation_tool_call
+
+        started_at = time.monotonic()
+        steps: list[PresentationWorkerStep] = []
+        for command in normalized:
+            name = str(command.get("name") or "")
+            tool_result, verification, status = execute_presentation_tool_call(
+                name,
+                dict(command.get("arguments") or {}),
+            )
+            steps.append(
+                PresentationWorkerStep(
+                    name=name,
+                    tool_result=tool_result,
+                    verification_result=verification,
+                    status=status,
+                )
+            )
+            if not tool_result.ok or not verification.ok:
+                break
+        return PresentationWorkerExecution(
+            operation_id=operation_id,
+            steps=tuple(steps),
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+            worker_process_isolation=False,
+        )
 
     def execute_tool_result(
         self,
@@ -259,7 +303,7 @@ class PresentationWorkerSupervisor:
                     **final.tool_result.data,
                     "worker_operation_id": execution.operation_id,
                     "worker_duration_ms": execution.duration_ms,
-                    "worker_process_isolation": True,
+                    "worker_process_isolation": execution.worker_process_isolation,
                     "verification": final.verification_result.model_dump(mode="json"),
                     "presentation_status": final.status.model_dump(mode="json"),
                 }
