@@ -12,6 +12,7 @@ from app.presentation_config import presentation_config
 from app.presentation_session_api import router as presentation_session_router
 from app.presentation_worker_supervisor import (
     PresentationWorkerError,
+    PresentationWorkerExecution,
     PresentationWorkerTimeoutError,
     presentation_worker,
 )
@@ -40,7 +41,7 @@ class PresentationStatusResponse(BaseModel):
     phase: str = "m3a_fusion_phase_3_gate_1"
     config: dict
     status: ToolResult
-    worker_process_isolation: bool = True
+    worker_process_isolation: bool
 
 
 class PresentationActionResponse(BaseModel):
@@ -51,7 +52,7 @@ class PresentationActionResponse(BaseModel):
     status: ToolResult
     operation_id: str
     worker_duration_ms: int
-    worker_process_isolation: bool = True
+    worker_process_isolation: bool
     step_count: int = 1
 
 
@@ -69,13 +70,15 @@ def _http_error(exc: PresentationWorkerError) -> HTTPException:
         status_code=status_code,
         detail={
             "message": str(exc),
-            "worker_process_isolation": True,
+            "worker_process_isolation": presentation_worker.worker_enabled(),
             "recoverable": True,
         },
     )
 
 
-def _response_from_execution(execution) -> PresentationActionResponse:
+def _response_from_execution(
+    execution: PresentationWorkerExecution,
+) -> PresentationActionResponse:
     final = execution.final
     return PresentationActionResponse(
         ok=execution.ok,
@@ -84,6 +87,7 @@ def _response_from_execution(execution) -> PresentationActionResponse:
         status=final.status,
         operation_id=execution.operation_id,
         worker_duration_ms=execution.duration_ms,
+        worker_process_isolation=execution.worker_process_isolation,
         step_count=len(execution.steps),
     )
 
@@ -132,6 +136,7 @@ async def presentation_status() -> PresentationStatusResponse:
         ok=status.ok,
         config=presentation_config.public_dict(),
         status=status,
+        worker_process_isolation=presentation_worker.worker_enabled(),
     )
 
 
