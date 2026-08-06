@@ -9,23 +9,12 @@ from typing import Any
 
 from app.desktop_integration_bootstrap import install_desktop_integration_wrappers
 from app.models import ToolResult
+from app.presentation_worker_supervisor import presentation_worker
 from app.tools.managed_desktop_actions import (
     close_managed_application_from_desktop,
     open_managed_application_on_content_display,
     play_random_music_on_content_display,
     stop_music_from_desktop,
-)
-from app.tools.presentation_controller import (
-    end_configured_slideshow,
-    get_presentation_status,
-    go_to_presentation_slide,
-    next_presentation_slide,
-    previous_presentation_slide,
-)
-from app.tools.presentation_desktop_actions import (
-    close_powerpoint_discarding_changes,
-    open_configured_presentation_on_content_display,
-    start_configured_slideshow_on_content_display,
 )
 from app.tools.windows_controller import (
     open_edge,
@@ -41,7 +30,7 @@ install_desktop_integration_wrappers()
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
 MANAGED_APPLICATION_TIMEOUT_SECONDS = 32.0
-POWERPOINT_DESKTOP_TIMEOUT_SECONDS = 32.0
+POWERPOINT_DESKTOP_TIMEOUT_SECONDS = 18.0
 ACTIVATION_REPLAY_SECONDS = 2.5
 COMMAND_RESULT_SECONDS = 60.0
 
@@ -182,6 +171,19 @@ def _store_activation_result(
             _COMMAND_CACHE[command_key] = (now, result.model_copy(deep=True))
 
 
+def _presentation_result(
+    tool_name: str,
+    args: dict[str, Any],
+    timeout_seconds: float,
+) -> ToolResult:
+    public_args = {key: value for key, value in args.items() if not key.startswith("_")}
+    return presentation_worker.execute_tool_result(
+        tool_name,
+        public_args,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def _execute_registered_tool(
     tool_name: str,
     args: dict[str, Any],
@@ -197,16 +199,32 @@ def _execute_registered_tool(
         "open_powerpoint": lambda: open_powerpoint(),
         "open_onenote": lambda: open_onenote(),
         "open_sample_document": lambda: open_sample_document(),
-        "presentation_get_status": lambda: get_presentation_status(),
-        "presentation_open_configured": lambda: open_configured_presentation_on_content_display(),
-        "presentation_start_slideshow": lambda: start_configured_slideshow_on_content_display(),
-        "presentation_next_slide": lambda: next_presentation_slide(),
-        "presentation_previous_slide": lambda: previous_presentation_slide(),
-        "presentation_go_to_slide": lambda: go_to_presentation_slide(
-            int(args["slide_number"])
+        "presentation_get_status": lambda: _presentation_result(
+            "presentation_get_status", args, timeout_seconds
         ),
-        "presentation_end_slideshow": lambda: end_configured_slideshow(),
-        "presentation_close": lambda: close_powerpoint_discarding_changes(),
+        "presentation_open_configured": lambda: _presentation_result(
+            "presentation_open_configured", args, timeout_seconds
+        ),
+        "presentation_start_slideshow": lambda: _presentation_result(
+            "presentation_start_slideshow", args, timeout_seconds
+        ),
+        "presentation_next_slide": lambda: _presentation_result(
+            "presentation_next_slide", args, timeout_seconds
+        ),
+        "presentation_previous_slide": lambda: _presentation_result(
+            "presentation_previous_slide", args, timeout_seconds
+        ),
+        "presentation_go_to_slide": lambda: _presentation_result(
+            "presentation_go_to_slide",
+            {**args, "slide_number": int(args["slide_number"])},
+            timeout_seconds,
+        ),
+        "presentation_end_slideshow": lambda: _presentation_result(
+            "presentation_end_slideshow", args, timeout_seconds
+        ),
+        "presentation_close": lambda: _presentation_result(
+            "presentation_close", args, timeout_seconds
+        ),
         "system_open_teams": lambda: open_managed_application_on_content_display("teams"),
         "system_close_teams": lambda: close_managed_application_from_desktop("teams"),
         "system_open_onenote": lambda: open_managed_application_on_content_display("onenote"),
@@ -226,6 +244,28 @@ def _execute_registered_tool(
                 }
             },
         )
+
+    # PowerPoint already runs in a killable process with an enforced deadline.
+    # Wrapping it in another ThreadPoolExecutor would reintroduce an unkillable
+    # orphan thread after timeout, so presentation tools execute directly here.
+    if tool_name.startswith("presentation_"):
+        try:
+            result = registry[tool_name]()
+            return _normalise_tool_result(tool_name, result, args, timeout_seconds)
+        except Exception as exc:
+            return ToolResult(
+                tool_name=tool_name,
+                ok=False,
+                message=f"Tool failed: {exc}",
+                data={
+                    "args": {
+                        key: value for key, value in args.items() if not key.startswith("_")
+                    },
+                    "timeout_seconds": timeout_seconds,
+                    "error": str(exc),
+                    "worker_process_isolation": True,
+                },
+            )
 
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(registry[tool_name])
