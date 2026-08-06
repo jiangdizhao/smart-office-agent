@@ -29,9 +29,17 @@ const CHINESE_DIGITS: Record<string, number> = {
 }
 
 export type PresentationPlanStep = Record<string, unknown>
+export type CurrentSlideInsightMode = 'summary' | 'explanation'
 
 export function mentionsPresentation(text: string): boolean {
   return PRESENTATION_TERM.test(text.normalize('NFKC'))
+}
+
+export function currentSlideInsightMode(text: string): CurrentSlideInsightMode | null {
+  const clean = text.normalize('NFKC').replace(/\s+/g, ' ').trim()
+  if (CURRENT_SLIDE_EXPLANATION.test(clean)) return 'explanation'
+  if (CURRENT_SLIDE_SUMMARY.test(clean)) return 'summary'
+  return null
 }
 
 export function presentationClarification(language: 'zh' | 'en'): string {
@@ -86,29 +94,40 @@ export function deterministicPresentationSteps(
     || PRESENTATION_STATUS.test(clean)
     || LAST_SLIDE.test(clean)
     || GOTO_SLIDE.test(clean)
-    || CURRENT_SLIDE_SUMMARY.test(clean)
-    || CURRENT_SLIDE_EXPLANATION.test(clean)
+    || currentSlideInsightMode(clean) !== null
   if (!hasTerm && !contextualControl) return null
 
-  // A PowerPoint mention is an Office command-domain event. Questions and
-  // explanatory wording are deliberately interpreted as current-slide actions,
-  // never as generic advice about how an individual might use PowerPoint.
-  if (CURRENT_SLIDE_EXPLANATION.test(clean)) {
-    return [{ name: 'presentation_explain_current_slide', language: /[\u3400-\u9fff]/.test(clean) ? 'zh' : 'en' }]
-  }
-  if (CURRENT_SLIDE_SUMMARY.test(clean)) {
-    return [{ name: 'presentation_summarize_current_slide', language: /[\u3400-\u9fff]/.test(clean) ? 'zh' : 'en' }]
-  }
+  // Current-slide insight is handled by a dedicated fast API before the Office
+  // interpreter. Returning null here prevents an unsupported plan action if that
+  // direct path is unavailable; the caller will keep the request in PPT-specific
+  // clarification instead of falling into general chat.
+  if (currentSlideInsightMode(clean) !== null) return null
 
   if (LAST_SLIDE.test(clean)) {
-    return [{ name: 'presentation_go_to_slide', slide_target: 'last' }]
+    return [
+      { name: 'presentation_start_slideshow' },
+      { name: 'presentation_go_to_slide', slide_target: 'last' },
+    ]
   }
   const slideNumber = requestedSlideNumber(clean)
   if (slideNumber !== null) {
-    return [{ name: 'presentation_go_to_slide', slide_number: slideNumber }]
+    return [
+      { name: 'presentation_start_slideshow' },
+      { name: 'presentation_go_to_slide', slide_number: slideNumber },
+    ]
   }
-  if (NEXT_SLIDE.test(clean)) return [{ name: 'presentation_next_slide' }]
-  if (PREVIOUS_SLIDE.test(clean)) return [{ name: 'presentation_previous_slide' }]
+  if (NEXT_SLIDE.test(clean)) {
+    return [
+      { name: 'presentation_start_slideshow' },
+      { name: 'presentation_next_slide' },
+    ]
+  }
+  if (PREVIOUS_SLIDE.test(clean)) {
+    return [
+      { name: 'presentation_start_slideshow' },
+      { name: 'presentation_previous_slide' },
+    ]
+  }
   if (PRESENTATION_STATUS.test(clean)) return [{ name: 'presentation_get_status' }]
   if (END_SLIDESHOW.test(clean)) return [{ name: 'presentation_end_slideshow' }]
 
@@ -127,8 +146,6 @@ export function deterministicPresentationSteps(
   }
   if (hasOpen) return [{ name: 'presentation_open_configured' }]
 
-  // Mixed Office requests still belong to the Office interpreter. Returning null
-  // here triggers an Office-only clarification, never the general-chat fallback.
   if (OTHER_DOMAIN.test(clean)) return null
   return null
 }
