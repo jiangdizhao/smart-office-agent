@@ -33,6 +33,21 @@ html[data-smart-office-route='virtual-host'] body {
   padding-bottom: 6px !important;
 }
 
+/* Replace the old SO icon/text block with the uploaded transparent MegaSmartAI mark.
+   The showroom background remains untouched and visible through the logo transparency. */
+.virtual-host-brand {
+  position: relative;
+  display: block !important;
+  width: clamp(240px, 17vw, 340px);
+  height: clamp(42px, 3.3vw, 58px);
+  flex: 0 0 auto;
+  background: transparent url('/branding/megasmartai-logo.svg') left center / contain no-repeat;
+}
+
+.virtual-host-brand > * {
+  display: none !important;
+}
+
 /* Keep status, portrait, caption and microphone prompt as one composition.
    Top padding lowers the whole group without introducing independent transforms. */
 .virtual-host-stage {
@@ -136,6 +151,11 @@ html[data-smart-office-route='virtual-host'] body {
   .virtual-host-stage {
     width: min(720px, calc(100vw - 24px)) !important;
     padding-top: 14px !important;
+  }
+
+  .virtual-host-brand {
+    width: clamp(220px, 42vw, 300px);
+    height: clamp(38px, 7vw, 52px);
   }
 
   .virtual-host-avatar.video-host-avatar {
