@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from app.models import ToolResult
 from app.presentation_config import presentation_config
-from app.tools.presentation_controller import get_presentation_status
+from app.presentation_worker_supervisor import presentation_worker
 
 InsightMode = Literal["summary", "explanation"]
 Language = Literal["zh", "en"]
@@ -145,7 +145,10 @@ def current_slide_insight(
     try:
         from pptx import Presentation
 
-        status_result = get_presentation_status()
+        # Current page lookup is a COM operation. Route it through the killable
+        # PowerPoint worker instead of allowing this request thread to become stuck
+        # in an uninterruptible COM call.
+        status_result = presentation_worker.status()
         status = dict(status_result.data)
         current = status.get("current_slide")
         slide_number = int(current) if isinstance(current, int) and current >= 1 else 1
@@ -196,6 +199,7 @@ def current_slide_insight(
                 "spoken_insight": spoken,
                 "presentation_status": status,
                 "presentation_path": str(source_path),
+                "worker_process_isolation": presentation_worker.worker_enabled(),
             },
         )
     except Exception as exc:
@@ -207,5 +211,6 @@ def current_slide_insight(
                 "execution_mode": "failed",
                 "requested_state": {"current_slide_insight": True, "mode": mode},
                 "error": str(exc),
+                "worker_process_isolation": presentation_worker.worker_enabled(),
             },
         )
