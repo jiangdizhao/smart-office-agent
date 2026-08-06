@@ -1,0 +1,70 @@
+name: Virtual Host Resilience Check
+
+on:
+  push:
+    branches:
+      - integration/virtual-host
+  pull_request:
+    branches:
+      - main
+      - integration/virtual-host-milestone
+    paths:
+      - 'backend/app/current_slide_insight.py'
+      - 'backend/app/presentation_api.py'
+      - 'backend/app/presentation_session_api.py'
+      - 'backend/app/presentation_worker_supervisor.py'
+      - 'backend/app/task_watchdog.py'
+      - 'backend/app/tool_registry.py'
+      - 'backend/app/windows_window_placement_tasklist_patch.py'
+      - 'backend/scripts/smoke_presentation_resilience_contract.py'
+      - 'ui/smart-office-ui/src/voice/preemptiveTurnCoordinator.ts'
+      - 'ui/smart-office-ui/src/voice/realtimeLatestUtterancePatch.ts'
+      - 'ui/smart-office-ui/src/voice/useGuidedPresentationController.ts'
+      - 'ui/smart-office-ui/package-lock.json'
+      - 'ui/smart-office-ui/package.json'
+      - '.github/workflows/virtual-host-resilience.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: virtual-host-resilience-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-static-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile changed backend modules
+        run: |
+          python -m py_compile \
+            backend/app/current_slide_insight.py \
+            backend/app/presentation_api.py \
+            backend/app/presentation_session_api.py \
+            backend/app/presentation_worker_supervisor.py \
+            backend/app/task_watchdog.py \
+            backend/app/tool_registry.py \
+            backend/app/windows_window_placement_tasklist_patch.py
+      - name: Run presentation resilience contract
+        run: python backend/scripts/smoke_presentation_resilience_contract.py
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/smart-office-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/smart-office-ui/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
