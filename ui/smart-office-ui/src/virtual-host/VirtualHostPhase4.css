@@ -222,6 +222,29 @@
   line-height: 1.45;
 }
 
+.exhibition-operator-drawer .drawer-primary-action,
+.exhibition-operator-drawer > .drawer-section > .drawer-danger-action {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.exhibition-operator-drawer .drawer-primary-action {
+  border: 1px solid rgba(111, 212, 170, 0.3);
+  background: linear-gradient(135deg, rgba(45, 132, 105, 0.9), rgba(51, 108, 139, 0.9));
+  color: #f5fffb;
+}
+
+.exhibition-operator-drawer > .drawer-section > .drawer-danger-action {
+  border: 1px solid rgba(229, 126, 115, 0.3);
+  background: rgba(151, 62, 54, 0.18);
+  color: #f1b6b0;
+}
+
 .drawer-service-section {
   margin-top: auto;
   border-bottom: 0;
@@ -264,11 +287,6 @@
 .drawer-service-status span {
   color: #7d9192;
   font-size: 10px;
-}
-
-.exhibition-operator-drawer .drawer-primary-action {
-  width: 100%;
-  min-height: 44px;
 }
 
 .drawer-runtime-actions {
