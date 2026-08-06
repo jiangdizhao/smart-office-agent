@@ -8,15 +8,19 @@
   overflow: hidden;
   padding: 11px clamp(18px, 1.8vw, 26px);
   text-align: left;
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
 }
 
 .single-line-caption .caption-role {
   flex: 0 0 auto;
-  color: #6fc4ff;
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.12em;
   white-space: nowrap;
+  text-shadow: none !important;
 }
 
 .caption-stream-window {
@@ -36,13 +40,27 @@
   flex: 0 0 auto;
   margin: 0;
   overflow: visible;
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  text-shadow: none !important;
   white-space: nowrap;
   text-align: right;
   animation: caption-stream-arrive 140ms ease-out;
 }
 
-.user-live-caption .caption-stream-text {
-  color: #f0f6fd;
+.user-live-caption .caption-stream-text,
+.assistant-live-caption .caption-stream-text,
+.welcome-caption .caption-stream-text,
+.user-live-caption .caption-role,
+.assistant-live-caption .caption-role,
+.welcome-caption .caption-role,
+.live-caption.caption-listening .caption-stream-text,
+.live-caption.caption-processing .caption-stream-text,
+.live-caption.caption-speaking .caption-stream-text,
+.live-caption.caption-executing .caption-stream-text {
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  text-shadow: none !important;
 }
 
 .assistant-live-caption .caption-stream-window,
@@ -53,8 +71,17 @@
 
 .assistant-live-caption .caption-stream-text,
 .welcome-caption .caption-stream-text {
-  color: #f5f9ff;
   text-align: left;
+}
+
+/* Keep every caption variant black even when state/theme styles load later. */
+html[data-smart-office-route='virtual-host'] .live-caption,
+html[data-smart-office-route='virtual-host'] .live-caption *,
+.virtual-host-shell .live-caption,
+.virtual-host-shell .live-caption * {
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
+  text-shadow: none !important;
 }
 
 /* Keep the exhibition caption substantially wider without moving Sara, the
