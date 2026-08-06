@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.current_slide_insight import current_slide_insight
 from app.models import ToolResult, VerificationResult
 from app.presentation_actions import execute_presentation_tool_call
 from app.presentation_config import presentation_config
@@ -20,6 +23,11 @@ class ClosePresentationRequest(BaseModel):
     confirmed: bool = False
 
 
+class CurrentSlideInsightRequest(BaseModel):
+    mode: Literal["summary", "explanation"] = "summary"
+    language: Literal["zh", "en"] = "zh"
+
+
 class PresentationStatusResponse(BaseModel):
     ok: bool
     phase: str = "m3a_fusion_phase_3_gate_1"
@@ -32,6 +40,14 @@ class PresentationActionResponse(BaseModel):
     phase: str = "m3a_fusion_phase_3_gate_1"
     tool_result: ToolResult
     verification_result: VerificationResult
+
+
+class CurrentSlideInsightResponse(BaseModel):
+    ok: bool
+    phase: str = "current_slide_insight_v1"
+    mode: Literal["summary", "explanation"]
+    spoken_text: str
+    result: ToolResult
 
 
 def _execute(name: str, arguments: dict | None = None) -> PresentationActionResponse:
@@ -53,6 +69,19 @@ def presentation_status() -> PresentationStatusResponse:
         ok=status.ok,
         config=presentation_config.public_dict(),
         status=status,
+    )
+
+
+@router.post("/current-slide/insight", response_model=CurrentSlideInsightResponse)
+def presentation_current_slide_insight(
+    req: CurrentSlideInsightRequest,
+) -> CurrentSlideInsightResponse:
+    result = current_slide_insight(mode=req.mode, language=req.language)
+    return CurrentSlideInsightResponse(
+        ok=result.ok,
+        mode=req.mode,
+        spoken_text=result.message,
+        result=result,
     )
 
 
