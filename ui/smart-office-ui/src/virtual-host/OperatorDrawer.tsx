@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { isRemoteVisionDetection } from '../vision/remoteVisionClient'
 import type { ProximityGreetingController } from '../vision/useProximityGreeting'
 import type { VoiceOutputProvider } from '../voice/voiceOutputManager'
@@ -6,6 +7,10 @@ import type {
   OfficeAsrProvider,
   OfficeVoiceController,
 } from '../voice/useOfficeVoiceController'
+
+const SYSTEM_PAUSED_KEY = 'smartoffice_system_temporarily_paused'
+const SYSTEM_PAUSE_RESTORE_KEY = 'smartoffice_system_pause_restore_proximity'
+const PROXIMITY_ENABLED_KEY = 'smartoffice_proximity_greeting_enabled'
 
 type OperatorDrawerProps = {
   controller: OfficeVoiceController
@@ -52,9 +57,44 @@ export default function OperatorDrawer({
   const settingsDisabled = controller.listening || controller.busy
   const voiceActive = controller.runtime.outputActive || controller.panel === 'speaking'
   const serviceReady = controller.runtime.connected
+  const [systemPaused, setSystemPaused] = useState(
+    () => sessionStorage.getItem(SYSTEM_PAUSED_KEY) === 'true',
+  )
   const remoteDetection = isRemoteVisionDetection(proximity.lastDetection)
     ? proximity.lastDetection
     : null
+
+  async function toggleSystemPause(): Promise<void> {
+    if (!systemPaused) {
+      const persistentPreference = localStorage.getItem(PROXIMITY_ENABLED_KEY)
+      const restoreEnabled = proximity.enabled
+      sessionStorage.setItem(SYSTEM_PAUSE_RESTORE_KEY, String(restoreEnabled))
+      sessionStorage.setItem(SYSTEM_PAUSED_KEY, 'true')
+
+      await controller.stopSpeaking().catch(() => undefined)
+      proximity.setEnabled(false)
+
+      // Pausing is temporary. Preserve the operator's long-term visual setting so
+      // a normal restart does not accidentally leave visitor detection disabled.
+      if (persistentPreference === null) localStorage.removeItem(PROXIMITY_ENABLED_KEY)
+      else localStorage.setItem(PROXIMITY_ENABLED_KEY, persistentPreference)
+
+      setSystemPaused(true)
+      window.dispatchEvent(new CustomEvent('smartoffice:system-pause-changed', {
+        detail: { paused: true },
+      }))
+      return
+    }
+
+    const restoreEnabled = sessionStorage.getItem(SYSTEM_PAUSE_RESTORE_KEY) !== 'false'
+    sessionStorage.removeItem(SYSTEM_PAUSED_KEY)
+    sessionStorage.removeItem(SYSTEM_PAUSE_RESTORE_KEY)
+    proximity.setEnabled(restoreEnabled)
+    setSystemPaused(false)
+    window.dispatchEvent(new CustomEvent('smartoffice:system-pause-changed', {
+      detail: { paused: false },
+    }))
+  }
 
   return (
     <div className="operator-drawer-layer">
@@ -74,6 +114,45 @@ export default function OperatorDrawer({
             ×
           </button>
         </div>
+
+        <section className="drawer-section" aria-labelledby="system-pause-title">
+          <div className="drawer-section-heading">
+            <strong id="system-pause-title">
+              {zh ? '一键暂停系统' : 'Pause system'}
+            </strong>
+            <span>
+              {systemPaused
+                ? zh
+                  ? '视觉、当前访客会话与语音监听均已暂停'
+                  : 'Vision, the active visit and voice listening are paused'
+                : zh
+                  ? '相当于暂时关闭摄像头并回到等待状态'
+                  : 'Temporarily behaves as if the camera sees nobody'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={systemPaused ? 'drawer-primary-action' : 'drawer-danger-action'}
+            onClick={() => void toggleSystemPause()}
+          >
+            {systemPaused
+              ? zh
+                ? '恢复系统与摄像头'
+                : 'Resume system and camera'
+              : zh
+                ? '立即暂停并回到等待状态'
+                : 'Pause now and return to standby'}
+          </button>
+          <p className="drawer-inline-note">
+            {systemPaused
+              ? zh
+                ? '系统已暂停。再次按下此按钮后，将重新启动访客检测。'
+                : 'The system is paused. Press again to restart visitor detection.'
+              : zh
+                ? '暂停会终止当前访客会话、停止播报并释放麦克风，但不会永久关闭视觉设置。'
+                : 'Pause ends the active visit, stops speech and releases the microphone without permanently disabling vision.'}
+          </p>
+        </section>
 
         <section className="drawer-section" aria-labelledby="language-setting-title">
           <div className="drawer-section-heading">
@@ -138,7 +217,7 @@ export default function OperatorDrawer({
             <button
               type="button"
               className={proximity.enabled ? 'selected' : ''}
-              disabled={settingsDisabled}
+              disabled={settingsDisabled || systemPaused}
               onClick={() => proximity.setEnabled(true)}
             >
               {zh ? '开启' : 'On'}
@@ -146,14 +225,16 @@ export default function OperatorDrawer({
             <button
               type="button"
               className={!proximity.enabled ? 'selected' : ''}
-              disabled={settingsDisabled}
+              disabled={settingsDisabled || systemPaused}
               onClick={() => proximity.setEnabled(false)}
             >
               {zh ? '关闭' : 'Off'}
             </button>
           </div>
           <p className="drawer-inline-note">
-            {proximityLabel(proximity.status, zh)}
+            {systemPaused
+              ? zh ? '系统暂停中' : 'System paused'
+              : proximityLabel(proximity.status, zh)}
             {proximity.lastDetection
               ? ` · ${zh ? '人体' : 'person'} ${percentage(proximity.lastDetection.body_area_ratio)} · ${proximity.lastDetection.face_inside_body ? (zh ? '有人脸' : 'face found') : (zh ? '未检测到人脸' : 'no face')}`
               : ''}
