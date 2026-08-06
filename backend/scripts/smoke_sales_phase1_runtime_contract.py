@@ -88,6 +88,8 @@ def main() -> None:
         assert payload["policy"]["effective_flags"]["realtime_mode"] == "quality"
         assert "explicit_only_sales_profile_extraction" in payload["active_components"]
         assert "single_post_value_contact_offer" in payload["active_components"]
+        assert "fast_role_to_contact_funnel" in payload["active_components"]
+        assert "two_sentence_sales_limit" in payload["active_components"]
 
         conversation = f"phase1-profile-{suffix}"
         visit = f"visit-profile-{suffix}"
@@ -103,12 +105,13 @@ def main() -> None:
         assert "运营" in profile["session"]["explicit_facts"]["role"]
         assert profile["session"]["pain_points"]
         assert "meeting_summary" in profile["session"]["interested_capabilities"]
-        assert profile["reply_plan"]["suggested_question"] is None
-        assert profile["reply_plan"]["maximum_sentences"] <= 4
-        assert profile["reply_plan"]["humour"]["allowed"] is True
-        configured_humour = profile["reply_plan"]["humour"]["text"]
-        assert configured_humour
-        assert configured_humour in profile["fallback_text"]
+        assert profile["session"]["contact_offer_count"] == 1
+        assert profile["reply_plan"]["recommended_action"] == "offer_contact"
+        assert "登记信息表" in profile["reply_plan"]["suggested_question"]
+        assert profile["reply_plan"]["maximum_sentences"] == 2
+        assert profile["reply_plan"]["humour"]["allowed"] is False
+        assert "运营" in profile["fallback_text"]
+        assert "登记信息表" in profile["fallback_text"]
 
         humour_repeat = post_turn(
             client,
@@ -116,18 +119,16 @@ def main() -> None:
             visit,
             "会议总结和会后跟进确实最浪费时间。",
         )
-        assert humour_repeat["reply_plan"]["humour"]["allowed"] is False
-        assert humour_repeat["session"]["humour_used_count"] == 1
         assert humour_repeat["session"]["contact_offer_count"] == 1
-        assert humour_repeat["reply_plan"]["recommended_action"] == "offer_contact"
-        assert "登记信息表" in humour_repeat["reply_plan"]["suggested_question"]
+        assert humour_repeat["reply_plan"]["recommended_action"] != "offer_contact"
+        assert humour_repeat["reply_plan"]["maximum_sentences"] == 2
 
         contact_accept = post_turn(
             client,
             conversation,
             visit,
             "可以。",
-            recent_context=humour_repeat["fallback_text"],
+            recent_context=profile["fallback_text"],
         )
         assert contact_accept["ui_action"] == "open_contact"
         assert contact_accept["session"]["contact_opened"] is False
@@ -291,6 +292,7 @@ def main() -> None:
         assert first_nudge["speak"] is True
         assert first_nudge["session"]["proactive_nudge_count"] == 1
         assert first_nudge["reply_plan"]["reply_mode"] == "proactive_sales"
+        assert first_nudge["reply_plan"]["maximum_sentences"] == 2
 
         second_nudge = client.post(
             "/api/sales/proactive",
@@ -406,10 +408,10 @@ def main() -> None:
 
     print(
         "PASS: Phase 1 performs explicit-only discovery, preserves Office commands, "
-        "enforces appointment-first and repeated-demo delegation, verifies conversion "
+        "uses the two-sentence role-to-contact exhibition funnel, verifies conversion "
         "panel outcomes, bounds cost claims and humour, runs two Visit-scoped sequential "
-        "proactive nudges after completed outputs, offers contact once after value, "
-        "persists only after contact consent, and deletes anonymous Visit state."
+        "proactive nudges after completed outputs, persists only after contact consent, "
+        "and deletes anonymous Visit state."
     )
 
 
