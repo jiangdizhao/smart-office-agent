@@ -1,4 +1,5 @@
-import { realtimeAgent, type VoiceLanguage } from './realtimeAgentRuntime'
+import type { VoiceLanguage } from './realtimeAgentRuntime'
+import { realtimeSpeechAgent } from './realtimeSpeechRuntime'
 import type { VoiceDeliveryPlan } from '../sales/voiceDelivery'
 import { deliveryInstruction } from '../sales/voiceDelivery'
 
@@ -19,9 +20,9 @@ type RealtimeInternals = {
 }
 
 /**
- * Uses the same persistent Realtime session as speakExact, but supplies a
- * controlled delivery instruction. The final text remains exact; delivery never
- * gains permission to add or paraphrase content.
+ * Uses a dedicated persistent Realtime speech session when enabled. Continuous
+ * ASR remains on the primary session, so transcription and TTS no longer compete
+ * for one pendingResponse slot. Final wording stays application-controlled.
  */
 export async function speakExpressiveExact(
   text: string,
@@ -31,7 +32,7 @@ export async function speakExpressiveExact(
 ): Promise<string> {
   const clean = text.trim()
   if (!clean) return ''
-  const agent = realtimeAgent as unknown as RealtimeInternals
+  const agent = realtimeSpeechAgent as unknown as RealtimeInternals
   agent.language = language
   const generation = agent.generation
   await agent.stopOutput()
