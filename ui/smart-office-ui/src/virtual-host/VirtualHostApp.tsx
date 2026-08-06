@@ -89,18 +89,35 @@ export default function VirtualHostApp() {
   const [lastAssistantText, setLastAssistantText] = useState('')
   const [vadUiState, setVadUiState] = useState<VadUiState>('idle')
   const lastPublishedAnswer = useRef('')
+  const lastPublishedUser = useRef('')
 
   useEffect(() => {
     if (controller.actor !== 'operator') controller.setActor('operator')
   }, [controller.actor])
 
   useEffect(() => {
+    const publishUser = (transcript: string) => {
+      const visitId = visitLeaseRegistry.current()?.visitId ?? null
+      const fingerprint = `${visitId ?? 'none'}|${transcript}`
+      if (!transcript || fingerprint === lastPublishedUser.current) return
+      lastPublishedUser.current = fingerprint
+      publishSessionMessage({
+        conversationId: controller.conversationId,
+        visitId,
+        role: 'user',
+        text: transcript,
+        source: 'final_user_utterance',
+      })
+    }
     const onSpeechStarted = () => setVadUiState('listening')
     const onSpeechStopped = () => setVadUiState('processing')
     const onUtterance = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail : null
-      const transcript = String(detail?.transcript ?? '').trim()
-      if (transcript) setLastUserText(transcript)
+      const transcript = String(detail?.transcript ?? detail?.text ?? '').trim()
+      if (transcript) {
+        setLastUserText(transcript)
+        publishUser(transcript)
+      }
       setVadUiState('processing')
     }
     const onDirectAssistant = (event: Event) => {
@@ -110,6 +127,12 @@ export default function VirtualHostApp() {
     }
     const onSpeakingStopped = () => setVadUiState('idle')
     const onContinuousStopped = () => setVadUiState('idle')
+    const onVisitBoundary = () => {
+      lastPublishedUser.current = ''
+      lastPublishedAnswer.current = ''
+      setLastUserText('')
+      setLastAssistantText('')
+    }
     window.addEventListener('smartoffice:realtime-vad-speech-started', onSpeechStarted)
     window.addEventListener('smartoffice:realtime-vad-speech-stopped', onSpeechStopped)
     window.addEventListener('smartoffice:realtime-continuous-utterance', onUtterance)
@@ -117,6 +140,8 @@ export default function VirtualHostApp() {
     window.addEventListener('smartoffice:direct-assistant-caption', onDirectAssistant)
     window.addEventListener('smartoffice:realtime-speaking-stop', onSpeakingStopped)
     window.addEventListener('smartoffice:realtime-continuous-listening-stop', onContinuousStopped)
+    window.addEventListener('smartoffice:visit-activated', onVisitBoundary)
+    window.addEventListener('smartoffice:visit-revoked', onVisitBoundary)
     return () => {
       window.removeEventListener('smartoffice:realtime-vad-speech-started', onSpeechStarted)
       window.removeEventListener('smartoffice:realtime-vad-speech-stopped', onSpeechStopped)
@@ -125,8 +150,10 @@ export default function VirtualHostApp() {
       window.removeEventListener('smartoffice:direct-assistant-caption', onDirectAssistant)
       window.removeEventListener('smartoffice:realtime-speaking-stop', onSpeakingStopped)
       window.removeEventListener('smartoffice:realtime-continuous-listening-stop', onContinuousStopped)
+      window.removeEventListener('smartoffice:visit-activated', onVisitBoundary)
+      window.removeEventListener('smartoffice:visit-revoked', onVisitBoundary)
     }
-  }, [])
+  }, [controller.conversationId])
 
   const baseVisualState = controllerVisualState(
     controller.panel,
@@ -155,8 +182,20 @@ export default function VirtualHostApp() {
 
   useEffect(() => {
     const transcript = controller.transcript.trim()
-    if (transcript) setLastUserText(transcript)
-  }, [controller.transcript])
+    if (!transcript) return
+    setLastUserText(transcript)
+    const visitId = visitLeaseRegistry.current()?.visitId ?? null
+    const fingerprint = `${visitId ?? 'none'}|${transcript}`
+    if (fingerprint === lastPublishedUser.current) return
+    lastPublishedUser.current = fingerprint
+    publishSessionMessage({
+      conversationId: controller.conversationId,
+      visitId,
+      role: 'user',
+      text: transcript,
+      source: 'controller_final_transcript',
+    })
+  }, [controller.conversationId, controller.transcript])
 
   useEffect(() => {
     const answer = controller.answer.trim()
