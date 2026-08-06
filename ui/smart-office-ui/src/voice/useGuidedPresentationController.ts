@@ -48,7 +48,11 @@ type PresentationActionPayload = {
   }
 }
 
-const START_PRESENTATION = /(?:(?:体验|演示|介绍|讲解|展示|播放|开始).{0,16}(?:ppt|power\s*point|powerpoint|幻灯片|演示文稿)|(?:ppt|power\s*point|powerpoint|幻灯片|演示文稿).{0,16}(?:体验|演示|介绍|讲解|展示|播放|开始)|\b(?:demo|demonstrate|present|show|introduce|start)\b.{0,24}\b(?:ppt|powerpoint|presentation|slide\s*deck)\b)/i
+// Product rule: outside an active guided session, any explicit PowerPoint/PPT
+// mention enters the fixed DOCX-driven guided presentation flow. This is a hard
+// deterministic route and must never fall through to ordinary chat or semantic
+// routing.
+const START_PRESENTATION = /(?:\bppt\b|\bpower\s*point\b|\bpowerpoint\b|幻灯片|演示文稿)/i
 const NEXT_SLIDE = /^(?:请|麻烦|帮我)?\s*(?:下一页|下一张|翻页|往后翻|向后翻|继续下一页|继续往下|继续播放|继续演示|next(?:\s+slide)?|continue|advance)\s*[。.!！]?$/i
 const PREVIOUS_SLIDE = /^(?:请|麻烦|帮我)?\s*(?:上一页|上一张|往前翻|向前翻|返回上一页|previous(?:\s+slide)?|go\s+back)\s*[。.!！]?$/i
 const PAUSE_PRESENTATION = /^(?:停一下|暂停|先停|别讲了|停止讲解|pause|stop speaking)\s*[。.!！]?$/i
